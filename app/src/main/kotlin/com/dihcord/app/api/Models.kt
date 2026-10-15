@@ -639,13 +639,14 @@ data class StickerItem(
     val name: String,
     val formatType: Int
 ) {
-    val isDisplayable: Boolean get() = formatType in listOf(1, 2, 3)
+    /** PNG (1), APNG (2) and GIF (4) render as images; Lottie (3) needs a Lottie renderer we don't ship. */
+    val isDisplayable: Boolean get() = formatType == 1 || formatType == 2 || formatType == 4
     val imageUrl: String
         get() {
             val ext = when (formatType) {
-                2 -> "gif"
                 3 -> "json"
-                else -> "png"
+                4 -> "gif"
+                else -> "png" // 1 = PNG, 2 = APNG (served as .png)
             }
             return "https://media.discordapp.net/stickers/$id.$ext?size=240"
         }
@@ -909,6 +910,10 @@ data class GuildEmoji(
         }
     val insertText: String get() = if (animated) "<a:$name:$id>" else "<:$name:$id>"
 
+    /** Image link posted instead of the emoji when it can't be used natively (no Nitro). */
+    val linkUrl: String
+        get() = "https://cdn.discordapp.com/emojis/$id.${if (animated) "gif" else "webp"}?size=48&quality=lossless"
+
     fun toJson(): JSONObject = JSONObject()
         .put("id", id)
         .put("name", name)
@@ -922,7 +927,38 @@ data class GuildEmoji(
         )
 
         fun listFromJson(arr: JSONArray): List<GuildEmoji> =
-            (0 until arr.length()).map { fromJson(arr.getJSONObject(it)) }
+            (0 until arr.length()).mapNotNull { runCatching { fromJson(arr.getJSONObject(it)) }.getOrNull() }
+    }
+}
+
+/** How a picked custom emoji or sticker can be used by this user here. */
+enum class EmojiUse {
+    /** Send/react with it natively. */
+    NATIVE,
+
+    /** Not allowed natively (needs Nitro), but can be posted as an image link. */
+    AS_LINK,
+
+    /** Not usable. */
+    LOCKED;
+
+    companion object {
+        /**
+         * Discord rules: without Nitro you can only use static emoji from the server you're typing in.
+         * Animated or other-server emoji fall back to an image link when [linkFallback] is on (never for reactions).
+         */
+        fun forEmoji(animated: Boolean, fromThisServer: Boolean, hasNitro: Boolean, linkFallback: Boolean, reaction: Boolean): EmojiUse = when {
+            hasNitro || (fromThisServer && !animated) -> NATIVE
+            linkFallback && !reaction -> AS_LINK
+            else -> LOCKED
+        }
+
+        /** Stickers from other servers need Nitro; non-Lottie ones can be posted as an image link instead. */
+        fun forSticker(sticker: StickerItem, fromThisServer: Boolean, hasNitro: Boolean, linkFallback: Boolean): EmojiUse = when {
+            hasNitro || fromThisServer -> NATIVE
+            linkFallback && sticker.formatType != 3 -> AS_LINK
+            else -> LOCKED
+        }
     }
 }
 

@@ -3,6 +3,9 @@ package com.dihcord.app.api
 import android.content.Context
 import android.content.SharedPreferences
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -106,14 +109,9 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     private val _readState = MutableStateFlow<Map<String, ChannelUnreadState>>(emptyMap())
     val readState: StateFlow<Map<String, ChannelUnreadState>> = _readState.asStateFlow()
 
-    private val emojiCache = object : LinkedHashMap<String, List<GuildEmoji>>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: Map.Entry<String, List<GuildEmoji>>?) =
-            size > 10 // Keep max 10 guilds' emojis in cache
-    }
-    private val stickerCache = object : LinkedHashMap<String, List<StickerItem>>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: Map.Entry<String, List<StickerItem>>?) =
-            size > 10 // Keep max 10 guilds' stickers in cache
-    }
+    // Filled for every server from READY (and lazily over REST), read from the UI: must be thread-safe.
+    private val emojiCache = java.util.concurrent.ConcurrentHashMap<String, List<GuildEmoji>>()
+    private val stickerCache = java.util.concurrent.ConcurrentHashMap<String, List<StickerItem>>()
     private val channelNameCache = mutableMapOf<String, String>()
     private val channelGuildCache = mutableMapOf<String, String>()
     private val memberRolesCache = object : LinkedHashMap<String, List<String>>(32, 0.75f, true) {
@@ -411,6 +409,30 @@ class DiscordRepository(token: String, private val context: Context? = null) {
             emojiCache[guildId] = list
         }
         return emojiCache[guildId] ?: emptyList()
+    }
+
+    /** One server's emojis or stickers for the picker. */
+    data class GuildSet<T>(val guildId: String, val guildName: String, val items: List<T>)
+
+    /**
+     * Emojis of every server, [firstGuildId] first, then in sidebar order. Servers missing from the READY data
+     * are fetched over REST a few at a time.
+     */
+    suspend fun allGuildEmojis(firstGuildId: String?): List<GuildSet<GuildEmoji>> =
+        allGuildSets(firstGuildId) { getGuildEmojis(it) }
+
+    suspend fun allGuildStickers(firstGuildId: String?): List<GuildSet<StickerItem>> =
+        allGuildSets(firstGuildId) { getGuildStickers(it) }
+
+    private suspend fun <T> allGuildSets(
+        firstGuildId: String?,
+        load: suspend (String) -> List<T>
+    ): List<GuildSet<T>> = kotlinx.coroutines.coroutineScope {
+        val guilds = _guilds.value.sortedBy { if (it.id == firstGuildId) 0 else 1 }
+        val gate = kotlinx.coroutines.sync.Semaphore(3)
+        guilds.map { g ->
+            async { gate.withPermit { GuildSet(g.id, g.name, runCatching { load(g.id) }.getOrDefault(emptyList())) } }
+        }.awaitAll().filter { it.items.isNotEmpty() }
     }
 
     suspend fun getGuildStickers(guildId: String): List<StickerItem> {
@@ -721,6 +743,8 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                         _currentUser.value = event.user
                         currentUserId = event.user.id
                         if (event.folders.isNotEmpty()) _guildFolders.value = event.folders
+                        emojiCache.putAll(event.guildEmojis)
+                        stickerCache.putAll(event.guildStickers)
                         if (event.readState.isNotEmpty()) {
                             _readState.value = event.readState
                             event.readState.filter { it.value.mentionCount > 0 }

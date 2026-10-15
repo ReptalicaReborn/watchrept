@@ -52,12 +52,6 @@ import kotlinx.coroutines.delay
  *
  * Navigation: push "thread/{threadId}/{threadName}" onto the nav stack.
  */
-private fun buildEmojiLink(insertText: String): String {
-    val animated = Regex("""<a:(\w+):(\d+)>""").find(insertText) ?: return insertText
-    val id = animated.groupValues[2]
-    return "https://cdn.discordapp.com/emojis/$id.webp?size=80"
-}
-
 @Composable
 fun ThreadScreen(
     threadId: String,
@@ -218,35 +212,29 @@ fun ThreadScreen(
             hasNitro = hasNitro,
             sendAnimatedAsGif = sendAnimatedAsGif,
             reactMode = isReactMode,
-            onEmojiPicked = { insertText ->
+            onEmojiPicked = { emoji, asLink ->
                 showPicker = false
                 val target = reactingToMsg
                 if (target != null) {
-                    val reactionEmoji = parseInsertTextToReactionEmoji(insertText)
-                    if (reactionEmoji != null) {
-                        scope.launch {
-                            try {
-                                repo.toggleReaction(threadId, target.id, reactionEmoji)
-                            } catch (e: Exception) {
-                                sendError = "Failed: ${e.message}"
-                            }
+                    val reactionEmoji = ReactionEmoji(id = emoji.id, name = emoji.name, animated = emoji.animated)
+                    scope.launch {
+                        try {
+                            repo.toggleReaction(threadId, target.id, reactionEmoji)
+                        } catch (e: Exception) {
+                            sendError = "Failed: ${e.message}"
                         }
                     }
                     reactingToMsg = null
-                } else {
-                    val isAnimated = insertText.startsWith("<a:")
-                    if (isAnimated && sendAnimatedAsGif) {
-                        showPicker = false
-                        val link = buildEmojiLink(insertText)
-                        scope.launch {
-                            repo.sendMessage(threadId, link)
-                                .onFailure { sendError = "Failed: ${it.message}" }
-                        }
-                    } else {
-                        val newText = if (inputText.isBlank()) insertText else "$inputText$insertText"
-                        inputText = newText
-                        pendingText = newText
+                } else if (asLink) {
+                    // No Nitro for this emoji here: post it as an image link instead.
+                    scope.launch {
+                        repo.sendMessage(threadId, emoji.linkUrl)
+                            .onFailure { sendError = "Failed: ${it.message}" }
                     }
+                } else {
+                    val newText = if (inputText.isBlank()) emoji.insertText else "$inputText${emoji.insertText}"
+                    inputText = newText
+                    pendingText = newText
                 }
             },
             onUnicodeEmojiPicked = { unicode ->
@@ -265,12 +253,12 @@ fun ThreadScreen(
                     pendingText = newText
                 }
             },
-            onStickerPicked = { stickerId ->
+            onStickerPicked = { sticker, asLink ->
                 showPicker = false
                 reactingToMsg = null
                 scope.launch {
                     try {
-                        repo.sendSticker(threadId, stickerId)
+                        if (asLink) repo.sendMessage(threadId, sticker.imageUrl) else repo.sendSticker(threadId, sticker.id)
                     } catch (e: Exception) {
                         sendError = "Failed: ${e.message}"
                     }

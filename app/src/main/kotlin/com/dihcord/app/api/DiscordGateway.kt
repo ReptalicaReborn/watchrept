@@ -242,7 +242,24 @@ class DiscordGateway(private val token: String) {
                 val folders = d.optJSONObject("user_settings")?.optJSONArray("guild_folders")
                     ?.let { GuildFolder.listFromJson(it) }
                     .orEmpty()
-                if (user != null) GatewayEvent.Ready(user, readState, presences, folders) else null
+                // User-account READY carries every guild's emojis and stickers; keep them for the picker.
+                val guildEmojis = mutableMapOf<String, List<GuildEmoji>>()
+                val guildStickers = mutableMapOf<String, List<StickerItem>>()
+                d.optJSONArray("guilds")?.let { arr ->
+                    for (i in 0 until arr.length()) {
+                        val g = arr.optJSONObject(i) ?: continue
+                        val gid = g.optString("id").takeIf { it.isNotEmpty() } ?: continue
+                        g.optJSONArray("emojis")?.let { guildEmojis[gid] = GuildEmoji.listFromJson(it) }
+                        g.optJSONArray("stickers")?.let { st ->
+                            guildStickers[gid] = (0 until st.length()).mapNotNull {
+                                runCatching { StickerItem.fromJson(st.getJSONObject(it)) }.getOrNull()
+                            }.filter { it.isDisplayable }
+                        }
+                    }
+                }
+                if (user != null) {
+                    GatewayEvent.Ready(user, readState, presences, folders, guildEmojis, guildStickers)
+                } else null
             }
 
             "MESSAGE_CREATE" -> runCatching {
@@ -350,7 +367,9 @@ sealed class GatewayEvent {
         val user: DiscordUser,
         val readState: Map<String, ChannelUnreadState> = emptyMap(),
         val presences: List<UserPresence> = emptyList(),
-        val folders: List<GuildFolder> = emptyList()
+        val folders: List<GuildFolder> = emptyList(),
+        val guildEmojis: Map<String, List<GuildEmoji>> = emptyMap(),
+        val guildStickers: Map<String, List<StickerItem>> = emptyMap()
     ) : GatewayEvent()
 
     data class MessageCreate(

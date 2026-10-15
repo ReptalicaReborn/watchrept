@@ -426,11 +426,11 @@ fun SettingsScreen(
                     label = {
                         Column {
                             Text(
-                                "Send animated emoji as GIF",
+                                "Nitro emoji as image link",
                                 style = MaterialTheme.typography.bodySmall
                             )
                             Text(
-                                "Posts a GIF link instead of <a:emoji:id>",
+                                "Animated & other-server emoji/stickers post as a link; off = locked",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
