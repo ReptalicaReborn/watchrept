@@ -181,11 +181,13 @@ class DiscordRepository(token: String, private val context: Context? = null) {
             ?: (rest.getGuildOwnerId(guildId).getOrNull() ?: return ChannelAbilities.ALL).also { guildOwnerCache[guildId] = it }
 
         val roleIds = myRolesByGuild[guildId]
-            ?: (rest.getGuildMemberRoles(guildId, myId).getOrNull() ?: return ChannelAbilities.ALL)
+            ?: (rest.getGuildMember(guildId).getOrNull()?.roleIds
+                ?: rest.getGuildMemberRoles(guildId, myId).getOrNull()
+                ?: return ChannelAbilities.ALL)
                 .also { myRolesByGuild[guildId] = it }
-        val roles = guildRolesCache.getOrPut(guildId) {
-            rest.getGuildRoles(guildId).getOrNull() ?: return ChannelAbilities.ALL
-        }
+        val roles = getGuildRoles(guildId)
+        // Without the @everyone role we can't know the base permissions: don't hide anything, let Discord decide.
+        if (roles.none { it.id == guildId }) return ChannelAbilities.ALL
         return Permissions.abilities(
             member = GuildMember(userId = myId, roleIds = roleIds),
             guildId = guildId,
@@ -440,9 +442,13 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     }
 
     suspend fun getGuildRoles(guildId: String): List<GuildRole> {
-        return guildRolesCache.getOrPut(guildId) {
-            rest.getGuildRoles(guildId).getOrNull() ?: emptyList()
-        }
+        guildRolesCache[guildId]?.let { return it }
+        // A failed fetch (e.g. rate limited while role colours load) must not be cached as "no roles": the
+        // permission checks would then think the user has none of @everyone's permissions in this server.
+        return rest.getGuildRoles(guildId).getOrNull()
+            ?.takeIf { it.isNotEmpty() }
+            ?.also { guildRolesCache[guildId] = it }
+            ?: emptyList()
     }
 
     @Deprecated("Use getTopRoleForUser instead")
