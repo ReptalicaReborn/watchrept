@@ -114,6 +114,17 @@ object SetupPreferences {
             .edit { putBoolean(KEY_COMPACT_MODE, value) }
     }
 
+    private const val KEY_NOTIFICATIONS = "background_notifications"
+
+    fun getNotificationsEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_NOTIFICATIONS, false)
+
+    fun setNotificationsEnabled(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit { putBoolean(KEY_NOTIFICATIONS, value) }
+    }
+
     fun isSetupComplete(context: Context): Boolean = getToken(context) != null
     private const val KEY_PINNED_SERVERS = "pinned_servers"
 

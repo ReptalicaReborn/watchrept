@@ -1,5 +1,9 @@
 package com.watchrept.app.screens
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.*
@@ -11,6 +15,8 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
 import com.watchrept.app.ApkInstaller
+import com.watchrept.app.NotificationService
+import com.watchrept.app.Notifier
 import com.watchrept.app.SetupPreferences
 import com.watchrept.app.UpdateChecker
 import com.watchrept.app.discordApp
@@ -40,6 +46,18 @@ fun SettingsScreen(
     }
     var showMentionBadges by remember {
         mutableStateOf(SetupPreferences.getShowMentionBadges(context))
+    }
+    var notificationsEnabled by remember {
+        mutableStateOf(
+            SetupPreferences.getNotificationsEnabled(context) && Notifier.canPostNotifications(context)
+        )
+    }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        notificationsEnabled = granted
+        SetupPreferences.setNotificationsEnabled(context, granted)
+        if (granted) NotificationService.start(context)
     }
     var compactMode by remember {
         mutableStateOf(SetupPreferences.getCompactMode(context))
@@ -122,6 +140,38 @@ fun SettingsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 8.dp, bottom = 2.dp)
+                )
+            }
+
+            item {
+                SwitchButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    checked = notificationsEnabled,
+                    onCheckedChange = { enabled ->
+                        if (!enabled) {
+                            notificationsEnabled = false
+                            SetupPreferences.setNotificationsEnabled(context, false)
+                            NotificationService.stop(context)
+                        } else if (Build.VERSION.SDK_INT >= 33 && !Notifier.canPostNotifications(context)) {
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            notificationsEnabled = true
+                            SetupPreferences.setNotificationsEnabled(context, true)
+                            NotificationService.start(context)
+                        }
+                    },
+                    label = {
+                        Text(
+                            "Background notifications",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    },
+                    secondaryLabel = {
+                        Text(
+                            "DMs & mentions. Uses more battery.",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
                 )
             }
 

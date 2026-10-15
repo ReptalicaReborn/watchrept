@@ -54,6 +54,9 @@ class MainActivity : ComponentActivity() {
         }
 
         UpdateChecker.checkNow(this)
+        if (token != null && SetupPreferences.getNotificationsEnabled(this)) {
+            NotificationService.start(this)
+        }
 
         setContent {
             MaterialTheme {
@@ -421,6 +424,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        AppState.onStart(discordApp)
+    }
+
+    override fun onStop() {
+        AppState.onStop(discordApp)
+        super.onStop()
     }
 
     override fun onResume() {

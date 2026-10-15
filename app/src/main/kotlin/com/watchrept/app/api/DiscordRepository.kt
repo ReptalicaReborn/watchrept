@@ -3,6 +3,9 @@ package com.watchrept.app.api
 import android.content.Context
 import android.content.SharedPreferences
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +18,15 @@ import kotlinx.coroutines.launch
 import com.watchrept.app.SetupPreferences
 import org.json.JSONArray
 import org.json.JSONObject
+
+/** What a notification for an incoming message should say. */
+data class NotificationInfo(
+    val channelId: String,
+    val title: String,
+    val sender: String,
+    val text: String,
+    val isDm: Boolean,
+)
 
 class DiscordRepository(token: String, private val context: Context? = null) {
 
@@ -199,6 +211,72 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     }
 
     fun disconnect() = gateway.disconnect()
+
+    @Volatile private var paused = false
+
+    /** Drops the gateway connection to save battery while the app is idle in the background. */
+    fun pauseConnection() {
+        paused = true
+        gateway.disconnect()
+    }
+
+    /** Reconnects after [pauseConnection]; a no-op if the connection was never paused. */
+    fun resumeConnection() {
+        if (!paused) return
+        paused = false
+        gateway.connect()
+    }
+
+    private val _newMessages = MutableSharedFlow<DiscordMessage>(extraBufferCapacity = 32)
+
+    /** Every message received live over the gateway (including the user's own). */
+    val newMessages: SharedFlow<DiscordMessage> = _newMessages.asSharedFlow()
+
+    /**
+     * Decides whether [msg] deserves a notification (a DM, or a mention of the user / their roles / @everyone,
+     * never their own messages) and builds its text. Null when it should stay silent.
+     */
+    suspend fun notificationFor(msg: DiscordMessage): NotificationInfo? {
+        val myId = currentUserId ?: return null
+        if (msg.author.id == myId) return null
+        val isDm = _dmChannels.value.any { it.id == msg.channelId }
+        val guildId = msg.guildId ?: channelGuildCache[msg.channelId]
+        val mentioned = if (isDm) true else {
+            val roles = if (guildId != null && msg.mentionedRoleIds.isNotEmpty()) {
+                myRolesByGuild[guildId]
+                    ?: rest.getGuildMemberRoles(guildId, myId).getOrNull()?.also { myRolesByGuild[guildId] = it }
+                    ?: emptyList()
+            } else emptyList()
+            msg.pingFor(myId, roles)
+        }
+        if (!mentioned) return null
+
+        val text = msg.content
+            .replace(Regex("<@!?(\\d+)>")) { m -> "@" + (userDisplayNames[m.groupValues[1]] ?: "user") }
+            .replace(Regex("<#(\\d+)>")) { m -> "#" + (channelNameCache[m.groupValues[1]] ?: "channel") }
+            .replace(Regex("<a?:(\\w+):\\d+>")) { m -> ":" + m.groupValues[1] + ":" }
+            .ifBlank {
+                when {
+                    msg.attachments.isNotEmpty() -> "[attachment]"
+                    msg.stickers.isNotEmpty() -> "[sticker]"
+                    else -> "[message]"
+                }
+            }
+        val title = if (isDm) {
+            msg.author.displayName
+        } else {
+            val ch = channelNameCache[msg.channelId]?.let { "#$it" } ?: "a channel"
+            val guild = guildId?.let { id -> _guilds.value.firstOrNull { it.id == id }?.name }
+            if (guild != null) "$ch · $guild" else ch
+        }
+        return NotificationInfo(
+            channelId = msg.channelId,
+            title = title,
+            sender = msg.author.displayName,
+            text = text,
+            isDm = isDm,
+        )
+    }
     fun selectChannel(channelId: String, guildId: String?) {
         gateway.selectChannel(channelId, guildId)
     }
@@ -648,6 +726,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                         ) {
                             myRolesByGuild[event.guildId] = event.memberRoleIds
                         }
+                        _newMessages.tryEmit(msg)
                         _messages.update { current ->
                             val list = current[msg.channelId]?.toMutableList() ?: mutableListOf()
                             if (list.none { it.id == msg.id }) list.add(msg)

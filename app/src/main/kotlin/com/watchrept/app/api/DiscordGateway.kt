@@ -46,7 +46,10 @@ class DiscordGateway(private val token: String) {
         const val HEARTBEAT_ACK = 11
     }
 
+    val isConnected: Boolean get() = connected
+
     fun connect() {
+        if (connected) return
         val url = resumeUrl ?: "wss://gateway.discord.gg/?v=10&encoding=json"
         val request = Request.Builder().url(url).build()
         ws = http.newWebSocket(request, Listener())

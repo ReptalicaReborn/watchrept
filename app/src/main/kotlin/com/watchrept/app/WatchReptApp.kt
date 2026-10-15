@@ -21,6 +21,7 @@ class WatchReptApp : Application() {
     }
 
     fun clearRepository() {
+        NotificationService.stop(this)
         repository?.disconnect()
         repository = null
     }
