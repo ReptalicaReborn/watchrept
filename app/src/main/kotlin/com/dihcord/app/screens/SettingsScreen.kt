@@ -175,6 +175,25 @@ fun SettingsScreen(
             }
 
             item {
+                var screenOffDisconnect by remember { mutableStateOf(SetupPreferences.getDisconnectOnScreenOff(context)) }
+                SwitchButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    checked = screenOffDisconnect,
+                    onCheckedChange = {
+                        screenOffDisconnect = it
+                        SetupPreferences.setDisconnectOnScreenOff(context, it)
+                    },
+                    label = { Text("Sleep when screen off", style = MaterialTheme.typography.bodySmall) },
+                    secondaryLabel = {
+                        Text(
+                            if (notificationsEnabled) "Paused while notifications are on" else "Saves battery",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                )
+            }
+
+            item {
                 SectionHeader("Notifications")
             }
 

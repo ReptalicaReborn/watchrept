@@ -229,7 +229,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     /** Drops the gateway connection to save battery while the app is idle in the background. */
     fun pauseConnection() {
         paused = true
-        gateway.disconnect()
+        gateway.pause()
     }
 
     /** Reconnects after [pauseConnection]; a no-op if the connection was never paused. */

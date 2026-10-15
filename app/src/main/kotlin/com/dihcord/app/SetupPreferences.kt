@@ -116,6 +116,17 @@ object SetupPreferences {
 
     private const val KEY_NOTIFICATIONS = "background_notifications"
 
+    private const val KEY_SCREEN_OFF_DISCONNECT = "disconnect_on_screen_off"
+
+    /** Drop the Discord connection while the screen is off (unless background notifications need it). */
+    fun getDisconnectOnScreenOff(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_SCREEN_OFF_DISCONNECT, true)
+
+    fun setDisconnectOnScreenOff(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit { putBoolean(KEY_SCREEN_OFF_DISCONNECT, value) }
+    }
+
     fun getNotificationsEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean(KEY_NOTIFICATIONS, false)

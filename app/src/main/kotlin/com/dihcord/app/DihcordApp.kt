@@ -51,6 +51,18 @@ class DihcordApp : Application(), ImageLoaderFactory {
         super.onCreate()
         Perf.init(this)
         AppTheme.init(this)
+        val screenFilter = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_SCREEN_OFF)
+            addAction(android.content.Intent.ACTION_SCREEN_ON)
+        }
+        androidx.core.content.ContextCompat.registerReceiver(this, object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
+                when (intent.action) {
+                    android.content.Intent.ACTION_SCREEN_OFF -> AppState.onScreenOff(this@DihcordApp)
+                    android.content.Intent.ACTION_SCREEN_ON -> AppState.onScreenOn(this@DihcordApp)
+                }
+            }
+        }, screenFilter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     fun initRepository(token: String) {

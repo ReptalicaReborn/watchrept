@@ -48,18 +48,44 @@ class DiscordGateway(private val token: String) {
 
     val isConnected: Boolean get() = connected
 
+    /** False after [pause]: scheduled reconnects (after errors, RECONNECT, INVALID_SESSION) then stay quiet. */
+    @Volatile private var wanted = true
+
     fun connect() {
+        wanted = true
         if (connected) return
-        val url = resumeUrl ?: "wss://gateway.discord.gg/?v=10&encoding=json"
+        // resume_gateway_url comes without the version/encoding query, so add it like the default URL has.
+        val url = (resumeUrl?.trimEnd('/') ?: "wss://gateway.discord.gg") + "/?v=10&encoding=json"
         val request = Request.Builder().url(url).build()
         ws = http.newWebSocket(request, Listener())
     }
 
     fun disconnect() {
+        wanted = false
+        close(1000)
+    }
+
+    /**
+     * Drops the socket but keeps the session resumable (Discord invalidates it on close code 1000), so [connect]
+     * later sends RESUME and Discord replays what was missed while paused.
+     */
+    fun pause() {
+        wanted = false
+        close(4000)
+    }
+
+    private fun close(code: Int) {
         connected = false
         heartbeatJob?.cancel()
-        ws?.close(1000, "Goodbye")
+        ws?.close(code, "Goodbye")
         ws = null
+    }
+
+    private fun reconnectLater(ms: Long) {
+        scope.launch {
+            delay(ms)
+            if (wanted) connect()
+        }
     }
 
     private fun send(op: Int, d: Any?) {
@@ -167,8 +193,8 @@ class DiscordGateway(private val token: String) {
                 Op.HEARTBEAT_ACK -> {}
 
                 Op.RECONNECT -> {
-                    disconnect()
-                    scope.launch { delay(1_000); connect() }
+                    close(4000) // keep the session so the reconnect can RESUME
+                    reconnectLater(1_000)
                 }
 
                 Op.INVALID_SESSION -> {
@@ -176,7 +202,8 @@ class DiscordGateway(private val token: String) {
                     if (!resumable) {
                         sessionId = null; resumeUrl = null
                     }
-                    scope.launch { delay(2_000); connect() }
+                    close(4000)
+                    reconnectLater(2_000)
                 }
 
                 Op.DISPATCH -> {
@@ -193,10 +220,7 @@ class DiscordGateway(private val token: String) {
             if (response?.code == 401) {
                 scope.launch { _events.emit(GatewayEvent.InvalidToken) }
             } else {
-                scope.launch {
-                    delay(5_000)
-                    connect()
-                }
+                reconnectLater(5_000)
             }
         }
 
