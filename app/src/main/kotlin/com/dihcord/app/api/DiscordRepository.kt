@@ -617,6 +617,17 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     }
 
 
+    /** Everyone who reacted to a message with [reaction]'s emoji, normal and super reactions together. */
+    suspend fun reactionUsers(channelId: String, messageId: String, reaction: Reaction): Result<List<DiscordUser>> {
+        val key = reaction.emoji.apiKey
+        val normal = if (reaction.count > reaction.burstCount || reaction.burstCount == 0)
+            rest.getReactionUsers(channelId, messageId, key) else Result.success(emptyList())
+        val burst = if (reaction.burstCount > 0)
+            rest.getReactionUsers(channelId, messageId, key, burst = true) else Result.success(emptyList())
+        if (normal.isFailure && burst.isFailure) return normal
+        return Result.success((normal.getOrDefault(emptyList()) + burst.getOrDefault(emptyList())).distinctBy { it.id })
+    }
+
     suspend fun sendFileAttachment(
         channelId: String,
         fileBytes: ByteArray,

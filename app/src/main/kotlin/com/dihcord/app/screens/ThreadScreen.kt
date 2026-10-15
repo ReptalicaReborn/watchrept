@@ -28,6 +28,7 @@ import com.dihcord.app.api.DiscordMessage
 import com.dihcord.app.api.DiscordUser
 import com.dihcord.app.api.MentionCandidate
 import com.dihcord.app.api.MentionInput
+import com.dihcord.app.api.Reaction
 import com.dihcord.app.api.GuildRole
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.launch
@@ -124,6 +125,7 @@ fun ThreadScreen(
 
     var uploadError by remember { mutableStateOf("") }
     var showPhotoPicker by remember { mutableStateOf(false) }
+    var reactorsFor by remember { mutableStateOf<Pair<String, Reaction>?>(null) }
     val imagePermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -304,6 +306,11 @@ fun ThreadScreen(
         return
     }
 
+    reactorsFor?.let { (messageId, reaction) ->
+        ReactorsScreen(threadId, messageId, reaction, imageLoader, onDismiss = { reactorsFor = null })
+        return
+    }
+
     if (showPhotoPicker) {
         PhotoPickerScreen(
             imageLoader = imageLoader,
@@ -468,6 +475,7 @@ fun ThreadScreen(
                         onReact = { emoji ->
                             scope.launch { repo.toggleReaction(threadId, msg.id, emoji) }
                         },
+                        onShowReactors = { reaction -> reactorsFor = msg.id to reaction },
                         onSwipeToReply = { msgToReply ->
                             replyingTo = msgToReply
                         },

@@ -238,6 +238,7 @@ fun ChatScreen(
 
     var uploadError by remember { mutableStateOf("") }
     var showPhotoPicker by remember { mutableStateOf(false) }
+    var reactorsFor by remember { mutableStateOf<Pair<String, Reaction>?>(null) }
     val imagePermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -372,6 +373,11 @@ fun ChatScreen(
     }
     BackHandler(enabled = !showPicker && editingMsg == null && !isRecording && !showPhotoPicker && replyingTo == null && selectedMsg == null) {
         onBack()
+    }
+
+    reactorsFor?.let { (messageId, reaction) ->
+        ReactorsScreen(channelId, messageId, reaction, imageLoader, onDismiss = { reactorsFor = null })
+        return
     }
 
     if (showPhotoPicker) {
@@ -875,6 +881,7 @@ fun ChatScreen(
                             onReact = { emoji ->
                                 scope.launch { repo.toggleReaction(channelId, msg.id, emoji) }
                             },
+                            onShowReactors = { reaction -> reactorsFor = msg.id to reaction },
                             onSwipeToReply = { msgToReply ->
                                 replyingTo = msgToReply
                             },
@@ -1490,6 +1497,7 @@ internal fun MessageBubble(
     guildMemberCache: SnapshotStateMap<String, GuildMember?> = mutableStateMapOf(),
     myId: String = "",
     onReact: (ReactionEmoji) -> Unit,
+    onShowReactors: ((Reaction) -> Unit)? = null,
     onSwipeToReply: ((DiscordMessage) -> Unit)? = null,
     onLongPress: () -> Unit,
     onAvatarClick: (userId: String) -> Unit = {},
@@ -1918,9 +1926,12 @@ internal fun MessageBubble(
                 if (msg.reactions.isNotEmpty()) {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         msg.reactions.forEach { reaction ->
-                            ReactionChip(reaction = reaction, imageLoader = imageLoader, onClick = {
-                                onReact(reaction.emoji)
-                            })
+                            ReactionChip(
+                                reaction = reaction,
+                                imageLoader = imageLoader,
+                                onClick = { onReact(reaction.emoji) },
+                                onLongClick = onShowReactors?.let { show -> { show(reaction) } }
+                            )
                         }
                     }
                 }
@@ -2276,7 +2287,13 @@ private fun MessageContent(
 }
 
 @Composable
-private fun ReactionChip(reaction: Reaction, imageLoader: ImageLoader, onClick: () -> Unit) {
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun ReactionChip(
+    reaction: Reaction,
+    imageLoader: ImageLoader,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
+) {
     val bgColor = when {
         reaction.me || reaction.meBurst -> MaterialTheme.colorScheme.primaryContainer
         else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
@@ -2293,7 +2310,7 @@ private fun ReactionChip(reaction: Reaction, imageLoader: ImageLoader, onClick: 
                     RoundedCornerShape(11.dp)
                 ) else Modifier
             )
-            .clickable { onClick() }
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 6.dp),
         contentAlignment = Alignment.Center
     ) {

@@ -401,6 +401,19 @@ class DiscordRestClient(private val token: String) {
         Unit
     }
 
+    /** Who reacted with [emojiKey] ([burst] = super reactions), up to [limit] people. */
+    suspend fun getReactionUsers(
+        channelId: String,
+        messageId: String,
+        emojiKey: String,
+        burst: Boolean = false,
+        limit: Int = 50
+    ): Result<List<DiscordUser>> = runCatching {
+        val encoded = java.net.URLEncoder.encode(emojiKey, "UTF-8")
+        val arr = JSONArray(get("/channels/$channelId/messages/$messageId/reactions/$encoded?limit=$limit&type=${if (burst) 1 else 0}"))
+        (0 until arr.length()).map { DiscordUser.fromJson(arr.getJSONObject(it)) }
+    }
+
     suspend fun ackChannel(channelId: String, messageId: String) {
         runCatching {
             post(
