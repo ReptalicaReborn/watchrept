@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -234,6 +235,38 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         if (!paused) return
         paused = false
         gateway.connect()
+    }
+
+    private val memberChunks = MutableSharedFlow<GatewayEvent.MembersChunk>(extraBufferCapacity = 8)
+
+    /**
+     * People to suggest for "@[query]" in [channelId]: everyone seen in the loaded conversation (authors,
+     * mentioned users, DM recipients), plus, in servers, a live member search over the gateway.
+     */
+    suspend fun mentionCandidates(channelId: String, guildId: String?, query: String): List<MentionCandidate> {
+        val myId = currentUserId
+        val local = buildList {
+            _messages.value[channelId].orEmpty().asReversed().forEach { m ->
+                add(MentionCandidate(m.author.id, m.author.displayName, m.author.username))
+                m.mentionedUsers.forEach { add(MentionCandidate(it.id, it.displayName, it.username)) }
+            }
+            _dmChannels.value.firstOrNull { it.id == channelId }?.recipients?.forEach {
+                add(MentionCandidate(it.id, it.displayName, it.username))
+            }
+        }
+        val remote = if (guildId != null && query.isNotEmpty()) {
+            val nonce = java.util.UUID.randomUUID().toString().take(16)
+            kotlinx.coroutines.coroutineScope {
+                val reply = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                    memberChunks.first { it.nonce == nonce }
+                }
+                gateway.requestGuildMembers(guildId, query, limit = 10, nonce = nonce)
+                val chunk = kotlinx.coroutines.withTimeoutOrNull(1_500) { reply.await() }
+                reply.cancel()
+                chunk?.members.orEmpty()
+            }
+        } else emptyList()
+        return MentionInput.rank((local + remote).filter { it.id != myId }, query)
     }
 
     private val _newMessages = MutableSharedFlow<DiscordMessage>(extraBufferCapacity = 32)
@@ -737,6 +770,11 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                 when (event) {
                     is GatewayEvent.InvalidToken -> {
                         _isTokenInvalid.value = true
+                    }
+
+                    is GatewayEvent.MembersChunk -> {
+                        event.members.forEach { userDisplayNames[it.id] = it.displayName }
+                        memberChunks.tryEmit(event)
                     }
 
                     is GatewayEvent.Ready -> {

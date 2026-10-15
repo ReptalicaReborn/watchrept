@@ -118,6 +118,8 @@ fun ChatScreen(
     var creatingThread by remember { mutableStateOf(false) }
     var threadError by remember { mutableStateOf("") }
     var highlightedId by remember(channelId) { mutableStateOf<String?>(null) }
+    var pickedMentions by remember(channelId) { mutableStateOf(mapOf<String, String>()) }
+    var mentionSuggestions by remember(channelId) { mutableStateOf<List<MentionCandidate>>(emptyList()) }
     var reactingToMsg by remember { mutableStateOf<DiscordMessage?>(null) }
     val roleColorCache = remember { mutableStateMapOf<String, GuildRole?>() }
     val roleIconCache = remember { mutableStateMapOf<String, GuildRole?>() }
@@ -647,6 +649,17 @@ fun ChatScreen(
         }
     }
 
+    // Mention autocomplete: look people up while the text ends in "@partial".
+    val mentionQuery = MentionInput.activeQuery(inputText)
+    LaunchedEffect(mentionQuery) {
+        if (mentionQuery == null) {
+            mentionSuggestions = emptyList()
+        } else {
+            delay(250)
+            mentionSuggestions = repo.mentionCandidates(channelId, guildId, mentionQuery)
+        }
+    }
+
     /** Scrolls to [messageId] (e.g. the message a reply points at) and briefly highlights it. */
     fun jumpToMessage(messageId: String) {
         val idx = messages.indexOfFirst { it.id == messageId }
@@ -664,7 +677,8 @@ fun ChatScreen(
     }
 
     fun sendTyped() {
-        val text = inputText.trim()
+        val text = MentionInput.toWire(inputText.trim(), pickedMentions)
+        pickedMentions = emptyMap()
         if (text.isBlank() || slowRemaining > 0) return
         inputText = ""
         pendingText = ""
@@ -950,6 +964,15 @@ fun ChatScreen(
                         }
 
                         if (canSend) {
+                            if (mentionQuery != null) {
+                                MentionSuggestions(mentionSuggestions) { c ->
+                                    val newText = MentionInput.complete(inputText, c)
+                                    inputText = newText
+                                    pendingText = newText
+                                    pickedMentions = pickedMentions + ("@${c.displayName}" to "<@${c.id}>")
+                                    mentionSuggestions = emptyList()
+                                }
+                            }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,

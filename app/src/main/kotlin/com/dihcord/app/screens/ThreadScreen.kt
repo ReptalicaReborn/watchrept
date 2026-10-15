@@ -26,6 +26,8 @@ import coil.decode.ImageDecoderDecoder
 import com.dihcord.app.R
 import com.dihcord.app.api.DiscordMessage
 import com.dihcord.app.api.DiscordUser
+import com.dihcord.app.api.MentionCandidate
+import com.dihcord.app.api.MentionInput
 import com.dihcord.app.api.GuildRole
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.launch
@@ -76,6 +78,18 @@ fun ThreadScreen(
     var loading by remember { mutableStateOf(true) }
     var sendError by remember { mutableStateOf("") }
     var inputText by remember { mutableStateOf("") }
+    var pickedMentions by remember(threadId) { mutableStateOf(mapOf<String, String>()) }
+    var mentionSuggestions by remember(threadId) { mutableStateOf<List<MentionCandidate>>(emptyList()) }
+    // Mention autocomplete: look people up while the text ends in "@partial".
+    val mentionQuery = MentionInput.activeQuery(inputText)
+    LaunchedEffect(mentionQuery) {
+        if (mentionQuery == null) {
+            mentionSuggestions = emptyList()
+        } else {
+            delay(250)
+            mentionSuggestions = repo.mentionCandidates(threadId, guildId, mentionQuery)
+        }
+    }
     var pendingText by remember { mutableStateOf("") }
     var selectedMsg by remember { mutableStateOf<DiscordMessage?>(null) }
     var replyingTo by remember { mutableStateOf<DiscordMessage?>(null) }
@@ -481,6 +495,16 @@ fun ThreadScreen(
 
             // Text input
             item(key = "text_input") {
+              Column(modifier = Modifier.fillMaxWidth()) {
+                if (mentionQuery != null) {
+                    MentionSuggestions(mentionSuggestions) { c ->
+                        val newText = MentionInput.complete(inputText, c)
+                        inputText = newText
+                        pendingText = newText
+                        pickedMentions = pickedMentions + ("@${c.displayName}" to "<@${c.id}>")
+                        mentionSuggestions = emptyList()
+                    }
+                }
                 OutlinedTextField(
                     value = inputText,
                     onValueChange = { inputText = it; pendingText = it },
@@ -503,6 +527,7 @@ fun ThreadScreen(
                     minLines = 1, maxLines = 4,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done)
                 )
+              }
             }
 
             item(key = "action_buttons") {
@@ -535,8 +560,9 @@ fun ThreadScreen(
                         }
                         FilledIconButton(
                             onClick = {
-                                val text = inputText.trim()
+                                val text = MentionInput.toWire(inputText.trim(), pickedMentions)
                                 if (text.isBlank()) return@FilledIconButton
+                                pickedMentions = emptyMap()
                                 inputText = ""
                                 pendingText = ""
                                 scope.launch {

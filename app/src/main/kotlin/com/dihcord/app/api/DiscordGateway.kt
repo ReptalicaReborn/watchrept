@@ -69,6 +69,19 @@ class DiscordGateway(private val token: String) {
         ws?.send(payload.toString())
     }
 
+    /** Asks for members of [guildId] whose name starts with [query] (answered by GUILD_MEMBERS_CHUNK). */
+    fun requestGuildMembers(guildId: String, query: String, limit: Int, nonce: String) {
+        send(
+            8,
+            JSONObject()
+                .put("guild_id", JSONArray().put(guildId))
+                .put("query", query)
+                .put("limit", limit)
+                .put("presences", false)
+                .put("nonce", nonce)
+        )
+    }
+
     fun selectChannel(channelId: String, guildId: String?) {
         if (guildId != null) {
             val sub = JSONObject()
@@ -319,6 +332,18 @@ class DiscordGateway(private val token: String) {
                 )
             }.getOrNull()
 
+            "GUILD_MEMBERS_CHUNK" -> runCatching {
+                val arr = d.optJSONArray("members") ?: JSONArray()
+                val members = (0 until arr.length()).mapNotNull { i ->
+                    val m = arr.optJSONObject(i) ?: return@mapNotNull null
+                    val u = m.optJSONObject("user") ?: return@mapNotNull null
+                    val user = DiscordUser.fromJson(u)
+                    val nick = if (m.isNull("nick")) null else m.optString("nick").takeIf { it.isNotEmpty() }
+                    MentionCandidate(user.id, nick ?: user.displayName, user.username)
+                }
+                GatewayEvent.MembersChunk(d.optString("nonce").takeIf { it.isNotEmpty() }, members)
+            }.getOrNull()
+
             "PRESENCE_UPDATE" -> runCatching {
                 GatewayEvent.PresenceUpdate(UserPresence.fromJson(d))
             }.getOrNull()
@@ -406,6 +431,8 @@ sealed class GatewayEvent {
     data class ChannelCreate(val channel: Channel) : GatewayEvent()
     data class ChannelUpdate(val channel: Channel) : GatewayEvent()
     data class ChannelDelete(val channel: Channel) : GatewayEvent()
+    /** Reply to a member search ([DiscordGateway.requestGuildMembers]). */
+    data class MembersChunk(val nonce: String?, val members: List<MentionCandidate>) : GatewayEvent()
     object InvalidToken : GatewayEvent()
     data class Unknown(val name: String) : GatewayEvent()
 }
