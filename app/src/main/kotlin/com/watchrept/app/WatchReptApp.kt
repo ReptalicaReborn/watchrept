@@ -2,10 +2,19 @@ package com.watchrept.app
 
 import android.app.Application
 import com.watchrept.app.api.DiscordRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 
 class WatchReptApp : Application() {
     var repository: DiscordRepository? = null
         private set
+
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var summaryJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -18,9 +27,22 @@ class WatchReptApp : Application() {
         val repo = DiscordRepository(token, context = this)
         repo.connect()
         repository = repo
+        summaryJob?.cancel()
+        summaryJob = appScope.launch {
+            combine(repo.readState, repo.dmChannels) { read, dms ->
+                val dmIds = dms.map { it.id }.toSet()
+                val mentions = read.filter { it.value.mentionCount > 0 }
+                UnreadSummary.Counts(
+                    dm = mentions.filter { it.key in dmIds }.values.sumOf { it.mentionCount },
+                    server = mentions.filter { it.key !in dmIds }.values.sumOf { it.mentionCount },
+                )
+            }.collect { UnreadSummary.publish(this@WatchReptApp, it) }
+        }
     }
 
     fun clearRepository() {
+        summaryJob?.cancel()
+        UnreadSummary.reset(this)
         NotificationService.stop(this)
         repository?.disconnect()
         repository = null

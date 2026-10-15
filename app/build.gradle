@@ -78,4 +78,8 @@ dependencies {
     implementation libs.coil.svg
     implementation libs.compose.material3
     implementation libs.zxing.core
+    implementation libs.wear.tiles
+    implementation libs.wear.protolayout
+    implementation libs.wear.complications.source
+    implementation libs.concurrent.futures
 }
