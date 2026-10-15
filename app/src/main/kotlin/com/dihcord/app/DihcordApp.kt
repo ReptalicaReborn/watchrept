@@ -1,6 +1,12 @@
 package com.dihcord.app
 
 import android.app.Application
+import coil.ImageLoader
+import coil.ImageLoaderFactory
+import coil.decode.ImageDecoderDecoder
+import coil.decode.SvgDecoder
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
 import com.dihcord.app.api.DiscordRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -9,7 +15,30 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
-class DihcordApp : Application() {
+class DihcordApp : Application(), ImageLoaderFactory {
+
+    /**
+     * One image loader for the whole app (screens get it via `context.imageLoader`), so avatars, icons and
+     * emoji decoded on one screen are instantly reused on the next, and survive restarts via the disk cache.
+     */
+    override fun newImageLoader(): ImageLoader =
+        ImageLoader.Builder(this)
+            .components {
+                add(ImageDecoderDecoder.Factory())
+                add(SvgDecoder.Factory())
+            }
+            .memoryCache { MemoryCache.Builder(this).maxSizePercent(0.20).build() }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(cacheDir.resolve("image_cache"))
+                    .maxSizeBytes(64L * 1024 * 1024)
+                    .build()
+            }
+            // Discord CDN URLs are content-addressed, so cached copies never go stale.
+            .respectCacheHeaders(false)
+            .crossfade(true)
+            .build()
+
     var repository: DiscordRepository? = null
         private set
 

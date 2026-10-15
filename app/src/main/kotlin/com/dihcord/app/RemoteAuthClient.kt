@@ -104,7 +104,6 @@ class RemoteAuthClient(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                Log.d(TAG, "<<< $text")
                 ioScope.launch { handleMessage(text) }
             }
 
@@ -275,7 +274,6 @@ class RemoteAuthClient(
     }
 
     private fun send(json: JSONObject) {
-        Log.d(TAG, ">>> $json")
         ws?.send(json.toString())
     }
 

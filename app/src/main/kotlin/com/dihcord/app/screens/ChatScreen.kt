@@ -55,6 +55,7 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
 import coil.ImageLoader
+import coil.imageLoader
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import coil.decode.ImageDecoderDecoder
@@ -70,6 +71,8 @@ import com.dihcord.app.discordApp
 import com.dihcord.app.SetupPreferences
 import com.dihcord.app.R
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import java.io.File
@@ -89,17 +92,16 @@ fun ChatScreen(
     val repo = context.discordApp.repository
     val listState = rememberScalingLazyListState()
     val scope = rememberCoroutineScope()
-    val imageLoader = remember {
-        ImageLoader.Builder(context)
-            .components {
-                add(ImageDecoderDecoder.Factory())
-            }.build()
-    }
+    val imageLoader = context.imageLoader
 
-    val allMessages by (repo?.messages ?: return).collectAsState()
-    val messages = allMessages[channelId].orEmpty()
-    val readState by repo.readState.collectAsState()
-    val typingMap by repo.typing.collectAsState()
+    if (repo == null) return
+    // Observe only this channel: the shared maps change on every message/typing event account-wide.
+    val messages by remember(channelId) {
+        repo.messages.map { it[channelId].orEmpty() }.distinctUntilChanged()
+    }.collectAsState(initial = repo.messages.value[channelId].orEmpty())
+    val typingUsers by remember(channelId) {
+        repo.typing.map { it[channelId].orEmpty() }.distinctUntilChanged()
+    }.collectAsState(initial = repo.typing.value[channelId].orEmpty())
     var loading by remember { mutableStateOf(true) }
     var sendError by remember { mutableStateOf("") }
     var showPicker by remember { mutableStateOf(false) }
@@ -174,7 +176,7 @@ fun ChatScreen(
         }
     }
 
-    val initialLastRead = remember(channelId) { readState[channelId]?.lastMessageId }
+    val initialLastRead = remember(channelId) { repo.readState.value[channelId]?.lastMessageId }
     val scrolledToUnread = remember { mutableStateOf(false) }
 
     LaunchedEffect(channelId, loading, messages.size, pendingText) {
@@ -768,7 +770,7 @@ fun ChatScreen(
                     }
                 }
 
-                val currentTypingUsers = typingMap[channelId].orEmpty().filter { it != myId }
+                val currentTypingUsers = typingUsers.filter { it != myId }
                 if (currentTypingUsers.isNotEmpty()) {
                     item(key = "typing_indicator") {
                         val names = currentTypingUsers.mapNotNull { uid ->
@@ -1118,6 +1120,8 @@ fun ChatScreen(
         }
     }
 }
+
+private val BareUrlRegex = Regex("^https?://\\S+$")
 
 @Composable
 private fun SpoilerText(text: String, revealOnTap: Boolean) {
@@ -1718,7 +1722,7 @@ internal fun MessageBubble(
                     val trimmedContent = msg.content.trim()
                     val isJustLink = msg.embeds.isNotEmpty() && (
                             android.util.Patterns.WEB_URL.matcher(trimmedContent).matches() ||
-                                    Regex("^https?://\\S+$").matches(trimmedContent)
+                                    BareUrlRegex.matches(trimmedContent)
                             )
 
                     if (msg.content.isNotBlank() && !isJustLink) {

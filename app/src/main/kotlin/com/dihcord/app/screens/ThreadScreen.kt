@@ -21,6 +21,7 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
 import coil.ImageLoader
+import coil.imageLoader
 import coil.decode.ImageDecoderDecoder
 import com.dihcord.app.R
 import com.dihcord.app.api.DiscordMessage
@@ -28,6 +29,8 @@ import com.dihcord.app.api.DiscordUser
 import com.dihcord.app.api.GuildRole
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import android.Manifest
 import android.content.pm.PackageManager
 import android.media.MediaRecorder
@@ -68,14 +71,11 @@ fun ThreadScreen(
     val listState = rememberScalingLazyListState()
     val scope = rememberCoroutineScope()
 
-    val imageLoader = remember {
-        ImageLoader.Builder(context).components {
-            add(ImageDecoderDecoder.Factory())
-        }.build()
-    }
+    val imageLoader = context.imageLoader
 
-    val allMessages by repo.messages.collectAsState()
-    val threadMessages = allMessages[threadId].orEmpty()
+    val threadMessages by remember(threadId) {
+        repo.messages.map { it[threadId].orEmpty() }.distinctUntilChanged()
+    }.collectAsState(initial = repo.messages.value[threadId].orEmpty())
     val currentUser by repo.currentUser.collectAsState()
     val myId = currentUser?.id ?: ""
 

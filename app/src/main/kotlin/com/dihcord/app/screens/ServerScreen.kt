@@ -26,6 +26,7 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
 import coil.ImageLoader
+import coil.imageLoader
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import androidx.compose.material3.Icon
@@ -58,7 +59,7 @@ fun ServerScreen(
     val listState = rememberScalingLazyListState()
     val menuState = rememberScalingLazyListState()
     val scope = rememberCoroutineScope()
-    val imageLoader = remember { ImageLoader.Builder(context).build() }
+    val imageLoader = context.imageLoader
 
     val guilds by (repo?.guilds ?: return).collectAsState()
     val folders by repo.guildFolders.collectAsState()

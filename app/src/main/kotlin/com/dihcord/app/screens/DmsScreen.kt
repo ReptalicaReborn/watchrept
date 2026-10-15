@@ -23,6 +23,7 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
 import coil.ImageLoader
+import coil.imageLoader
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.dihcord.app.SetupPreferences
@@ -39,7 +40,7 @@ fun DmsScreen(
     val repo = context.discordApp.repository
     val listState = rememberScalingLazyListState()
     val scope = rememberCoroutineScope()
-    val imageLoader = remember { ImageLoader.Builder(context).build() }
+    val imageLoader = context.imageLoader
 
     if (repo == null) return
     val dmChannels by repo.dmChannels.collectAsState()

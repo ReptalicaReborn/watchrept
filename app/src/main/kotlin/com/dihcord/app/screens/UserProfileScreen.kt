@@ -23,6 +23,7 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
 import coil.ImageLoader
+import coil.imageLoader
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import coil.decode.SvgDecoder
@@ -42,11 +43,7 @@ fun UserProfileScreen(
     val context = LocalContext.current
     val repo = context.discordApp.repository
     val listState = rememberScalingLazyListState()
-    val imageLoader = remember {
-        ImageLoader.Builder(context)
-            .components { add(SvgDecoder.Factory()) }
-            .build()
-    }
+    val imageLoader = context.imageLoader
     var user by remember { mutableStateOf(initialUser) }
     var loading by remember { mutableStateOf(initialUser == null) }
     var error by remember { mutableStateOf("") }

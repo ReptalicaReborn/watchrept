@@ -61,10 +61,12 @@ android {
     }
     buildTypes {
         release {
-            if (signingConfigs.findByName("release") != null) {
-                signingConfig signingConfigs.release
-            }
+            // Without a release keystore, sign with the debug key so the optimized (R8, non-debuggable)
+            // build is still installable. Debug builds are several times slower in Compose.
+            signingConfig signingConfigs.findByName("release") ?: signingConfigs.debug
             minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 }

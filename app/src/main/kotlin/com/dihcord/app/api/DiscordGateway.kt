@@ -168,9 +168,6 @@ class DiscordGateway(private val token: String) {
 
                 Op.DISPATCH -> {
                     if (t != null) {
-                        if (t == "TYPING_START") {
-                            android.util.Log.d("DiscordGateway", "TYPING_START raw payload: $d")
-                        }
                         handleDispatch(t, d as? JSONObject)
                     }
                 }

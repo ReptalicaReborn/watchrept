@@ -14,6 +14,7 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
 import coil.ImageLoader
+import coil.imageLoader
 import coil.compose.AsyncImage
 import coil.decode.ImageDecoderDecoder
 import coil.request.ImageRequest
@@ -46,12 +47,7 @@ fun EmojiStickerScreen(
     val listState = rememberScalingLazyListState()
     val scope = rememberCoroutineScope()
 
-    val imageLoader = remember {
-        ImageLoader.Builder(context)
-            .components {
-                add(ImageDecoderDecoder.Factory())
-            }.build()
-    }
+    val imageLoader = context.imageLoader
 
     var emojis by remember { mutableStateOf<List<GuildEmoji>>(emptyList()) }
     var stickers by remember { mutableStateOf<List<StickerItem>>(emptyList()) }

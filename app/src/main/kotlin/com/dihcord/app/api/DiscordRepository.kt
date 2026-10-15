@@ -834,10 +834,6 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                     }
 
                     is GatewayEvent.TypingStart -> {
-                        android.util.Log.d(
-                            "DiscordRepository",
-                            "TypingStart event: channel=${event.channelId}, user=${event.userId}"
-                        )
                         event.displayName?.let { userDisplayNames[event.userId] = it }
                         val updated = _typing.value.toMutableMap()
                         val users = (updated[event.channelId] ?: emptySet()) + event.userId
