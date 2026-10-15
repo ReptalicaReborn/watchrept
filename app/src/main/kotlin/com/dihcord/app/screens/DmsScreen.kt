@@ -122,7 +122,7 @@ fun DmsScreen(
             item { ScreenTitle("Direct Messages") }
 
             if (loading) {
-                item { CircularProgressIndicator() }
+                item { LoadingIndicator() }
             } else if (sortedDms.isEmpty()) {
                 item { Text("No DMs yet.", style = MaterialTheme.typography.bodySmall) }
             } else {

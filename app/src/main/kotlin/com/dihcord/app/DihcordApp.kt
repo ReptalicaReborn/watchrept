@@ -51,8 +51,6 @@ class DihcordApp : Application(), ImageLoaderFactory {
         super.onCreate()
         Perf.init(this)
         AppTheme.init(this)
-        UpdateChecker.start(this)
-        UpdateChecker.checkNow(this)
     }
 
     fun initRepository(token: String) {

@@ -68,7 +68,7 @@ fun ThreadListScreen(
 
             val current = active
             when {
-                current == null -> item { CircularProgressIndicator() }
+                current == null -> item { LoadingIndicator() }
                 current.isEmpty() && archived.isNullOrEmpty() -> item {
                     Text(
                         error.ifEmpty { "No active ${noun}s." },

@@ -6,8 +6,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
@@ -15,13 +15,12 @@ import androidx.compose.ui.unit.dp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
-import com.dihcord.app.ApkInstaller
+import com.dihcord.app.BuildConfig
 import com.dihcord.app.AppTheme
 import com.dihcord.app.NotificationService
 import com.dihcord.app.Perf
 import com.dihcord.app.Notifier
 import com.dihcord.app.SetupPreferences
-import com.dihcord.app.UpdateChecker
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.launch
 
@@ -33,9 +32,7 @@ fun SettingsScreen(
     val listState = rememberScalingLazyListState()
     val scope = rememberCoroutineScope()
     val repo = context.discordApp.repository
-    var downloading by remember { mutableStateOf(false) }
-    var downloadProgress by remember { mutableFloatStateOf(0f) }
-    var downloadError by remember { mutableStateOf("") }
+    var showThemes by remember { mutableStateOf(false) }
 
 
     var hideInaccessible by remember {
@@ -80,7 +77,6 @@ fun SettingsScreen(
     }
 
     var showLogoutConfirm by remember { mutableStateOf(false) }
-    val updateState by UpdateChecker.state.collectAsState()
 
     if (showLogoutConfirm) {
         ScreenScaffold(scrollState = rememberScalingLazyListState()) {
@@ -277,22 +273,42 @@ fun SettingsScreen(
             }
 
             item {
-                val presets = AppTheme.Preset.values()
                 Button(
-                    onClick = {
-                        AppTheme.setPreset(context, presets[(AppTheme.preset.ordinal + 1) % presets.size])
-                    },
+                    onClick = { showThemes = !showThemes },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.filledTonalButtonColors(),
-                    icon = {
-                        Box(
-                            modifier = Modifier
-                                .size(20.dp)
-                                .background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape)
+                    icon = { ThemeSwatch(AppTheme.preset, size = 20.dp) },
+                    secondaryLabel = {
+                        Text(
+                            if (showThemes) "Tap to close" else "Tap to change",
+                            style = MaterialTheme.typography.labelSmall
                         )
-                    },
-                    secondaryLabel = { Text("Tap to change colour", style = MaterialTheme.typography.labelSmall) }
+                    }
                 ) { Text("Theme: ${AppTheme.preset.label}") }
+            }
+
+            if (showThemes) {
+                val (colours, pride) = AppTheme.Preset.values().partition { !it.isPride }
+                listOf("Colours" to colours, "Pride" to pride).forEach { (title, presets) ->
+                    item { SectionHeader(title) }
+                    presets.chunked(4).forEach { row ->
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                            ) {
+                                row.forEach { p ->
+                                    ThemeSwatch(
+                                        preset = p,
+                                        size = 34.dp,
+                                        selected = p == AppTheme.preset,
+                                        onClick = { AppTheme.setPreset(context, p) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             item {
@@ -450,147 +466,8 @@ fun SettingsScreen(
             }
 
             item {
-                SectionHeader("Update")
-            }
-
-            item {
-                val statusText = when (val s = updateState) {
-                    is UpdateChecker.UpdateState.Idle -> "v${UpdateChecker.CURRENT_VERSION}"
-                    is UpdateChecker.UpdateState.Checking -> "Checking…"
-                    is UpdateChecker.UpdateState.UpToDate -> "v${UpdateChecker.CURRENT_VERSION}: up to date"
-                    is UpdateChecker.UpdateState.UpdateAvailable -> "v${s.release.tagName} available!"
-                    is UpdateChecker.UpdateState.Error -> "Check failed: ${s.message}"
-                }
-                val statusColor = when (updateState) {
-                    is UpdateChecker.UpdateState.UpdateAvailable -> MaterialTheme.colorScheme.primary
-                    is UpdateChecker.UpdateState.Error -> MaterialTheme.colorScheme.error
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                }
                 Text(
-                    text = statusText,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = statusColor,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            item {
-                Button(
-                    onClick = { UpdateChecker.checkNow(context) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp),
-                    enabled = updateState !is UpdateChecker.UpdateState.Checking,
-                    colors = ButtonDefaults.filledTonalButtonColors()
-                ) {
-                    Text(
-                        if (updateState is UpdateChecker.UpdateState.Checking) "Checking…" else "Check for updates",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-
-            if (updateState is UpdateChecker.UpdateState.UpdateAvailable) {
-                val release = (updateState as UpdateChecker.UpdateState.UpdateAvailable).release
-
-                if (release.apkUrl != null) {
-                    item {
-                        Button(
-                            onClick = {
-                                if (!downloading) {
-                                    downloading = true
-                                    downloadProgress = 0f
-                                    downloadError = ""
-                                    scope.launch {
-                                        ApkInstaller.downloadAndInstall(
-                                            context = context,
-                                            url = release.apkUrl,
-                                            onProgress = { p ->
-                                                downloadProgress = p
-                                            }
-                                        ).onFailure {
-                                            downloadError = it.message ?: "Download failed"
-                                        }
-                                        downloading = false
-                                    }
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(36.dp),
-                            enabled = !downloading,
-                            colors = ButtonDefaults.buttonColors()
-                        ) {
-                            Text(
-                                if (downloading) "Downloading…" else "Download & Install APK",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                    }
-
-                    if (downloading) {
-                        item {
-                            Column(modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 4.dp)) {
-                                LinearProgressIndicator(
-                                    progress = { downloadProgress },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(4.dp)
-                                )
-                                Text(
-                                    text = "${(downloadProgress * 100).toInt()}%",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-                    }
-
-                    if (downloadError.isNotEmpty()) {
-                        item {
-                            Text(
-                                downloadError,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                    }
-                }
-
-                item {
-                    Button(
-                        onClick = { ApkInstaller.openInPhoneBrowser(context, release.htmlUrl) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) {
-                        Text("Open release on phone", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-
-                item {
-                    Text(
-                        "Open on phone to download, then sideload via ADB:\nadb install Dihcord.apk",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 4.dp)
-                    )
-                }
-            }
-
-            item {
-                Text(
-                    "Dihcord v${UpdateChecker.CURRENT_VERSION}",
+                    "Dihcord v${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelSmall,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

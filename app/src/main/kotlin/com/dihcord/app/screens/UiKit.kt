@@ -1,14 +1,32 @@
 package com.dihcord.app.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Dp
+import androidx.wear.compose.material3.ColorScheme
+import com.dihcord.app.AppTheme
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.wear.compose.material3.CircularProgressIndicator
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.Text
 
@@ -59,4 +77,56 @@ fun SectionHeader(text: String, modifier: Modifier = Modifier) {
             .fillMaxWidth()
             .padding(top = 10.dp, bottom = 2.dp)
     )
+}
+
+/** A spinner centred across the full list width (a bare indicator in a list item drifts off-centre). */
+@Composable
+fun LoadingIndicator(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        CircularProgressIndicator(modifier = Modifier.size(32.dp))
+    }
+}
+
+/** A round preview of a theme: the flag's stripes for pride themes, the accent colour otherwise. */
+@Composable
+fun ThemeSwatch(
+    preset: AppTheme.Preset,
+    size: Dp,
+    selected: Boolean = false,
+    onClick: (() -> Unit)? = null
+) {
+    var m: Modifier = Modifier
+        .size(size)
+        .clip(CircleShape)
+    if (selected) m = m.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
+    if (onClick != null) m = m.clickable(onClick = onClick)
+    if (preset.isPride) {
+        Column(m) {
+            preset.stripes.forEach { c ->
+                Box(Modifier.fillMaxWidth().weight(1f).background(Color(c)))
+            }
+        }
+    } else {
+        Box(m.background(preset.accent?.let { Color(it) } ?: ColorScheme().primary))
+    }
+}
+
+/** A thin flag bar shown under the Home title while a pride theme is active; nothing otherwise. */
+@Composable
+fun PrideBar(modifier: Modifier = Modifier) {
+    val stripes = AppTheme.preset.stripes
+    if (stripes.isEmpty()) return
+    Row(
+        modifier
+            .fillMaxWidth(0.4f)
+            .height(4.dp)
+            .clip(RoundedCornerShape(2.dp))
+    ) {
+        stripes.forEach { c -> Box(Modifier.weight(1f).fillMaxSize().background(Color(c))) }
+    }
 }

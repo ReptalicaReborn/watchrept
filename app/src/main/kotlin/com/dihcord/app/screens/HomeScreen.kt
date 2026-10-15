@@ -81,7 +81,10 @@ fun HomeScreen(
         ScalingLazyColumn(state = listState) {
 
             item {
-                ScreenTitle("Dihcord")
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    ScreenTitle("Dihcord")
+                    PrideBar(Modifier.padding(bottom = 4.dp))
+                }
             }
 
             item {

@@ -7,8 +7,8 @@ Dihcord is a third-party Discord client for Wear OS (Compose for Wear OS, Materi
 
 ## Features
 Messages, embeds, replies, forwarded messages, threads, DMs, server emoji/stickers, profile images,
-voice-message playback and recording, photo uploads, pinned/hidden servers, in-app updates,
-tap-to-enlarge images (zoom, save to gallery), colour themes with an AMOLED-black option, opt-in background notifications for DMs and
+voice-message playback and recording, photo uploads, pinned/hidden servers,
+tap-to-enlarge images (zoom, save to gallery), colour and pride flag themes with an AMOLED-black option, opt-in background notifications for DMs and
 mentions with inline reply, a mentions tile and a watch-face complication.
 Not supported: voice calls, joining servers, bot commands.
 

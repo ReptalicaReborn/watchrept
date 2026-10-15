@@ -174,7 +174,7 @@ fun PhotoPickerScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 item {
-                    CircularProgressIndicator()
+                    LoadingIndicator()
                 }
                 item {
                     Text(

@@ -114,7 +114,7 @@ fun EmojiStickerScreen(
             if (showStickers) {
                 val sets = stickerSets
                 when {
-                    sets == null -> item { CircularProgressIndicator() }
+                    sets == null -> item { LoadingIndicator() }
                     q.isNotEmpty() -> {
                         val hits = sets.flatMap { set -> set.items.map { it to set.guildId } }
                             .filter { (s, _) -> s.name.lowercase().contains(q) }
@@ -150,7 +150,7 @@ fun EmojiStickerScreen(
 
                 val sets = emojiSets
                 when {
-                    sets == null -> item { CircularProgressIndicator() }
+                    sets == null -> item { LoadingIndicator() }
                     q.isNotEmpty() -> {
                         val hits = sets.flatMap { set -> set.items.map { it to set.guildId } }
                             .filter { (e, _) -> e.name.lowercase().contains(q) }

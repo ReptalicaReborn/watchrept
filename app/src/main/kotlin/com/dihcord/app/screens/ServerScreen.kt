@@ -254,7 +254,7 @@ fun ServerScreen(
             }
 
             when {
-                loading && guilds.isEmpty() -> item { CircularProgressIndicator() }
+                loading && guilds.isEmpty() -> item { LoadingIndicator() }
                 entries.isEmpty() -> item {
                     Text(
                         if (folderKey == null) "No servers found." else "This folder is empty.",

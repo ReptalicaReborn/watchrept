@@ -131,7 +131,7 @@ fun ServerChannels(
             }
 
             when {
-                loading -> item { CircularProgressIndicator() }
+                loading -> item { LoadingIndicator() }
                 error.isNotEmpty() -> item {
                     Text(
                         error, color = MaterialTheme.colorScheme.error,
