@@ -161,7 +161,9 @@ fun ChatScreen(
         }
     }
 
-    val canSend = remember(channelId) { repo.canSendMessage(channelId) }
+    // Optimistic until the permission check (which may need a couple of requests) finishes.
+    var canSend by remember(channelId) { mutableStateOf(true) }
+    LaunchedEffect(channelId) { canSend = repo.canSendMessage(channelId) }
 
 
     LaunchedEffect(channelId) {
@@ -2029,6 +2031,7 @@ private fun MediaImage(
     imageLoader: ImageLoader,
     size: Dp = 120.dp
 ) {
+    var viewing by remember { mutableStateOf(false) }
     AsyncImage(
         model = ImageRequest.Builder(LocalContext.current)
             .data(url).crossfade(true).build(),
@@ -2038,7 +2041,9 @@ private fun MediaImage(
         modifier = Modifier
             .padding(top = 2.dp)
             .size(size)
+            .clickable { viewing = true }
     )
+    if (viewing) ImageViewer(url, contentDesc, imageLoader) { viewing = false }
 }
 
 @Composable
@@ -2125,6 +2130,7 @@ private fun EmbedCard(embed: Embed, imageLoader: ImageLoader) {
         }
 
         val imgUrl = embed.displayImageUrl
+        var viewingEmbedImage by remember { mutableStateOf(false) }
         if (imgUrl != null) {
             Spacer(Modifier.height(4.dp))
             AsyncImage(
@@ -2137,7 +2143,11 @@ private fun EmbedCard(embed: Embed, imageLoader: ImageLoader) {
                     .fillMaxWidth()
                     .heightIn(max = 120.dp)
                     .clip(RoundedCornerShape(4.dp))
+                    .clickable { viewingEmbedImage = true }
             )
+            if (viewingEmbedImage) {
+                ImageViewer(imgUrl, embed.title ?: "embed image", imageLoader) { viewingEmbedImage = false }
+            }
         }
 
         if (!embed.footerText.isNullOrBlank()) {

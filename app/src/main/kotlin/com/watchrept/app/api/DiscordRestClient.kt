@@ -75,6 +75,10 @@ class DiscordRestClient(private val token: String) {
             (0 until arr.length()).map { arr.getString(it) }
         }
 
+    suspend fun getGuildOwnerId(guildId: String): Result<String> = runCatching {
+        JSONObject(get("/guilds/$guildId")).getString("owner_id")
+    }
+
     suspend fun getGuildRoles(guildId: String): Result<List<GuildRole>> = runCatching {
         val guild = JSONObject(get("/guilds/$guildId"))
         GuildRole.listFromJson(guild.getJSONArray("roles"))

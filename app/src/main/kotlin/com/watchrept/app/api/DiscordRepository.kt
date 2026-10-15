@@ -139,30 +139,38 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     fun getChannelGuilds(): Map<String, String> = channelGuildCache.toMap()
     fun getMyRoles(guildId: String): List<String> = myRolesByGuild[guildId] ?: emptyList()
 
-    fun canSendMessage(channelId: String): Boolean {
+    private val guildOwnerCache = mutableMapOf<String, String>()
+
+    /**
+     * Whether the current user may post in [channelId], computed the way Discord does (base role
+     * permissions, then @everyone / role / member overwrites; administrators and the guild owner
+     * bypass everything). Fails open whenever something can't be determined, so the input box is only
+     * hidden when we are sure the server would reject the message; the server stays the authority.
+     */
+    suspend fun canSendMessage(channelId: String): Boolean {
         val channel = channelCache[channelId] ?: return true
-        if (channel.type == ChannelType.GUILD_NEWS) return false
+        if (channel.type != ChannelType.GUILD_TEXT && channel.type != ChannelType.GUILD_NEWS) return true
         val guildId = channel.guildId ?: return true
-        val overwrites = channel.permissionOverwrites
-        if (overwrites.isEmpty()) return true
+        val myId = currentUserId ?: return true
 
-        var allow = 0L
-        var deny = 0L
+        val ownerId = guildOwnerCache[guildId]
+            ?: (rest.getGuildOwnerId(guildId).getOrNull() ?: return true).also { guildOwnerCache[guildId] = it }
+        if (ownerId == myId) return true
 
-        overwrites.firstOrNull { it.type == 0 && it.id == guildId }?.let {
-            deny = deny or it.deny
-            allow = allow or it.allow
+        val roleIds = myRolesByGuild[guildId]
+            ?: (rest.getGuildMemberRoles(guildId, myId).getOrNull() ?: return true)
+                .also { myRolesByGuild[guildId] = it }
+        val roles = guildRolesCache.getOrPut(guildId) {
+            rest.getGuildRoles(guildId).getOrNull() ?: return true
         }
-
-        val myRoles = myRolesByGuild[guildId] ?: emptyList()
-        for (ow in overwrites.filter { it.type == 0 && it.id in myRoles }) {
-            deny = deny or ow.deny
-            allow = allow or ow.allow
-        }
-
-        if (allow and Permissions.SEND_MESSAGES != 0L) return true
-        if (deny and Permissions.SEND_MESSAGES != 0L) return false
-        return true
+        val perms = Permissions.effectiveForMember(
+            member = GuildMember(userId = myId, roleIds = roleIds),
+            guildId = guildId,
+            everyoneRoleId = guildId,
+            roles = roles,
+            channel = channel,
+        )
+        return Permissions.has(perms, Permissions.SEND_MESSAGES)
     }
 
     fun connect() {
