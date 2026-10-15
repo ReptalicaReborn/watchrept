@@ -2089,8 +2089,23 @@ private fun MediaImage(
     if (viewing) ImageViewer(url, contentDesc, imageLoader) { viewing = false }
 }
 
+/** Inline markdown (bold, italic, strikethrough, code) for one-line labels such as embed titles and field names. */
+private fun inlineMarkdown(text: String): androidx.compose.ui.text.AnnotatedString = buildAnnotatedString {
+    ContentParser.parseMarkdown(text).forEach { span ->
+        withStyle(
+            SpanStyle(
+                fontWeight = if (span.bold) androidx.compose.ui.text.font.FontWeight.Bold else null,
+                fontStyle = if (span.italic) androidx.compose.ui.text.font.FontStyle.Italic else null,
+                textDecoration = if (span.strikethrough) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                fontFamily = if (span.code) androidx.compose.ui.text.font.FontFamily.Monospace else null,
+            )
+        ) { append(span.text) }
+    }
+}
+
 @Composable
 private fun EmbedCard(embed: Embed, imageLoader: ImageLoader) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -2126,13 +2141,13 @@ private fun EmbedCard(embed: Embed, imageLoader: ImageLoader) {
             if (!embed.url.isNullOrBlank()) {
                 val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
                 Text(
-                    titleText,
+                    inlineMarkdown(titleText),
                     style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.primary),
                     modifier = Modifier.clickable { runCatching { uriHandler.openUri(embed.url) } }
                 )
             } else {
                 Text(
-                    titleText,
+                    inlineMarkdown(titleText),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -2141,14 +2156,8 @@ private fun EmbedCard(embed: Embed, imageLoader: ImageLoader) {
 
         embed.description?.let { descText ->
             Spacer(Modifier.height(2.dp))
-            Text(
-                descText,
-                style = MaterialTheme.typography.bodySmall.copy(
-                    fontSize = 11.sp,
-                    lineHeight = 13.sp
-                ),
-                color = MaterialTheme.colorScheme.onSurface
-            )
+            // Embed descriptions support the same markdown, emoji and mentions as messages.
+            MessageContent(content = descText, imageLoader = imageLoader, context = context)
         }
 
         if (embed.fields.isNotEmpty()) {
@@ -2156,18 +2165,11 @@ private fun EmbedCard(embed: Embed, imageLoader: ImageLoader) {
             embed.fields.forEach { field ->
                 Column(modifier = Modifier.padding(vertical = 1.dp)) {
                     Text(
-                        field.name,
+                        inlineMarkdown(field.name),
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Text(
-                        field.value,
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontSize = 10.sp,
-                            lineHeight = 12.sp
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    MessageContent(content = field.value, imageLoader = imageLoader, context = context)
                 }
             }
         }
