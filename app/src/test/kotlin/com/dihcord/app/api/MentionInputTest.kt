@@ -24,6 +24,26 @@ class MentionInputTest {
     }
 
     @Test
+    fun `detects an emoji being typed after two characters`() {
+        assertEquals(MentionInput.Active(':', "so"), MentionInput.active("hi :so"))
+        assertNull(MentionInput.active("hi :s"))      // too short
+        assertNull(MentionInput.active("hi :)"))      // emoticon
+        assertNull(MentionInput.active("hi :sob:"))   // finished
+        assertNull(MentionInput.active("time 12:30")) // not after a space
+    }
+
+    @Test
+    fun `emoji complete with their shown form and go out in wire form`() {
+        val e = MentionCandidate(
+            "1", "blobwave", "Server", MentionCandidate.Kind.EMOJI,
+            shownText = ":blobwave:", wireText = "<:blobwave:1>"
+        )
+        val text = MentionInput.complete("hey :blob", e)
+        assertEquals("hey :blobwave: ", text)
+        assertEquals("hey <:blobwave:1>", MentionInput.toWire(text.trim(), mapOf(e.shown to e.wire)))
+    }
+
+    @Test
     fun `channels complete and go out as channel links`() {
         val general = MentionCandidate("9", "general", "Text", MentionCandidate.Kind.CHANNEL)
         assertEquals("see #general ", MentionInput.complete("see #gen", general))

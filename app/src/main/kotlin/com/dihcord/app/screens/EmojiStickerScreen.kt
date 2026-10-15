@@ -30,7 +30,7 @@ import com.dihcord.app.api.StickerItem
 import com.dihcord.app.discordApp
 
 /** Common emoji with search keywords. */
-private val COMMON_UNICODE_EMOJI = listOf(
+internal val COMMON_UNICODE_EMOJI = listOf(
     "👍" to "thumbsup like yes", "👎" to "thumbsdown dislike no", "❤️" to "heart love red",
     "😂" to "joy laugh lol", "😮" to "wow open mouth surprised", "😢" to "cry sad tear",
     "😡" to "angry rage mad", "🎉" to "tada party celebrate", "🔥" to "fire lit hot",

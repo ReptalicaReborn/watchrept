@@ -1,19 +1,27 @@
 package com.dihcord.app.api
 
-/** Someone to @mention or a channel to #link. [username] is the secondary line (a channel's category). */
+/**
+ * Someone to @mention, a channel to #link or an emoji for ":name". [username] is the secondary line (a channel's
+ * category, an emoji's server). Emoji carry their own [shownText]/[wireText] and, for custom ones, an [imageUrl].
+ */
 data class MentionCandidate(
     val id: String,
     val displayName: String,
     val username: String,
-    val kind: Kind = Kind.USER
+    val kind: Kind = Kind.USER,
+    val imageUrl: String? = null,
+    val shownText: String? = null,
+    val wireText: String? = null,
 ) {
-    enum class Kind { USER, CHANNEL }
+    enum class Kind { USER, CHANNEL, EMOJI }
 
-    /** What the message box shows, e.g. "@Anna" or "#general". */
-    val shown: String get() = (if (kind == Kind.CHANNEL) "#" else "@") + displayName
+    /** What the message box shows, e.g. "@Anna", "#general" or ":blobwave:". */
+    val shown: String
+        get() = shownText ?: ((if (kind == Kind.CHANNEL) "#" else "@") + displayName)
 
-    /** What Discord receives: `<@id>` or `<#id>`. */
-    val wire: String get() = if (kind == Kind.CHANNEL) "<#$id>" else "<@$id>"
+    /** What Discord receives: `<@id>`, `<#id>` or `<:name:id>`. */
+    val wire: String
+        get() = wireText ?: if (kind == Kind.CHANNEL) "<#$id>" else "<@$id>"
 }
 
 /**
@@ -21,15 +29,17 @@ data class MentionCandidate(
  * back into Discord's `<@id>` / `<#id>` syntax when sending.
  */
 object MentionInput {
-    /** A mention being typed: [trigger] is '@' (people) or '#' (channels). */
+    /** A mention being typed: [trigger] is '@' (people), '#' (channels) or ':' (emoji). */
     data class Active(val trigger: Char, val query: String)
 
-    // "@partial" or "#partial" at the very end of the text, at the start or after whitespace.
-    private val ACTIVE = Regex("""(^|\s)([@#])([^\s@#]{0,32})$""")
+    // "@partial", "#partial" or ":partial" at the very end of the text, at the start or after whitespace.
+    private val ACTIVE = Regex("""(^|\s)([@#:])([^\s@#:]{0,32})$""")
 
-    /** The mention being typed at the end of [text], or null. */
+    /** The mention being typed at the end of [text], or null. Emoji need two characters, like Discord (so ":)" isn't one). */
     fun active(text: String): Active? =
-        ACTIVE.find(text)?.let { Active(it.groupValues[2].single(), it.groupValues[3]) }
+        ACTIVE.find(text)
+            ?.let { Active(it.groupValues[2].single(), it.groupValues[3]) }
+            ?.takeIf { it.trigger != ':' || it.query.length >= 2 }
 
     /** Replaces the trailing "@partial"/"#partial" with the candidate's shown form plus a space. */
     fun complete(text: String, candidate: MentionCandidate): String {

@@ -645,7 +645,7 @@ fun ChatScreen(
         }
     }
 
-    // Mention autocomplete: people for "@partial", channels for "#partial" at the end of the text.
+    // Autocomplete: people for "@partial", channels for "#partial", emoji for ":partial" at the end of the text.
     val mentionQuery = MentionInput.active(inputText)
     LaunchedEffect(mentionQuery) {
         val active = mentionQuery
@@ -654,6 +654,14 @@ fun ChatScreen(
             active.trigger == '#' -> if (guildId == null) emptyList() else {
                 delay(150)
                 repo.channelCandidates(guildId, active.query)
+            }
+            active.trigger == ':' -> {
+                delay(120)
+                emojiCandidates(
+                    repo, guildId, active.query,
+                    hasNitro = repo.currentUser.value?.hasNitro ?: false,
+                    linkFallback = SetupPreferences.getSendAnimatedAsGif(context)
+                )
             }
             else -> {
                 delay(250)

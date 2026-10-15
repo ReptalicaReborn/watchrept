@@ -466,8 +466,39 @@ fun SettingsScreen(
             }
 
             item {
+                SectionHeader("Changelog")
+            }
+
+            CHANGELOG.forEach { entry ->
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surfaceContainer,
+                                androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
+                            )
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            "v${entry.version} \u201C${entry.name}\u201D",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        entry.notes.forEach { note ->
+                            Text(
+                                "\u2022 $note",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
+            item {
                 Text(
-                    "Dihcord v${BuildConfig.VERSION_NAME}",
+                    "Dihcord v${BuildConfig.VERSION_NAME} \u201CRainfield\u201D",
                     style = MaterialTheme.typography.labelSmall,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -479,3 +510,10 @@ fun SettingsScreen(
         }
     }
 }
+
+/** One release in the in-app changelog, newest first in [CHANGELOG]. */
+private data class ChangelogEntry(val version: String, val name: String, val notes: List<String>)
+
+private val CHANGELOG = listOf(
+    ChangelogEntry("1.0", "Rainfield", listOf("Initial release")),
+)
