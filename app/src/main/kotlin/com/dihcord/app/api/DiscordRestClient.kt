@@ -60,8 +60,18 @@ class DiscordRestClient(private val token: String) {
         Guild.listFromJson(JSONArray(get("/users/@me/guilds?limit=200")))
     }
 
+    @Volatile private var myUserId: String? = null
+
+    /**
+     * The current user's membership (roles) in [guildId]. `/guilds/{id}/members/@me` is not a readable endpoint,
+     * so use the user-scoped one, falling back to the member lookup by the user's own id.
+     */
     suspend fun getGuildMember(guildId: String): Result<GuildMember> = runCatching {
-        GuildMember.fromJson(JSONObject(get("/guilds/$guildId/members/@me")))
+        runCatching { GuildMember.fromJson(JSONObject(get("/users/@me/guilds/$guildId/member"))) }
+            .getOrElse {
+                val me = myUserId ?: getCurrentUser().getOrThrow().id.also { myUserId = it }
+                GuildMember.fromJson(JSONObject(get("/guilds/$guildId/members/$me")))
+            }
     }
 
     suspend fun getGuildMember(guildId: String, userId: String): Result<GuildMember> = runCatching {
@@ -100,15 +110,15 @@ class DiscordRestClient(private val token: String) {
     ): Result<List<CategoryGroup>> = runCatching {
         val raw = Channel.listFromJson(JSONArray(get("/guilds/$guildId/channels")))
         val member = getGuildMember(guildId).getOrNull()
-        val roles = getGuildRoles(guildId).getOrNull()
+        val guild = runCatching { JSONObject(get("/guilds/$guildId")) }.getOrNull()
+        val roles = guild?.optJSONArray("roles")?.let { GuildRole.listFromJson(it) }
+        val ownerId = guild?.optString("owner_id")?.takeIf { it.isNotEmpty() }
 
         fun canView(channel: Channel): Boolean {
-            val overwrites = channel.permissionOverwrites
-            val everyoneOw = overwrites.firstOrNull { it.type == 0 && it.id == guildId }
-            if (everyoneOw != null && (everyoneOw.deny and Permissions.VIEW_CHANNEL) != 0L) {
-                if (member == null || roles == null) return false
-            }
+            // Role-gated servers deny @everyone and grant access through roles, so never guess "hidden":
+            // if we can't work out the user's roles, show the channel and let the server decide on open.
             if (member == null || roles == null) return true
+            if (ownerId != null && member.userId == ownerId) return true
 
             val perms = Permissions.effectiveForMember(
                 member = member,
