@@ -649,14 +649,20 @@ fun ChatScreen(
         }
     }
 
-    // Mention autocomplete: look people up while the text ends in "@partial".
-    val mentionQuery = MentionInput.activeQuery(inputText)
+    // Mention autocomplete: people for "@partial", channels for "#partial" at the end of the text.
+    val mentionQuery = MentionInput.active(inputText)
     LaunchedEffect(mentionQuery) {
-        if (mentionQuery == null) {
-            mentionSuggestions = emptyList()
-        } else {
-            delay(250)
-            mentionSuggestions = repo.mentionCandidates(channelId, guildId, mentionQuery)
+        val active = mentionQuery
+        mentionSuggestions = when {
+            active == null -> emptyList()
+            active.trigger == '#' -> if (guildId == null) emptyList() else {
+                delay(150)
+                repo.channelCandidates(guildId, active.query)
+            }
+            else -> {
+                delay(250)
+                repo.mentionCandidates(channelId, guildId, active.query)
+            }
         }
     }
 
@@ -969,7 +975,7 @@ fun ChatScreen(
                                     val newText = MentionInput.complete(inputText, c)
                                     inputText = newText
                                     pendingText = newText
-                                    pickedMentions = pickedMentions + ("@${c.displayName}" to "<@${c.id}>")
+                                    pickedMentions = pickedMentions + (c.shown to c.wire)
                                     mentionSuggestions = emptyList()
                                 }
                             }

@@ -80,14 +80,20 @@ fun ThreadScreen(
     var inputText by remember { mutableStateOf("") }
     var pickedMentions by remember(threadId) { mutableStateOf(mapOf<String, String>()) }
     var mentionSuggestions by remember(threadId) { mutableStateOf<List<MentionCandidate>>(emptyList()) }
-    // Mention autocomplete: look people up while the text ends in "@partial".
-    val mentionQuery = MentionInput.activeQuery(inputText)
+    // Mention autocomplete: people for "@partial", channels for "#partial" at the end of the text.
+    val mentionQuery = MentionInput.active(inputText)
     LaunchedEffect(mentionQuery) {
-        if (mentionQuery == null) {
-            mentionSuggestions = emptyList()
-        } else {
-            delay(250)
-            mentionSuggestions = repo.mentionCandidates(threadId, guildId, mentionQuery)
+        val active = mentionQuery
+        mentionSuggestions = when {
+            active == null -> emptyList()
+            active.trigger == '#' -> if (guildId == null) emptyList() else {
+                delay(150)
+                repo.channelCandidates(guildId, active.query)
+            }
+            else -> {
+                delay(250)
+                repo.mentionCandidates(threadId, guildId, active.query)
+            }
         }
     }
     var pendingText by remember { mutableStateOf("") }
@@ -501,7 +507,7 @@ fun ThreadScreen(
                         val newText = MentionInput.complete(inputText, c)
                         inputText = newText
                         pendingText = newText
-                        pickedMentions = pickedMentions + ("@${c.displayName}" to "<@${c.id}>")
+                        pickedMentions = pickedMentions + (c.shown to c.wire)
                         mentionSuggestions = emptyList()
                     }
                 }

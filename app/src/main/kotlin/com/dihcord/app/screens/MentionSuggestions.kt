@@ -16,7 +16,7 @@ import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.Text
 import com.dihcord.app.api.MentionCandidate
 
-/** Tappable "@name" suggestions shown above the message box while typing a mention. */
+/** Tappable "@name" / "#channel" suggestions shown above the message box while typing one. */
 @Composable
 fun MentionSuggestions(candidates: List<MentionCandidate>, onPick: (MentionCandidate) -> Unit) {
     if (candidates.isEmpty()) return
@@ -36,13 +36,13 @@ fun MentionSuggestions(candidates: List<MentionCandidate>, onPick: (MentionCandi
                     .padding(horizontal = 10.dp, vertical = 4.dp)
             ) {
                 Text(
-                    "@${c.displayName}",
+                    c.shown,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (c.username != c.displayName) {
+                if (c.username.isNotBlank() && c.username != c.displayName) {
                     Text(
                         c.username,
                         style = MaterialTheme.typography.labelSmall,

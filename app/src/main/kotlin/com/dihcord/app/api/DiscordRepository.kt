@@ -269,6 +269,19 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         return MentionInput.rank((local + remote).filter { it.id != myId }, query)
     }
 
+    /** Channels of [guildId] matching "#[query]" that the user can see (loads the channel list if needed). */
+    suspend fun channelCandidates(guildId: String, query: String): List<MentionCandidate> {
+        val groups = _guildChannelsMap.value[guildId]
+            ?: refreshGuildChannels(guildId).getOrNull()
+            ?: return emptyList()
+        val channels = groups.flatMap { g ->
+            g.channels.filter { it.hasAccess }.map {
+                MentionCandidate(it.id, it.name, g.category?.name.orEmpty(), MentionCandidate.Kind.CHANNEL)
+            }
+        }
+        return MentionInput.rank(channels, query)
+    }
+
     private val _newMessages = MutableSharedFlow<DiscordMessage>(extraBufferCapacity = 32)
 
     /** Every message received live over the gateway (including the user's own). */

@@ -1,27 +1,44 @@
 package com.dihcord.app.api
 
-/** Someone who can be @mentioned. */
-data class MentionCandidate(val id: String, val displayName: String, val username: String)
+/** Someone to @mention or a channel to #link. [username] is the secondary line (a channel's category). */
+data class MentionCandidate(
+    val id: String,
+    val displayName: String,
+    val username: String,
+    val kind: Kind = Kind.USER
+) {
+    enum class Kind { USER, CHANNEL }
+
+    /** What the message box shows, e.g. "@Anna" or "#general". */
+    val shown: String get() = (if (kind == Kind.CHANNEL) "#" else "@") + displayName
+
+    /** What Discord receives: `<@id>` or `<#id>`. */
+    val wire: String get() = if (kind == Kind.CHANNEL) "<#$id>" else "<@$id>"
+}
 
 /**
- * Mention autocomplete helpers. While typing, the input shows readable "@Name"; [toWire] turns those back into
- * Discord's `<@id>` syntax when sending.
+ * Mention autocomplete helpers. While typing, the input shows readable "@Name" / "#channel"; [toWire] turns those
+ * back into Discord's `<@id>` / `<#id>` syntax when sending.
  */
 object MentionInput {
-    // "@partial" at the very end of the text, at the start or after whitespace.
-    private val ACTIVE = Regex("""(^|\s)@([^\s@]{0,32})$""")
+    /** A mention being typed: [trigger] is '@' (people) or '#' (channels). */
+    data class Active(val trigger: Char, val query: String)
 
-    /** The partial name after a trailing "@", or null when the user isn't typing a mention. */
-    fun activeQuery(text: String): String? = ACTIVE.find(text)?.groupValues?.get(2)
+    // "@partial" or "#partial" at the very end of the text, at the start or after whitespace.
+    private val ACTIVE = Regex("""(^|\s)([@#])([^\s@#]{0,32})$""")
 
-    /** Replaces the trailing "@partial" with "@Name ". */
+    /** The mention being typed at the end of [text], or null. */
+    fun active(text: String): Active? =
+        ACTIVE.find(text)?.let { Active(it.groupValues[2].single(), it.groupValues[3]) }
+
+    /** Replaces the trailing "@partial"/"#partial" with the candidate's shown form plus a space. */
     fun complete(text: String, candidate: MentionCandidate): String {
         val m = ACTIVE.find(text) ?: return text
         val atIndex = m.range.first + m.groupValues[1].length
-        return text.substring(0, atIndex) + "@" + candidate.displayName + " "
+        return text.substring(0, atIndex) + candidate.shown + " "
     }
 
-    /** Swaps each picked "@Name" for its `<@id>` (longest names first so "@Ann" can't eat "@Anna"). */
+    /** Swaps each picked "@Name"/"#channel" for its wire form (longest first so "@Ann" can't eat "@Anna"). */
     fun toWire(text: String, picked: Map<String, String>): String =
         picked.entries.sortedByDescending { it.key.length }
             .fold(text) { acc, (shown, wire) -> acc.replace(shown, wire) }

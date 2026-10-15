@@ -11,10 +11,23 @@ class MentionInputTest {
 
     @Test
     fun `detects a mention being typed at the end`() {
-        assertEquals("an", MentionInput.activeQuery("hi @an"))
-        assertEquals("", MentionInput.activeQuery("@"))
-        assertNull(MentionInput.activeQuery("hi @anna "))   // finished
-        assertNull(MentionInput.activeQuery("mail@example")) // not after a space
+        assertEquals(MentionInput.Active('@', "an"), MentionInput.active("hi @an"))
+        assertEquals(MentionInput.Active('@', ""), MentionInput.active("@"))
+        assertNull(MentionInput.active("hi @anna "))   // finished
+        assertNull(MentionInput.active("mail@example")) // not after a space
+    }
+
+    @Test
+    fun `detects a channel being typed`() {
+        assertEquals(MentionInput.Active('#', "gen"), MentionInput.active("see #gen"))
+        assertNull(MentionInput.active("issue#12"))
+    }
+
+    @Test
+    fun `channels complete and go out as channel links`() {
+        val general = MentionCandidate("9", "general", "Text", MentionCandidate.Kind.CHANNEL)
+        assertEquals("see #general ", MentionInput.complete("see #gen", general))
+        assertEquals("see <#9> now", MentionInput.toWire("see #general now", mapOf(general.shown to general.wire)))
     }
 
     @Test
