@@ -12,12 +12,12 @@ import java.io.IOException
 
 val DiscordJson = Json { ignoreUnknownKeys = true }
 
-/** Minimal Discord REST client. Authenticates as a bot (user tokens are against Discord's ToS). */
-class DiscordApi(private val token: String, private val http: OkHttpClient) {
+/** Minimal Discord REST client. Bot tokens need a "Bot " prefix; user tokens are sent raw. */
+class DiscordApi(private val token: String, private val isBot: Boolean, private val http: OkHttpClient) {
 
     private suspend fun <T> call(request: Request.Builder, parse: (String) -> T): T =
         withContext(Dispatchers.IO) {
-            val req = request.header("Authorization", "Bot $token").build()
+            val req = request.header("Authorization", if (isBot) "Bot $token" else token).build()
             http.newCall(req).execute().use { res ->
                 val body = res.body?.string().orEmpty()
                 if (!res.isSuccessful) throw IOException("Discord ${res.code}: ${body.take(120)}")

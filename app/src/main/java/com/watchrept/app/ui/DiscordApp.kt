@@ -91,23 +91,29 @@ fun DiscordApp(vm: DiscordViewModel) {
 }
 
 @Composable
-private fun LoginScreen(error: String?, onLogin: (String) -> Unit) {
+private fun LoginScreen(error: String?, onLogin: (String, Boolean) -> Unit) {
     var token by remember { mutableStateOf("") }
+    var isBot by remember { mutableStateOf(false) }
     Column(
         Modifier.fillMaxSize().padding(horizontal = 24.dp),
         verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("Bot token", style = MaterialTheme.typography.title3)
+        Text("Token", style = MaterialTheme.typography.title3)
         TextInput(
             value = token,
             onValueChange = { token = it },
             hint = "Paste token",
             transformation = PasswordVisualTransformation(),
-            onDone = { onLogin(token) },
+            onDone = { onLogin(token, isBot) },
         )
         error?.let { Text(it, color = MaterialTheme.colors.error, style = MaterialTheme.typography.caption2) }
-        Chip(label = { Text("Connect") }, onClick = { onLogin(token) })
+        Chip(
+            label = { Text(if (isBot) "Bot account" else "User account") },
+            colors = ChipDefaults.secondaryChipColors(),
+            onClick = { isBot = !isBot },
+        )
+        Chip(label = { Text("Connect") }, onClick = { onLogin(token, isBot) })
     }
 }
 

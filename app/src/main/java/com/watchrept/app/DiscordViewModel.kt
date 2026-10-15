@@ -35,14 +35,15 @@ class DiscordViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<UiState> = _state
 
     init {
-        store.token?.let { connect(it) }
+        store.token?.let { connect(it, store.isBot) }
     }
 
-    fun login(token: String) {
+    fun login(token: String, isBot: Boolean) {
         val t = token.trim()
         if (t.isEmpty()) return
         store.token = t
-        connect(t)
+        store.isBot = isBot
+        connect(t, isBot)
     }
 
     fun logout() {
@@ -53,10 +54,10 @@ class DiscordViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = UiState()
     }
 
-    private fun connect(token: String) {
-        api = DiscordApi(token, http)
+    private fun connect(token: String, isBot: Boolean) {
+        api = DiscordApi(token, isBot, http)
         gateway?.stop()
-        gateway = Gateway(token, http, viewModelScope).also { gw ->
+        gateway = Gateway(token, isBot, http, viewModelScope).also { gw ->
             gw.start()
             viewModelScope.launch {
                 gw.messages.collect { m ->

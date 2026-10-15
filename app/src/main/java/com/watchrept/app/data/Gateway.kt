@@ -21,6 +21,7 @@ import okhttp3.WebSocketListener
 /** Minimal Discord Gateway connection that surfaces MESSAGE_CREATE events. No resume support: reconnects fresh. */
 class Gateway(
     private val token: String,
+    private val isBot: Boolean,
     private val http: OkHttpClient,
     private val scope: CoroutineScope,
 ) {
@@ -95,7 +96,9 @@ class Gateway(
 
     private fun heartbeatPayload() = """{"op":1,"d":${sequence ?: "null"}}"""
 
-    private fun identify() = """{"op":2,"d":{"token":"$token","intents":$INTENTS,""" +
+    // Intents are only used (and required) for bots; user accounts receive events for all their guilds.
+    private fun identify() = """{"op":2,"d":{"token":"$token",""" +
+        (if (isBot) """"intents":$INTENTS,""" else "") +
         """"properties":{"os":"wearos","browser":"watchrept","device":"watchrept"}}}"""
 
     private companion object {
