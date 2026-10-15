@@ -61,6 +61,16 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     private val _dmChannels = MutableStateFlow<List<Channel>>(loadCachedDmChannels())
     val dmChannels: StateFlow<List<Channel>> = _dmChannels.asStateFlow()
 
+    private val _guildFolders = MutableStateFlow<List<GuildFolder>>(emptyList())
+    /** The user's server folder layout from Discord; empty until known. */
+    val guildFolders: StateFlow<List<GuildFolder>> = _guildFolders.asStateFlow()
+
+    /** Fetches the folder layout over REST if the gateway hasn't provided it. */
+    suspend fun refreshGuildFolders() {
+        if (_guildFolders.value.isNotEmpty()) return
+        rest.getGuildFolders().onSuccess { if (it.isNotEmpty()) _guildFolders.value = it }
+    }
+
     private val _channelNames = MutableStateFlow<Map<String, String>>(emptyMap())
     val channelNames: StateFlow<Map<String, String>> = _channelNames.asStateFlow()
 
@@ -710,6 +720,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                     is GatewayEvent.Ready -> {
                         _currentUser.value = event.user
                         currentUserId = event.user.id
+                        if (event.folders.isNotEmpty()) _guildFolders.value = event.folders
                         if (event.readState.isNotEmpty()) {
                             _readState.value = event.readState
                             event.readState.filter { it.value.mentionCount > 0 }

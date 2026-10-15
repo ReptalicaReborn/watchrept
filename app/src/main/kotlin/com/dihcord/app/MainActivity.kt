@@ -243,9 +243,22 @@ class MainActivity : ComponentActivity() {
 
                         composable("servers") {
                             activeChannelId = null
-                            ServerScreen(onNavigateToChannels = { gId, gName ->
-                                navController.navigate("ServerChannels/$gId/$gName")
-                            })
+                            ServerScreen(
+                                onNavigateToChannels = { gId, gName ->
+                                    navController.navigate("ServerChannels/$gId/$gName")
+                                },
+                                onOpenFolder = { key -> navController.navigate("servers/folder/$key") }
+                            )
+                        }
+
+                        composable("servers/folder/{folderKey}") { back ->
+                            activeChannelId = null
+                            ServerScreen(
+                                folderKey = back.arguments?.getString("folderKey"),
+                                onNavigateToChannels = { gId, gName ->
+                                    navController.navigate("ServerChannels/$gId/$gName")
+                                }
+                            )
                         }
                     }
 

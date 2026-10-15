@@ -242,7 +242,10 @@ class DiscordGateway(private val token: String) {
                         runCatching { presences.add(UserPresence.fromJson(presArr.getJSONObject(i))) }
                     }
                 }
-                if (user != null) GatewayEvent.Ready(user, readState, presences) else null
+                val folders = d.optJSONObject("user_settings")?.optJSONArray("guild_folders")
+                    ?.let { GuildFolder.listFromJson(it) }
+                    .orEmpty()
+                if (user != null) GatewayEvent.Ready(user, readState, presences, folders) else null
             }
 
             "MESSAGE_CREATE" -> runCatching {
@@ -349,7 +352,8 @@ sealed class GatewayEvent {
     data class Ready(
         val user: DiscordUser,
         val readState: Map<String, ChannelUnreadState> = emptyMap(),
-        val presences: List<UserPresence> = emptyList()
+        val presences: List<UserPresence> = emptyList(),
+        val folders: List<GuildFolder> = emptyList()
     ) : GatewayEvent()
 
     data class MessageCreate(

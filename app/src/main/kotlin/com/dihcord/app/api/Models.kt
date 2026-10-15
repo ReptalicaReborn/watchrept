@@ -1057,6 +1057,38 @@ data class DiscordMessage(
     }
 }
 
+/**
+ * One entry of the user's server sidebar layout (Discord's `guild_folders` setting). Entries with a null
+ * [id] and a single guild are plain servers; everything else is a folder.
+ */
+data class GuildFolder(
+    val id: String?,
+    val name: String?,
+    val color: Int?,
+    val guildIds: List<String>
+) {
+    val isFolder: Boolean get() = id != null || guildIds.size > 1
+
+    /** Stable key for navigation: the folder id, or its first guild for id-less entries. */
+    val key: String get() = id ?: guildIds.firstOrNull().orEmpty()
+
+    companion object {
+        fun fromJson(o: JSONObject): GuildFolder? {
+            val arr = o.optJSONArray("guild_ids") ?: return null
+            val ids = (0 until arr.length()).map { arr.get(it).toString() }
+            return GuildFolder(
+                id = if (o.isNull("id")) null else o.get("id").toString(),
+                name = if (o.isNull("name")) null else o.optString("name").takeIf { it.isNotBlank() },
+                color = if (o.isNull("color")) null else o.optInt("color"),
+                guildIds = ids
+            )
+        }
+
+        fun listFromJson(arr: JSONArray): List<GuildFolder> =
+            (0 until arr.length()).mapNotNull { runCatching { fromJson(arr.getJSONObject(it)) }.getOrNull() }
+    }
+}
+
 data class Ping(
     val message: DiscordMessage,
     val channelName: String,

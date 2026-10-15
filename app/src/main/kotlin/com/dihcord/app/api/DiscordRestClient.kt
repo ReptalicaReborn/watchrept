@@ -75,6 +75,12 @@ class DiscordRestClient(private val token: String) {
             (0 until arr.length()).map { arr.getString(it) }
         }
 
+    /** The user's server folder layout; used when the gateway READY didn't include it. */
+    suspend fun getGuildFolders(): Result<List<GuildFolder>> = runCatching {
+        val arr = JSONObject(get("/users/@me/settings")).optJSONArray("guild_folders") ?: JSONArray()
+        GuildFolder.listFromJson(arr)
+    }
+
     suspend fun getGuildOwnerId(guildId: String): Result<String> = runCatching {
         JSONObject(get("/guilds/$guildId")).getString("owner_id")
     }
