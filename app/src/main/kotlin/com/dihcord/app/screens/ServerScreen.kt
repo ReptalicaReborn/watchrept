@@ -12,6 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
@@ -37,12 +38,14 @@ import com.dihcord.app.api.Guild
 import com.dihcord.app.api.Ping
 import com.dihcord.app.api.ServerEntry
 import com.dihcord.app.api.ServerLayout
+import com.dihcord.app.api.orderKey
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.launch
 
 private val DiscordBlurple = Color(0xFF5865F2)
 private val MentionRed = Color(0xFFF23F43)
 private val TileSize = 48.dp
+private val TileSizeNoLabel = 54.dp
 
 /**
  * Servers as a launcher-style honeycomb of round icons, mirroring the user's Discord folders.
@@ -86,6 +89,9 @@ fun ServerScreen(
     var mutedIds by remember { mutableStateOf(SetupPreferences.getMutedServers(context)) }
     var showHidden by remember { mutableStateOf(false) }
     var menuGuild by remember { mutableStateOf<Guild?>(null) }
+    var menuFolder by remember { mutableStateOf<ServerEntry.Folder?>(null) }
+    var customOrder by remember { mutableStateOf(SetupPreferences.getServerOrder(context)) }
+    val showNames = remember { SetupPreferences.getShowServerNames(context) }
 
     LaunchedEffect(Unit) {
         scope.launch {
@@ -95,8 +101,10 @@ fun ServerScreen(
         scope.launch { repo.refreshGuildFolders() }
     }
 
-    val allEntries = remember(guilds, folders, pinnedIds, hiddenIds, showHidden) {
-        ServerLayout.build(guilds, folders, pinnedIds, hiddenIds, showHidden)
+    val allEntries = remember(guilds, folders, pinnedIds, hiddenIds, showHidden, customOrder) {
+        ServerLayout.applyCustomOrder(
+            ServerLayout.build(guilds, folders, pinnedIds, hiddenIds, showHidden), customOrder, pinnedIds
+        )
     }
     val openFolder = remember(allEntries, folderKey) {
         folderKey?.let { key ->
@@ -105,7 +113,9 @@ fun ServerScreen(
     }
     val entries: List<ServerEntry> = when {
         folderKey == null -> allEntries
-        openFolder != null -> openFolder.guilds.map { ServerEntry.Single(it) }
+        openFolder != null -> ServerLayout.applyCustomOrder(
+            openFolder.guilds.map { ServerEntry.Single(it) }, customOrder, pinnedIds
+        )
         else -> emptyList()
     }
     val title = when {
@@ -114,10 +124,20 @@ fun ServerScreen(
         else -> "Folder"
     }
 
+    // Moving keeps the menu open so a server can be moved several places in a row.
+    fun move(entry: ServerEntry, delta: Int) {
+        val updated = ServerLayout.moveInOrder(entries.map { it.orderKey }, entry.orderKey, delta, customOrder)
+        if (updated != customOrder) {
+            SetupPreferences.setServerOrder(context, updated)
+            customOrder = updated
+        }
+    }
+
     val activeMenu = menuGuild
     if (activeMenu != null) {
+        val idx = entries.indexOfFirst { it.orderKey == activeMenu.id }
         ServerMenu(
-            guild = activeMenu,
+            title = activeMenu.name,
             isPinned = activeMenu.id in pinnedIds,
             isHidden = activeMenu.id in hiddenIds,
             isMuted = activeMenu.id in mutedIds,
@@ -137,7 +157,30 @@ fun ServerScreen(
                 mutedIds = SetupPreferences.getMutedServers(context)
                 menuGuild = null
             },
+            onMoveEarlier = if (idx >= 0 && ServerLayout.canMove(entries, idx, -1, pinnedIds)) {
+                { move(entries[idx], -1) }
+            } else null,
+            onMoveLater = if (idx >= 0 && ServerLayout.canMove(entries, idx, 1, pinnedIds)) {
+                { move(entries[idx], 1) }
+            } else null,
             onDismiss = { menuGuild = null }
+        )
+        return
+    }
+
+    val activeFolder = menuFolder
+    if (activeFolder != null) {
+        val idx = entries.indexOfFirst { it.orderKey == activeFolder.orderKey }
+        ServerMenu(
+            title = folderName(activeFolder),
+            listState = menuState,
+            onMoveEarlier = if (idx >= 0 && ServerLayout.canMove(entries, idx, -1, pinnedIds)) {
+                { move(entries[idx], -1) }
+            } else null,
+            onMoveLater = if (idx >= 0 && ServerLayout.canMove(entries, idx, 1, pinnedIds)) {
+                { move(entries[idx], 1) }
+            } else null,
+            onDismiss = { menuFolder = null }
         )
         return
     }
@@ -199,6 +242,7 @@ fun ServerScreen(
                                             isHidden = isHidden,
                                             isMuted = guild.id in mutedIds,
                                             mentionCount = guildMentionCounts[guild.id] ?: 0,
+                                            showName = showNames,
                                             onClick = { if (!isHidden) onNavigateToChannels(guild.id, guild.name) },
                                             onLongClick = { menuGuild = guild }
                                         )
@@ -208,6 +252,8 @@ fun ServerScreen(
                                         entry = entry,
                                         imageLoader = imageLoader,
                                         mentionCount = entry.guilds.sumOf { guildMentionCounts[it.id] ?: 0 },
+                                        showName = showNames,
+                                        onLongClick = { menuFolder = entry },
                                         onClick = { onOpenFolder(entry.folder.key) }
                                     )
                                 }
@@ -245,6 +291,7 @@ private fun folderName(entry: ServerEntry.Folder): String =
 private fun TileFrame(
     label: String,
     mentionCount: Int,
+    showName: Boolean = true,
     dimmed: Boolean = false,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
@@ -259,7 +306,7 @@ private fun TileFrame(
     ) {
         Box(
             modifier = Modifier
-                .size(TileSize)
+                .size(if (showName) TileSize else TileSizeNoLabel)
                 .combinedClickableCompat(onClick, onLongClick)
         ) {
             icon()
@@ -282,15 +329,17 @@ private fun TileFrame(
                 }
             }
         }
-        Text(
-            text = label,
-            fontSize = 9.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 2.dp)
-        )
+        if (showName) {
+            Text(
+                text = label,
+                fontSize = 9.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
     }
 }
 
@@ -306,12 +355,14 @@ private fun ServerTile(
     isHidden: Boolean,
     isMuted: Boolean,
     mentionCount: Int,
+    showName: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
     TileFrame(
         label = guild.name,
         mentionCount = if (isHidden) 0 else mentionCount,
+        showName = showName,
         dimmed = isHidden,
         onClick = onClick,
         onLongClick = onLongClick,
@@ -334,7 +385,7 @@ private fun ServerTile(
             }
         }
     ) {
-        GuildIcon(guild, imageLoader, size = TileSize, shape = CircleShape)
+        GuildIcon(guild, imageLoader, size = if (showName) TileSize else TileSizeNoLabel, shape = CircleShape)
     }
 }
 
@@ -343,13 +394,17 @@ private fun FolderTile(
     entry: ServerEntry.Folder,
     imageLoader: ImageLoader,
     mentionCount: Int,
+    showName: Boolean,
+    onLongClick: () -> Unit,
     onClick: () -> Unit
 ) {
     val accent = entry.folder.color?.let { Color(0xFF000000 or it.toLong()) } ?: DiscordBlurple
     TileFrame(
         label = folderName(entry),
         mentionCount = mentionCount,
-        onClick = onClick
+        showName = showName,
+        onClick = onClick,
+        onLongClick = onLongClick
     ) {
         Box(
             modifier = Modifier
@@ -408,23 +463,26 @@ private fun initials(name: String): String =
     name.split(Regex("\\s+")).filter { it.isNotEmpty() }.take(3).joinToString("") { it.first().toString() }
         .ifEmpty { "?" }
 
+/** Long-press menu for a server (all options) or a folder (move only: the pin/mute/hide callbacks are null). */
 @Composable
 private fun ServerMenu(
-    guild: Guild,
-    isPinned: Boolean,
-    isHidden: Boolean,
-    isMuted: Boolean,
+    title: String,
     listState: androidx.wear.compose.foundation.lazy.ScalingLazyListState,
-    onTogglePin: () -> Unit,
-    onToggleHidden: () -> Unit,
-    onToggleMuted: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onMoveEarlier: (() -> Unit)? = null,
+    onMoveLater: (() -> Unit)? = null,
+    isPinned: Boolean = false,
+    isHidden: Boolean = false,
+    isMuted: Boolean = false,
+    onTogglePin: (() -> Unit)? = null,
+    onToggleHidden: (() -> Unit)? = null,
+    onToggleMuted: (() -> Unit)? = null,
 ) {
     ScreenScaffold(scrollState = listState) {
         ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             item {
                 Text(
-                    guild.name,
+                    title,
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -432,9 +490,11 @@ private fun ServerMenu(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
-            item { MenuButton(if (isPinned) R.drawable.unpin else R.drawable.pin, if (isPinned) "Unpin" else "Pin to top", onTogglePin) }
-            item { MenuButton(R.drawable.mute, if (isMuted) "Unmute" else "Mute notifications", onToggleMuted) }
-            item { MenuButton(if (isHidden) R.drawable.unhide else R.drawable.hide, if (isHidden) "Unhide" else "Hide", onToggleHidden) }
+            onMoveEarlier?.let { move -> item { MoveButton("Move earlier", rotated = true, move) } }
+            onMoveLater?.let { move -> item { MoveButton("Move later", rotated = false, move) } }
+            onTogglePin?.let { item { MenuButton(if (isPinned) R.drawable.unpin else R.drawable.pin, if (isPinned) "Unpin" else "Pin to top", it) } }
+            onToggleMuted?.let { item { MenuButton(R.drawable.mute, if (isMuted) "Unmute" else "Mute notifications", it) } }
+            onToggleHidden?.let { item { MenuButton(if (isHidden) R.drawable.unhide else R.drawable.hide, if (isHidden) "Unhide" else "Hide", it) } }
             item {
                 Button(
                     onClick = onDismiss,
@@ -442,9 +502,31 @@ private fun ServerMenu(
                         .fillMaxWidth()
                         .height(36.dp),
                     colors = ButtonDefaults.filledTonalButtonColors()
-                ) { Text("Cancel") }
+                ) { Text("Done") }
             }
         }
+    }
+}
+
+@Composable
+private fun MoveButton(label: String, rotated: Boolean, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(36.dp),
+        colors = ButtonDefaults.filledTonalButtonColors()
+    ) {
+        Icon(
+            painter = painterResource(id = R.drawable.down),
+            tint = Color.White,
+            contentDescription = null,
+            modifier = Modifier
+                .size(16.dp)
+                .rotate(if (rotated) 180f else 0f)
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(label)
     }
 }
 

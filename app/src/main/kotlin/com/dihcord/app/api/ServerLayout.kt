@@ -6,7 +6,51 @@ sealed interface ServerEntry {
     data class Folder(val folder: GuildFolder, val guilds: List<Guild>) : ServerEntry
 }
 
+/** Stable key identifying an entry in the user's custom order: the server id, or "f:" + the folder key. */
+val ServerEntry.orderKey: String
+    get() = when (this) {
+        is ServerEntry.Single -> guild.id
+        is ServerEntry.Folder -> "f:" + folder.key
+    }
+
 object ServerLayout {
+    /**
+     * Applies the user's own order on top of [entries]. Pinned servers stay in front (ordered among themselves);
+     * anything not in [order] yet (e.g. a newly joined server) goes first, in its original order.
+     */
+    fun applyCustomOrder(entries: List<ServerEntry>, order: List<String>, pinnedIds: Set<String>): List<ServerEntry> {
+        if (order.isEmpty()) return entries
+        val index = HashMap<String, Int>(order.size * 2)
+        order.forEachIndexed { i, key -> index.putIfAbsent(key, i) }
+        fun rank(e: ServerEntry) = index[e.orderKey] ?: -1
+        val (pinned, rest) = entries.partition { it is ServerEntry.Single && it.guild.id in pinnedIds }
+        return pinned.sortedBy(::rank) + rest.sortedBy(::rank)
+    }
+
+    /**
+     * The stored order after moving [key] by [delta] places within the currently [displayedKeys].
+     * Keys not on screen keep their place behind the displayed ones; unchanged if the move isn't possible.
+     */
+    fun moveInOrder(displayedKeys: List<String>, key: String, delta: Int, stored: List<String>): List<String> {
+        val from = displayedKeys.indexOf(key)
+        if (from < 0) return stored
+        val to = (from + delta).coerceIn(0, displayedKeys.lastIndex)
+        if (to == from) return stored
+        val moved = displayedKeys.toMutableList().apply {
+            removeAt(from)
+            add(to, key)
+        }
+        return moved + stored.filter { it !in moved }
+    }
+
+    /** Whether entry [index] can move [delta] places without crossing between pinned and unpinned servers. */
+    fun canMove(entries: List<ServerEntry>, index: Int, delta: Int, pinnedIds: Set<String>): Boolean {
+        val neighbour = entries.getOrNull(index + delta) ?: return false
+        val me = entries.getOrNull(index) ?: return false
+        fun pinned(e: ServerEntry) = e is ServerEntry.Single && e.guild.id in pinnedIds
+        return pinned(me) == pinned(neighbour)
+    }
+
     /**
      * Orders servers the way the Discord sidebar does, from the user's folder layout:
      * pinned servers first, then servers missing from the layout (e.g. just joined), then the layout

@@ -217,6 +217,26 @@ object SetupPreferences {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { putBoolean(KEY_THEME_AMOLED, value) }
     }
 
+    private const val KEY_SERVER_ORDER = "server_order"
+    private const val KEY_SHOW_SERVER_NAMES = "show_server_names"
+
+    /** The user's own server/folder order (see ServerLayout.applyCustomOrder); empty until they move something. */
+    fun getServerOrder(context: Context): List<String> =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_SERVER_ORDER, null)
+            ?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
+
+    fun setServerOrder(context: Context, order: List<String>) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit { putString(KEY_SERVER_ORDER, order.joinToString(",")) }
+    }
+
+    fun getShowServerNames(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_SHOW_SERVER_NAMES, true)
+
+    fun setShowServerNames(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { putBoolean(KEY_SHOW_SERVER_NAMES, value) }
+    }
+
     fun isSetupComplete(context: Context): Boolean = getToken(context) != null
     private const val KEY_PINNED_SERVERS = "pinned_servers"
 

@@ -322,6 +322,22 @@ fun SettingsScreen(
             }
 
             item {
+                var showServerNames by remember { mutableStateOf(SetupPreferences.getShowServerNames(context)) }
+                SwitchButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    checked = showServerNames,
+                    onCheckedChange = {
+                        showServerNames = it
+                        SetupPreferences.setShowServerNames(context, it)
+                    },
+                    label = { Text("Server names", style = MaterialTheme.typography.bodySmall) },
+                    secondaryLabel = {
+                        Text("Show names under server icons", style = MaterialTheme.typography.labelSmall)
+                    }
+                )
+            }
+
+            item {
                 SwitchButton(
                     modifier = Modifier.fillMaxWidth(),
                     checked = AppTheme.amoled,
