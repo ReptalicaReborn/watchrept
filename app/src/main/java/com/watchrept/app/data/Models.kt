@@ -7,7 +7,17 @@ import kotlinx.serialization.Serializable
 data class Guild(val id: String, val name: String)
 
 @Serializable
-data class Channel(val id: String, val name: String? = null, val type: Int = 0, val position: Int = 0)
+data class Channel(
+    val id: String,
+    val name: String? = null,
+    val type: Int = 0,
+    val position: Int = 0,
+    val recipients: List<User> = emptyList(),
+    @SerialName("last_message_id") val lastMessageId: String? = null,
+) {
+    /** Channel name, or the participants for DMs and group DMs. */
+    val label get() = name ?: recipients.joinToString(", ") { it.displayName }
+}
 
 @Serializable
 data class User(
@@ -27,3 +37,5 @@ data class Message(
 )
 
 const val CHANNEL_TYPE_TEXT = 0
+const val CHANNEL_TYPE_DM = 1
+const val CHANNEL_TYPE_GROUP_DM = 3

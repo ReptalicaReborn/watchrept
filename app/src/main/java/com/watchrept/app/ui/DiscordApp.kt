@@ -38,6 +38,7 @@ import com.watchrept.app.DiscordViewModel
 
 private const val LOGIN = "login"
 private const val GUILDS = "guilds"
+private const val DMS = "dms"
 private const val CHANNELS = "channels"
 private const val CHAT = "chat"
 
@@ -67,13 +68,28 @@ fun DiscordApp(vm: DiscordViewModel) {
                             vm.openGuild(state.guilds[i].id)
                             nav.navigate(CHANNELS)
                         },
+                        header = if (state.isBot) null else "Direct Messages" to {
+                            vm.loadDms()
+                            nav.navigate(DMS)
+                        },
                         footer = "Log out" to vm::logout,
+                    )
+                }
+                composable(DMS) {
+                    ListScreen(
+                        title = "Direct Messages",
+                        items = state.dms.map { it.label },
+                        status = state.error ?: if (state.loading) "Loading…" else null,
+                        onClick = { i ->
+                            vm.openChannel(state.dms[i].id)
+                            nav.navigate(CHAT)
+                        },
                     )
                 }
                 composable(CHANNELS) {
                     ListScreen(
                         title = "Channels",
-                        items = state.channels.map { "# ${it.name}" },
+                        items = state.channels.map { "# ${it.label}" },
                         status = state.error ?: if (state.loading) "Loading…" else null,
                         onClick = { i ->
                             vm.openChannel(state.channels[i].id)
@@ -123,11 +139,15 @@ private fun ListScreen(
     items: List<String>,
     status: String?,
     onClick: (Int) -> Unit,
+    header: Pair<String, () -> Unit>? = null,
     footer: Pair<String, () -> Unit>? = null,
 ) {
     ScalingLazyColumn(Modifier.fillMaxSize(), state = rememberScalingLazyListState()) {
         item { Text(title, style = MaterialTheme.typography.title3) }
         status?.let { item { Text(it, style = MaterialTheme.typography.caption2) } }
+        header?.let { (label, action) ->
+            item { Chip(modifier = Modifier.fillMaxWidth(), label = { Text(label) }, onClick = action) }
+        }
         items(items.size) { i ->
             Chip(
                 modifier = Modifier.fillMaxWidth(),

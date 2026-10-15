@@ -2,7 +2,7 @@
 
 A third-party Discord client for Wear OS (Jetpack Compose for Wear OS).
 
-Browse servers and text channels, read recent messages, receive new ones live over the
+Browse servers, text channels and (user accounts only) DMs, read recent messages, receive new ones live over the
 Gateway, and send replies.
 
 ## Authentication

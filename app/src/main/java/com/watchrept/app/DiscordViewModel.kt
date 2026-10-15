@@ -17,9 +17,11 @@ import okhttp3.OkHttpClient
 
 data class UiState(
     val loggedIn: Boolean = false,
+    val isBot: Boolean = false,
     val loading: Boolean = false,
     val error: String? = null,
     val guilds: List<Guild> = emptyList(),
+    val dms: List<Channel> = emptyList(),
     val channels: List<Channel> = emptyList(),
     val messages: List<Message> = emptyList(),
 )
@@ -67,11 +69,13 @@ class DiscordViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-        _state.update { it.copy(loggedIn = true) }
+        _state.update { it.copy(loggedIn = true, isBot = isBot) }
         loadGuilds()
     }
 
     fun loadGuilds() = load { _state.update { s -> s.copy(guilds = api!!.guilds()) } }
+
+    fun loadDms() = load { _state.update { s -> s.copy(dms = api!!.dmChannels()) } }
 
     fun openGuild(id: String) {
         _state.update { it.copy(channels = emptyList()) }

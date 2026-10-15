@@ -37,6 +37,13 @@ class DiscordApi(private val token: String, private val isBot: Boolean, private 
             DiscordJson.decodeFromString(ListSerializer(Channel.serializer()), it)
         }.filter { it.type == CHANNEL_TYPE_TEXT }.sortedBy { it.position }
 
+    /** DMs and group DMs, most recently active first. User accounts only. */
+    suspend fun dmChannels(): List<Channel> =
+        call(Request.Builder().url(url("users/@me/channels"))) {
+            DiscordJson.decodeFromString(ListSerializer(Channel.serializer()), it)
+        }.filter { it.type == CHANNEL_TYPE_DM || it.type == CHANNEL_TYPE_GROUP_DM }
+            .sortedByDescending { it.lastMessageId?.toLongOrNull() ?: 0L }
+
     /** Oldest first. */
     suspend fun messages(channelId: String, limit: Int = 30): List<Message> =
         call(Request.Builder().url(url("channels/$channelId/messages?limit=$limit"))) {
