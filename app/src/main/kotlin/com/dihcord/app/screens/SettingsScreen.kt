@@ -73,7 +73,8 @@ fun SettingsScreen(
     val initialPerfMode = remember { SetupPreferences.getPerfMode(context) }
     var perfMode by remember { mutableStateOf(initialPerfMode) }
     val perfModeChanged = perfMode != initialPerfMode
-    val weakDevice = remember { Perf.isWeakDevice(context) }
+    val hardware = remember { Perf.hardware(context) }
+    val weakness = remember { Perf.weaknessReason(hardware) }
     var compactMode by remember {
         mutableStateOf(SetupPreferences.getCompactMode(context))
     }
@@ -171,7 +172,7 @@ fun SettingsScreen(
                             when {
                                 perfModeChanged -> "Restart the app to apply"
                                 perfMode == Perf.Mode.AUTO ->
-                                    if (weakDevice) "Auto: on for this watch" else "Auto: off for this watch"
+                                    if (weakness != null) "Auto: on (${weakness})" else "Auto: off (${hardware.summary})"
                                 perfMode == Perf.Mode.ON -> "Static GIFs, no extras, smaller pages"
                                 else -> "Full animations and effects"
                             },
