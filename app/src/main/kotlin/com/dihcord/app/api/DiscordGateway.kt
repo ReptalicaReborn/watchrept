@@ -337,6 +337,16 @@ class DiscordGateway(private val token: String) {
                 )
             }.getOrNull()
 
+            "MESSAGE_POLL_VOTE_ADD", "MESSAGE_POLL_VOTE_REMOVE" -> runCatching {
+                GatewayEvent.PollVote(
+                    channelId = d.getString("channel_id"),
+                    messageId = d.getString("message_id"),
+                    userId = d.getString("user_id"),
+                    answerId = d.getInt("answer_id"),
+                    add = eventName == "MESSAGE_POLL_VOTE_ADD"
+                )
+            }.getOrNull()
+
             "MESSAGE_REACTION_ADD" -> runCatching {
                 GatewayEvent.ReactionAdd(
                     messageId = d.getString("message_id"),
@@ -444,6 +454,13 @@ sealed class GatewayEvent {
     ) : GatewayEvent()
 
     data class MessageUpdate(val message: DiscordMessage) : GatewayEvent()
+    data class PollVote(
+        val channelId: String,
+        val messageId: String,
+        val userId: String,
+        val answerId: Int,
+        val add: Boolean
+    ) : GatewayEvent()
     data class MessageDelete(val id: String, val channelId: String) : GatewayEvent()
     data class ReactionAdd(
         val messageId: String,

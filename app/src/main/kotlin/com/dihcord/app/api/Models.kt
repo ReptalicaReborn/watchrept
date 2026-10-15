@@ -987,7 +987,8 @@ data class DiscordMessage(
     val forwardedStickers: List<StickerItem> = emptyList(),
     /** Non-null if this message started a thread. */
     val threadId: String? = null,
-    val threadMessageCount: Int = 0
+    val threadMessageCount: Int = 0,
+    val poll: Poll? = null
 ) {
     fun pingFor(userId: String, memberRoleIds: List<String> = emptyList()): Boolean =
         mentionEveryone ||
@@ -1121,7 +1122,8 @@ data class DiscordMessage(
                 forwardedStickers = fwdStickers,
                 threadId = o.optJSONObject("thread")?.optString("id")
                     ?.takeIf { it.isNotEmpty() && it != "null" },
-                threadMessageCount = o.optJSONObject("thread")?.optInt("message_count", 0) ?: 0
+                threadMessageCount = o.optJSONObject("thread")?.optInt("message_count", 0) ?: 0,
+                poll = o.optJSONObject("poll")?.let { runCatching { Poll.fromJson(it) }.getOrNull() }
             )
         }
 
@@ -1200,3 +1202,78 @@ data class Ping(
     val channelName: String,
     val guildName: String?
 )
+
+/** One choice in a [Poll]; [count]/[meVoted] come from the poll's results. */
+data class PollAnswer(
+    val id: Int,
+    val text: String,
+    val emoji: ReactionEmoji?,
+    val count: Int = 0,
+    val meVoted: Boolean = false
+)
+
+data class Poll(
+    val question: String,
+    val answers: List<PollAnswer>,
+    val expiry: String?,
+    val multiselect: Boolean,
+    val finalized: Boolean
+) {
+    val totalVotes: Int get() = answers.sumOf { it.count }
+    val iVoted: Boolean get() = answers.any { it.meVoted }
+
+    val expiryMillis: Long?
+        get() = expiry?.let { runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull() }
+
+    fun isClosed(now: Long = System.currentTimeMillis()): Boolean = finalized || (expiryMillis?.let { now >= it } ?: false)
+
+    /** Applies a vote event: one vote added to / removed from [answerId], [mine] when it was the current user's. */
+    fun withVote(answerId: Int, add: Boolean, mine: Boolean): Poll = copy(answers = answers.map { a ->
+        if (a.id != answerId) a else a.copy(
+            count = (a.count + if (add) 1 else -1).coerceAtLeast(0),
+            meVoted = if (mine) add else a.meVoted
+        )
+    })
+
+    /** The answer ids to send when the user taps [answerId]: toggles it, replacing the old pick unless [multiselect]. */
+    fun votesAfterTap(answerId: Int): List<Int> {
+        val mine = answers.filter { it.meVoted }.map { it.id }
+        return when {
+            answerId in mine -> mine - answerId
+            multiselect -> mine + answerId
+            else -> listOf(answerId)
+        }
+    }
+
+    companion object {
+        fun fromJson(o: JSONObject): Poll {
+            val results = o.optJSONObject("results")
+            val counts = HashMap<Int, Pair<Int, Boolean>>()
+            results?.optJSONArray("answer_counts")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val c = arr.getJSONObject(i)
+                    counts[c.getInt("id")] = c.optInt("count", 0) to c.optBoolean("me_voted", false)
+                }
+            }
+            val answersArr = o.optJSONArray("answers") ?: JSONArray()
+            val answers = (0 until answersArr.length()).map { i ->
+                val a = answersArr.getJSONObject(i)
+                val id = a.getInt("answer_id")
+                val media = a.optJSONObject("poll_media")
+                val emoji = media?.optJSONObject("emoji")?.let { e ->
+                    if (e.optString("name").isEmpty() && e.optString("id").let { it.isEmpty() || it == "null" }) null
+                    else ReactionEmoji.fromJson(e)
+                }
+                val (count, me) = counts[id] ?: (0 to false)
+                PollAnswer(id, media?.optString("text").orEmpty(), emoji, count, me)
+            }
+            return Poll(
+                question = o.optJSONObject("question")?.optString("text").orEmpty(),
+                answers = answers,
+                expiry = o.optString("expiry").takeIf { it.isNotEmpty() && it != "null" },
+                multiselect = o.optBoolean("allow_multiselect", false),
+                finalized = results?.optBoolean("is_finalized", false) ?: false
+            )
+        }
+    }
+}

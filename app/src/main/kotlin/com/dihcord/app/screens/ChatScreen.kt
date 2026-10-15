@@ -882,6 +882,12 @@ fun ChatScreen(
                                 scope.launch { repo.toggleReaction(channelId, msg.id, emoji) }
                             },
                             onShowReactors = { reaction -> reactorsFor = msg.id to reaction },
+                            onPollVote = if (canSend) { answerId ->
+                                scope.launch {
+                                    repo.votePoll(channelId, msg, answerId)
+                                        .onFailure { sendError = "Vote failed: ${it.message}" }
+                                }
+                            } else null,
                             onSwipeToReply = { msgToReply ->
                                 replyingTo = msgToReply
                             },
@@ -1498,6 +1504,7 @@ internal fun MessageBubble(
     myId: String = "",
     onReact: (ReactionEmoji) -> Unit,
     onShowReactors: ((Reaction) -> Unit)? = null,
+    onPollVote: ((answerId: Int) -> Unit)? = null,
     onSwipeToReply: ((DiscordMessage) -> Unit)? = null,
     onLongPress: () -> Unit,
     onAvatarClick: (userId: String) -> Unit = {},
@@ -1922,6 +1929,8 @@ internal fun MessageBubble(
                     .forEach { embed ->
                         EmbedCard(embed, imageLoader)
                     }
+
+                msg.poll?.let { poll -> PollCard(poll, onPollVote) }
 
                 if (msg.reactions.isNotEmpty()) {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -2733,5 +2742,98 @@ private fun DiscordAvatar(url: String?, displayName: String, imageLoader: ImageL
                 }
             }
         )
+    }
+}
+
+/**
+ * A poll: tap an answer to vote (tap again to take it back). Results show once you've voted or the poll has
+ * ended, like Discord; [onVote] null makes it read-only.
+ */
+@Composable
+private fun PollCard(poll: Poll, onVote: ((Int) -> Unit)?) {
+    val closed = poll.isClosed()
+    val showResults = closed || poll.iVoted
+    val total = poll.totalVotes
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(12.dp))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(poll.question, style = MaterialTheme.typography.labelMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+        poll.answers.forEach { a ->
+            val fraction = if (showResults && total > 0) a.count.toFloat() / total else 0f
+            val canTap = onVote != null && !closed
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .then(if (a.meVoted) Modifier.border(1.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp)) else Modifier)
+                    .then(if (canTap) Modifier.clickable { onVote?.invoke(a.id) } else Modifier)
+            ) {
+                if (fraction > 0f) {
+                    Box(Modifier.matchParentSize()) {
+                        Box(
+                            Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(fraction)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val emoji = a.emoji
+                    if (emoji?.imageUrl != null) {
+                        AsyncImage(model = emoji.imageUrl, contentDescription = emoji.name, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                    } else if (emoji != null) {
+                        Text(emoji.name, fontSize = 12.sp)
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    Text(
+                        a.text,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (showResults) {
+                        Text(
+                            "${(fraction * 100).roundToInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+        val footer = buildString {
+            append(if (total == 1) "1 vote" else "$total votes")
+            append(" \u00B7 ")
+            append(
+                when {
+                    closed -> "Final results"
+                    else -> poll.expiryMillis?.let { pollTimeLeft(it - System.currentTimeMillis()) } ?: "Open"
+                }
+            )
+            if (poll.multiselect && !closed) append(" \u00B7 pick any")
+        }
+        Text(footer, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+private fun pollTimeLeft(ms: Long): String {
+    val mins = ms / 60_000
+    return when {
+        mins < 1 -> "ends soon"
+        mins < 60 -> "${mins}m left"
+        mins < 48 * 60 -> "${mins / 60}h left"
+        else -> "${mins / (24 * 60)}d left"
     }
 }

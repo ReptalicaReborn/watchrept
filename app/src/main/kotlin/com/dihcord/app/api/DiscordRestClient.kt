@@ -417,6 +417,16 @@ class DiscordRestClient(private val token: String) {
         Unit
     }
 
+    /** Sets the user's poll answers ([answerIds] empty removes their vote). */
+    suspend fun votePoll(channelId: String, messageId: String, answerIds: List<Int>): Result<Unit> = runCatching {
+        val body = JSONObject().put("answer_ids", JSONArray(answerIds.map { it.toString() }))
+        execute(
+            buildRequest("/channels/$channelId/polls/$messageId/answers/@me")
+                .put(body.toString().toRequestBody(jsonMime)).build()
+        )
+        Unit
+    }
+
     /** Who reacted with [emojiKey] ([burst] = super reactions), up to [limit] people. */
     suspend fun getReactionUsers(
         channelId: String,

@@ -476,6 +476,9 @@ fun ThreadScreen(
                             scope.launch { repo.toggleReaction(threadId, msg.id, emoji) }
                         },
                         onShowReactors = { reaction -> reactorsFor = msg.id to reaction },
+                        onPollVote = { answerId ->
+                            scope.launch { repo.votePoll(threadId, msg, answerId) }
+                        },
                         onSwipeToReply = { msgToReply ->
                             replyingTo = msgToReply
                         },

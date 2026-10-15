@@ -316,6 +316,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                 when {
                     msg.attachments.isNotEmpty() -> "[attachment]"
                     msg.stickers.isNotEmpty() -> "[sticker]"
+                    msg.poll != null -> "[poll] ${msg.poll.question}"
                     else -> "[message]"
                 }
             }
@@ -616,6 +617,12 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         return result
     }
 
+
+    /** Votes for (or un-votes) [answerId]; the counts update from the gateway's vote events. */
+    suspend fun votePoll(channelId: String, message: DiscordMessage, answerId: Int): Result<Unit> {
+        val poll = message.poll ?: return Result.failure(IllegalStateException("Not a poll"))
+        return rest.votePoll(channelId, message.id, poll.votesAfterTap(answerId))
+    }
 
     suspend fun getStatus(): Result<Pair<String, String>> = rest.getStatus()
 
@@ -926,6 +933,19 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                                 if (it.id == updated.id) updated else it
                             } ?: return@update current
                             current + (updated.channelId to list)
+                        }
+                    }
+
+                    is GatewayEvent.PollVote -> {
+                        val mine = event.userId == currentUserId
+                        _messages.update { current ->
+                            val list = current[event.channelId]?.map {
+                                val poll = it.poll
+                                if (it.id == event.messageId && poll != null)
+                                    it.copy(poll = poll.withVote(event.answerId, event.add, mine))
+                                else it
+                            } ?: return@update current
+                            current + (event.channelId to list)
                         }
                     }
 
