@@ -1882,10 +1882,7 @@ private fun MessageContent(
                                         val style = SpanStyle(
                                             fontWeight = fontWeight,
                                             fontStyle = fontStyle,
-                                            textDecoration = when {
-                                                span.strikethrough -> TextDecoration.LineThrough
-                                                else -> null
-                                            },
+                                            textDecoration = markdownDecoration(span),
                                             background = if (span.code)
                                                 MaterialTheme.colorScheme.surfaceContainer
                                             else androidx.compose.ui.graphics.Color.Unspecified,
@@ -2089,14 +2086,23 @@ private fun MediaImage(
     if (viewing) ImageViewer(url, contentDesc, imageLoader) { viewing = false }
 }
 
-/** Inline markdown (bold, italic, strikethrough, code) for one-line labels such as embed titles and field names. */
+/** Strikethrough and/or underline for a markdown span (null when neither). */
+internal fun markdownDecoration(span: ContentParser.MarkdownSpan): TextDecoration? {
+    val parts = listOfNotNull(
+        TextDecoration.LineThrough.takeIf { span.strikethrough },
+        TextDecoration.Underline.takeIf { span.underline },
+    )
+    return if (parts.isEmpty()) null else TextDecoration.combine(parts)
+}
+
+/** Inline markdown (bold, italic, underline, strikethrough, code) for one-line labels such as embed titles and field names. */
 private fun inlineMarkdown(text: String): androidx.compose.ui.text.AnnotatedString = buildAnnotatedString {
     ContentParser.parseMarkdown(text).forEach { span ->
         withStyle(
             SpanStyle(
                 fontWeight = if (span.bold) androidx.compose.ui.text.font.FontWeight.Bold else null,
                 fontStyle = if (span.italic) androidx.compose.ui.text.font.FontStyle.Italic else null,
-                textDecoration = if (span.strikethrough) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                textDecoration = markdownDecoration(span),
                 fontFamily = if (span.code) androidx.compose.ui.text.font.FontFamily.Monospace else null,
             )
         ) { append(span.text) }

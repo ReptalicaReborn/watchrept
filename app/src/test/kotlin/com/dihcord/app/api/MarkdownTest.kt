@@ -27,4 +27,26 @@ class MarkdownTest {
         assertEquals("say hi now", spans.joinToString("") { it.text })
         assertTrue(spans.first { it.text == "hi" }.italic)
     }
+
+    @Test
+    fun `double underscores underline, like Discord`() {
+        val span = styled("__Hello__").single()
+        assertEquals("Hello", span.text)
+        assertTrue(span.underline)
+        assertTrue(!span.bold)
+    }
+
+    @Test
+    fun `single underscores are italic`() {
+        val span = styled("_Hello_").single()
+        assertEquals("Hello", span.text)
+        assertTrue(span.italic)
+    }
+
+    @Test
+    fun `underscores inside words are left alone`() {
+        val spans = styled("snake_case_name")
+        assertEquals("snake_case_name", spans.joinToString("") { it.text })
+        assertTrue(spans.none { it.italic })
+    }
 }

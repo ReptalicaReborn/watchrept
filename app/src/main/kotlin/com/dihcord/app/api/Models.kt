@@ -681,6 +681,7 @@ object ContentParser {
         val bold: Boolean = false,
         val italic: Boolean = false,
         val strikethrough: Boolean = false,
+        val underline: Boolean = false,
         val code: Boolean = false,
         val spoiler: Boolean = false,
         val subtext: Boolean = false,
@@ -707,7 +708,9 @@ object ContentParser {
                     """|(~~(.+?)~~)""" +
                     """|(```.+?```)|(`(.+?)`)""" +
                     """|(\|\|(.+?)\|\|)""" +
-                    """|(_{2}(.+?)_{2})""",
+                    """|(_{2}(.+?)_{2})""" +
+                    // _italic_ only at word boundaries, so snake_case_names stay untouched
+                    """|((?<!\w)_(?!_)(.+?)(?<!_)_(?!\w))""",
             setOf(RegexOption.DOT_MATCHES_ALL)
         )
         var cursor = 0
@@ -773,7 +776,14 @@ object ContentParser {
 
                 raw.startsWith("__") -> spans += MarkdownSpan(
                     match.groupValues[15],
-                    bold = true,
+                    underline = true,
+                    subtext = subtext,
+                    headingLevel = headingLevel
+                )
+
+                raw.startsWith("_") -> spans += MarkdownSpan(
+                    match.groupValues[17],
+                    italic = true,
                     subtext = subtext,
                     headingLevel = headingLevel
                 )

@@ -395,10 +395,7 @@ private fun BioContent(
                                 val style = SpanStyle(
                                     fontWeight = if (span.bold) androidx.compose.ui.text.font.FontWeight.Bold else null,
                                     fontStyle = if (span.italic) androidx.compose.ui.text.font.FontStyle.Italic else null,
-                                    textDecoration = when {
-                                        span.strikethrough -> androidx.compose.ui.text.style.TextDecoration.LineThrough
-                                        else -> null
-                                    }
+                                    textDecoration = markdownDecoration(span)
                                 )
                                 withStyle(style) { append(span.text) }
                             }
