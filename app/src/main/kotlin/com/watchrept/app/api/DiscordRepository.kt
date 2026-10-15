@@ -1,0 +1,825 @@
+package com.watchrept.app.api
+
+import android.content.Context
+import android.content.SharedPreferences
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import com.watchrept.app.SetupPreferences
+import org.json.JSONArray
+import org.json.JSONObject
+
+class DiscordRepository(token: String, private val context: Context? = null) {
+
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val rest = DiscordRestClient(token)
+    private val gateway = DiscordGateway(token)
+
+    private val prefs: SharedPreferences? =
+        context?.getSharedPreferences("discord_wear_cache", Context.MODE_PRIVATE)
+
+    private val _currentUser = MutableStateFlow<DiscordUser?>(null)
+    val currentUser: StateFlow<DiscordUser?> = _currentUser.asStateFlow()
+
+    private val _isTokenInvalid = MutableStateFlow(false)
+    val isTokenInvalid: StateFlow<Boolean> = _isTokenInvalid.asStateFlow()
+
+    fun handleApiError(e: Throwable) {
+        if (e is DiscordApiException && e.httpCode == 401) {
+            _isTokenInvalid.value = true
+        }
+    }
+
+    @Volatile
+    private var currentUserId: String? = null
+
+    private val _guilds = MutableStateFlow<List<Guild>>(loadCachedGuilds())
+    val guilds: StateFlow<List<Guild>> = _guilds.asStateFlow()
+
+    private val _dmChannels = MutableStateFlow<List<Channel>>(loadCachedDmChannels())
+    val dmChannels: StateFlow<List<Channel>> = _dmChannels.asStateFlow()
+
+    private val _channelNames = MutableStateFlow<Map<String, String>>(emptyMap())
+    val channelNames: StateFlow<Map<String, String>> = _channelNames.asStateFlow()
+
+    private val _channelGuilds = MutableStateFlow<Map<String, String>>(emptyMap())
+    val channelGuilds: StateFlow<Map<String, String>> = _channelGuilds.asStateFlow()
+
+    private val _guildChannelsMap = MutableStateFlow<Map<String, List<CategoryGroup>>>(emptyMap())
+    val guildChannelsMap: StateFlow<Map<String, List<CategoryGroup>>> =
+        _guildChannelsMap.asStateFlow()
+
+    suspend fun refreshGuildChannels(
+        guildId: String,
+        filterInaccessible: Boolean = false
+    ): Result<List<CategoryGroup>> {
+        val hideInaccessible =
+            context?.let { SetupPreferences.getHideInaccessibleChannels(it) } ?: filterInaccessible
+        return rest.getGuildChannels(guildId, hideInaccessible).onSuccess { groups ->
+            cacheChannelNames(groups)
+            saveChannels(guildId, groups)
+            _guildChannelsMap.update { current -> current + (guildId to groups) }
+        }.onFailure { handleApiError(it) }
+    }
+
+    private val _messages = MutableStateFlow<Map<String, List<DiscordMessage>>>(emptyMap())
+    val messages: StateFlow<Map<String, List<DiscordMessage>>> = _messages.asStateFlow()
+
+    private val _typing = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
+    val typing: StateFlow<Map<String, Set<String>>> = _typing.asStateFlow()
+
+    private val _pings = MutableStateFlow<List<Ping>>(emptyList())
+    val pings: StateFlow<List<Ping>> = _pings.asStateFlow()
+
+    private val _readState = MutableStateFlow<Map<String, ChannelUnreadState>>(emptyMap())
+    val readState: StateFlow<Map<String, ChannelUnreadState>> = _readState.asStateFlow()
+
+    private val emojiCache = object : LinkedHashMap<String, List<GuildEmoji>>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, List<GuildEmoji>>?) =
+            size > 10 // Keep max 10 guilds' emojis in cache
+    }
+    private val stickerCache = object : LinkedHashMap<String, List<StickerItem>>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, List<StickerItem>>?) =
+            size > 10 // Keep max 10 guilds' stickers in cache
+    }
+    private val channelNameCache = mutableMapOf<String, String>()
+    private val channelGuildCache = mutableMapOf<String, String>()
+    private val memberRolesCache = object : LinkedHashMap<String, List<String>>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, List<String>>?) =
+            size > 100 // Max 100 user role lookups cached
+    }
+    private val guildRolesCache = object : LinkedHashMap<String, List<GuildRole>>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, List<GuildRole>>?) =
+            size > 20 // Max 20 guilds' roles cached
+    }
+    private val guildMemberCache = object : LinkedHashMap<String, GuildMember>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, GuildMember>?) = size > 200
+    }
+
+    suspend fun getGuildMember(guildId: String, userId: String): GuildMember? {
+        val cacheKey = "$guildId:$userId"
+        guildMemberCache[cacheKey]?.let { return it }
+        val member = rest.getGuildMember(guildId, userId).getOrNull()
+        if (member != null) {
+            guildMemberCache[cacheKey] = member
+        }
+        return member
+    }
+
+    private val typingJobs = mutableMapOf<String, Job>()
+    private val lastSentAt = mutableMapOf<String, Long>()
+
+    fun slowModeRemainingSeconds(channelId: String): Int {
+        val ch = channelCache[channelId] ?: return 0
+        val intervalMs = ch.slowModeSeconds * 1000L
+        if (intervalMs <= 0) return 0
+        val lastMs = lastSentAt[channelId] ?: return 0
+        val elapsed = System.currentTimeMillis() - lastMs
+        val remaining = intervalMs - elapsed
+        return if (remaining > 0) ((remaining + 999) / 1000).toInt() else 0
+    }
+
+    fun getSlowModeSeconds(channelId: String): Int =
+        channelCache[channelId]?.slowModeSeconds ?: 0
+
+    private val userDisplayNames = mutableMapOf<String, String>()
+    private val myRolesByGuild = mutableMapOf<String, List<String>>()
+    private val channelCache = mutableMapOf<String, Channel>()
+    private val _presences = MutableStateFlow<Map<String, UserPresence>>(emptyMap())
+    val presences: StateFlow<Map<String, UserPresence>> = _presences.asStateFlow()
+
+    fun getChannelNames(): Map<String, String> = channelNameCache.toMap()
+    fun getChannelGuilds(): Map<String, String> = channelGuildCache.toMap()
+    fun getMyRoles(guildId: String): List<String> = myRolesByGuild[guildId] ?: emptyList()
+
+    fun canSendMessage(channelId: String): Boolean {
+        val channel = channelCache[channelId] ?: return true
+        if (channel.type == ChannelType.GUILD_NEWS) return false
+        val guildId = channel.guildId ?: return true
+        val overwrites = channel.permissionOverwrites
+        if (overwrites.isEmpty()) return true
+
+        var allow = 0L
+        var deny = 0L
+
+        overwrites.firstOrNull { it.type == 0 && it.id == guildId }?.let {
+            deny = deny or it.deny
+            allow = allow or it.allow
+        }
+
+        val myRoles = myRolesByGuild[guildId] ?: emptyList()
+        for (ow in overwrites.filter { it.type == 0 && it.id in myRoles }) {
+            deny = deny or ow.deny
+            allow = allow or ow.allow
+        }
+
+        if (allow and Permissions.SEND_MESSAGES != 0L) return true
+        if (deny and Permissions.SEND_MESSAGES != 0L) return false
+        return true
+    }
+
+    fun connect() {
+        gateway.connect()
+        observeGatewayEvents()
+        scope.launch { refreshCurrentUser() }
+        scope.launch { refreshGuilds() }
+        scope.launch { refreshDmChannels() }
+        scope.launch {
+            val cachedGuildIds = loadCachedGuilds().map { it.id }
+            val initialMap = mutableMapOf<String, List<CategoryGroup>>()
+            for (guildId in cachedGuildIds) {
+                val groups = getCachedChannels(guildId, filterInaccessible = false) ?: continue
+                initialMap[guildId] = groups
+                groups.forEach { group ->
+                    group.channels.forEach { ch ->
+                        channelNameCache[ch.id] = ch.name
+                        channelGuildCache[ch.id] = guildId
+                    }
+                }
+            }
+            _guildChannelsMap.value = initialMap
+            _channelNames.value = channelNameCache.toMap()
+            _channelGuilds.value = channelGuildCache.toMap()
+        }
+    }
+
+    fun disconnect() = gateway.disconnect()
+    fun selectChannel(channelId: String, guildId: String?) {
+        gateway.selectChannel(channelId, guildId)
+    }
+
+    fun refreshOnResume(activeChannelId: String?) {
+        scope.launch {
+            runCatching { refreshDmChannels() }
+            if (activeChannelId != null) {
+                runCatching { loadMessages(activeChannelId) }
+            }
+        }
+    }
+
+    suspend fun refreshCurrentUser() {
+        rest.getCurrentUser().onSuccess {
+            _currentUser.value = it
+            currentUserId = it.id
+        }.onFailure { handleApiError(it) }
+    }
+
+    suspend fun refreshGuilds() {
+        rest.getGuilds().onSuccess { list ->
+            _guilds.value = list
+            saveGuilds(list)
+        }.onFailure { handleApiError(it) }
+    }
+
+    suspend fun refreshDmChannels() {
+        rest.getDmChannels().onSuccess { list ->
+            _dmChannels.value = list
+            list.forEach { ch ->
+                channelNameCache[ch.id] = ch.displayName
+                channelCache[ch.id] = ch
+            }
+            _channelNames.value = channelNameCache.toMap()
+            saveDmChannels(list)
+        }.onFailure { handleApiError(it) }
+    }
+
+    fun cacheChannelNames(groups: List<CategoryGroup>) {
+        groups.forEach { g ->
+            g.channels.forEach { ch ->
+                channelNameCache[ch.id] = ch.name
+                channelCache[ch.id] = ch
+                ch.guildId?.let { channelGuildCache[ch.id] = it }
+            }
+        }
+        _channelNames.value = channelNameCache.toMap()
+        _channelGuilds.value = channelGuildCache.toMap()
+    }
+
+    fun ensureChannelCached(channelId: String) {
+        if (channelNameCache.containsKey(channelId)) return
+        scope.launch {
+            rest.getChannel(channelId).onSuccess { ch ->
+                channelCache[ch.id] = ch
+                channelNameCache[ch.id] = ch.displayName
+                ch.guildId?.let { gId ->
+                    channelGuildCache[ch.id] = gId
+                }
+                _channelNames.value = channelNameCache.toMap()
+                _channelGuilds.value = channelGuildCache.toMap()
+            }
+        }
+    }
+
+    /** Returns the highest-position coloured role for a user, or null if none. */
+    suspend fun getTopRoleForUser(guildId: String, userId: String): GuildRole? {
+        val cacheKey = "$guildId/$userId"
+        val roleIds = memberRolesCache.getOrPut(cacheKey) {
+            rest.getGuildMemberRoles(guildId, userId).getOrNull() ?: return null
+        }
+        val roles = guildRolesCache.getOrPut(guildId) {
+            rest.getGuildRoles(guildId).getOrNull() ?: return null
+        }
+        val roleMap = roles.associateBy { it.id }
+        return roleIds
+            .mapNotNull { roleMap[it] }
+            .filter { it.color != 0 || it.unicodeEmoji != null || it.iconHash != null }
+            .maxByOrNull { it.position }
+    }
+
+    suspend fun getRolesForUser(guildId: String, userId: String): List<GuildRole> {
+        val cacheKey = "$guildId/$userId"
+        val roleIds = memberRolesCache.getOrPut(cacheKey) {
+            rest.getGuildMemberRoles(guildId, userId).getOrNull() ?: return emptyList()
+        }
+        val roles = guildRolesCache.getOrPut(guildId) {
+            rest.getGuildRoles(guildId).getOrNull() ?: return emptyList()
+        }
+        val roleMap = roles.associateBy { it.id }
+        return roleIds
+            .mapNotNull { roleMap[it] }
+            .sortedByDescending { it.position }
+    }
+
+    suspend fun getRoleWithIconForUser(guildId: String, userId: String): GuildRole? {
+        val roles = getRolesForUser(guildId, userId)
+        return roles.firstOrNull { !it.unicodeEmoji.isNullOrEmpty() || !it.iconHash.isNullOrEmpty() }
+    }
+
+    suspend fun getGuildRoles(guildId: String): List<GuildRole> {
+        return guildRolesCache.getOrPut(guildId) {
+            rest.getGuildRoles(guildId).getOrNull() ?: emptyList()
+        }
+    }
+
+    @Deprecated("Use getTopRoleForUser instead")
+    suspend fun getRoleColorForUser(guildId: String, userId: String): Int? =
+        getTopRoleForUser(guildId, userId)?.color
+
+    suspend fun getGuildEmojis(guildId: String): List<GuildEmoji> {
+        emojiCache[guildId]?.let { return it }
+        rest.getGuildEmojis(guildId).onSuccess { list ->
+            emojiCache[guildId] = list
+        }
+        return emojiCache[guildId] ?: emptyList()
+    }
+
+    suspend fun getGuildStickers(guildId: String): List<StickerItem> {
+        stickerCache[guildId]?.let { return it }
+        rest.getGuildStickers(guildId).onSuccess { list ->
+            val displayable = list.filter { it.isDisplayable }
+            stickerCache[guildId] = displayable
+            return displayable
+        }
+        return emptyList()
+    }
+
+    fun getCachedChannels(guildId: String, filterInaccessible: Boolean): List<CategoryGroup>? =
+        runCatching {
+            val json = prefs?.getString("channels_$guildId", null) ?: return null
+            val arr = JSONArray(json)
+            val allChannels = Channel.listFromJson(arr)
+
+            // Populate in-memory caches
+            allChannels.forEach { ch ->
+                channelCache[ch.id] = ch
+                channelNameCache[ch.id] = ch.displayName
+                channelGuildCache[ch.id] = guildId
+            }
+
+            val textChannels = allChannels.filter { it.isText }
+            val categories = allChannels.filter { it.isCategory }.sortedBy { it.position }
+            val byParent = textChannels.groupBy { it.parentId }
+            val groups = mutableListOf<CategoryGroup>()
+            val topLevel = byParent[null].orEmpty()
+                .filter { !filterInaccessible || it.hasAccess }.sortedBy { it.position }
+            if (topLevel.isNotEmpty()) groups.add(CategoryGroup(null, topLevel))
+            for (cat in categories) {
+                val children = byParent[cat.id].orEmpty()
+                    .filter { !filterInaccessible || it.hasAccess }.sortedBy { it.position }
+                if (children.isNotEmpty()) groups.add(CategoryGroup(cat, children))
+            }
+            groups.ifEmpty { null }
+        }.getOrNull()
+
+    fun saveChannels(guildId: String, groups: List<CategoryGroup>) = runCatching {
+        val allChannels = groups.flatMap { g -> listOfNotNull(g.category) + g.channels }
+        prefs?.edit()
+            ?.putString("channels_$guildId", JSONArray(allChannels.map { it.toJson() }).toString())
+            ?.apply()
+    }
+
+    private val loadedChannels = mutableSetOf<String>()
+
+    fun markChannelRead(channelId: String, messageId: String) {
+        val existing = _readState.value[channelId]
+        if (existing != null && messageId <= existing.lastMessageId) return
+        _readState.update { current ->
+            current + (channelId to ChannelUnreadState(lastMessageId = messageId, mentionCount = 0))
+        }
+        scope.launch { rest.ackChannel(channelId, messageId) }
+    }
+
+    suspend fun loadMessages(channelId: String) {
+        // Fetch channel metadata if not cached
+        if (!channelCache.containsKey(channelId)) {
+            rest.getChannel(channelId).onSuccess { ch ->
+                channelCache[channelId] = ch
+                channelNameCache[channelId] = ch.displayName  // Use displayName for DMs
+                ch.guildId?.let { guildId ->
+                    channelGuildCache[channelId] = guildId
+                }
+            }
+        }
+
+        rest.getMessages(channelId).onSuccess { fetched ->
+            val fetchedList = fetched.reversed()
+            fetchedList.forEach { userDisplayNames[it.author.id] = it.author.displayName }
+            _messages.update { current ->
+                val existing = current[channelId].orEmpty()
+                val lastFetchedId = fetchedList.lastOrNull()?.id ?: ""
+                val newOnly = existing.filter { it.id > lastFetchedId }
+                current + (channelId to (fetchedList + newOnly))
+            }
+            loadedChannels.add(channelId)
+        }.onFailure { handleApiError(it) }
+    }
+
+    fun getDisplayName(userId: String): String? = userDisplayNames[userId]
+    suspend fun sendMessage(channelId: String, content: String): Result<DiscordMessage> {
+        val result = rest.sendMessage(channelId, content)
+        result.onSuccess { msg ->
+            lastSentAt[channelId] = System.currentTimeMillis()
+            _messages.update { current ->
+                val list = current[channelId].orEmpty().toMutableList()
+                if (list.none { it.id == msg.id }) list.add(msg)
+                current + (channelId to list)
+            }
+        }
+        return result
+    }
+
+
+    suspend fun sendFileAttachment(
+        channelId: String,
+        fileBytes: ByteArray,
+        filename: String,
+        mimeType: String,
+        caption: String = ""
+    ): Result<DiscordMessage> {
+        val result = rest.sendFileAttachment(channelId, fileBytes, filename, mimeType, caption)
+        result.onSuccess { msg ->
+            lastSentAt[channelId] = System.currentTimeMillis()
+            _messages.update { current ->
+                val list = current[channelId].orEmpty().toMutableList()
+                if (list.none { it.id == msg.id }) list.add(msg)
+                current + (channelId to list)
+            }
+        }
+        return result
+    }
+
+    suspend fun sendVoiceMessage(
+        channelId: String,
+        audioBytes: ByteArray,
+        durationSecs: Double
+    ): Result<DiscordMessage> {
+        val result = rest.sendVoiceMessage(channelId, audioBytes, durationSecs)
+        result.onSuccess { msg ->
+            lastSentAt[channelId] = System.currentTimeMillis()
+            _messages.update { current ->
+                val list = current[channelId].orEmpty().toMutableList()
+                if (list.none { it.id == msg.id }) list.add(msg)
+                current + (channelId to list)
+            }
+        }
+        return result
+    }
+
+    suspend fun sendSticker(channelId: String, stickerId: String): Result<DiscordMessage> {
+        val result = rest.sendSticker(channelId, stickerId)
+        result.onSuccess { msg ->
+            lastSentAt[channelId] = System.currentTimeMillis()
+            _messages.update { current ->
+                val list = current[channelId].orEmpty().toMutableList()
+                if (list.none { it.id == msg.id }) list.add(msg)
+                current + (channelId to list)
+            }
+        }
+        return result
+    }
+
+    suspend fun sendReply(
+        channelId: String,
+        content: String,
+        replyToId: String,
+        ping: Boolean = true
+    ): Result<DiscordMessage> {
+        val result = rest.sendReply(channelId, content, replyToId, ping)
+        result.onSuccess { msg ->
+            lastSentAt[channelId] = System.currentTimeMillis()
+            _messages.update { current ->
+                val list = current[channelId].orEmpty().toMutableList()
+                if (list.none { it.id == msg.id }) list.add(msg)
+                current + (channelId to list)
+            }
+        }
+        return result
+    }
+
+    suspend fun editMessage(
+        channelId: String,
+        messageId: String,
+        newContent: String
+    ): Result<DiscordMessage> {
+        val result = rest.editMessage(channelId, messageId, newContent)
+        result.onSuccess { updated ->
+            _messages.update { current ->
+                val list = current[channelId]?.map { if (it.id == updated.id) updated else it }
+                    ?: return@update current
+                current + (channelId to list)
+            }
+        }
+        return result
+    }
+
+    suspend fun deleteMessage(channelId: String, messageId: String): Result<Unit> {
+        val result = rest.deleteMessage(channelId, messageId)
+        result.onSuccess {
+            _messages.update { current ->
+                val list = current[channelId]?.filter { it.id != messageId }
+                    ?: return@update current
+                current + (channelId to list)
+            }
+        }
+        return result
+    }
+
+    suspend fun fetchUserProfile(userId: String): Result<DiscordUser> =
+        rest.getUserProfile(userId).onFailure { handleApiError(it) }
+
+    suspend fun toggleReaction(
+        channelId: String,
+        messageId: String,
+        emoji: ReactionEmoji,
+        burst: Boolean = false
+    ) {
+        val msg = _messages.value[channelId]?.firstOrNull { it.id == messageId } ?: return
+        val existing = msg.reactions.firstOrNull { it.emoji.apiKey == emoji.apiKey }
+        if (burst) {
+            val isBurstMe = existing?.meBurst == true
+            if (isBurstMe) {
+                rest.removeReaction(channelId, messageId, emoji.apiKey, burst = true)
+                updateReactionLocally(
+                    channelId,
+                    messageId,
+                    emoji,
+                    delta = -1,
+                    me = false,
+                    burst = true
+                )
+            } else {
+                rest.addReaction(channelId, messageId, emoji.apiKey, burst = true)
+                updateReactionLocally(
+                    channelId,
+                    messageId,
+                    emoji,
+                    delta = +1,
+                    me = true,
+                    burst = true
+                )
+            }
+        } else {
+            val isRegularMe = existing?.me == true
+            if (isRegularMe) {
+                rest.removeReaction(channelId, messageId, emoji.apiKey, burst = false)
+                updateReactionLocally(
+                    channelId,
+                    messageId,
+                    emoji,
+                    delta = -1,
+                    me = false,
+                    burst = false
+                )
+            } else {
+                rest.addReaction(channelId, messageId, emoji.apiKey, burst = false)
+                updateReactionLocally(
+                    channelId,
+                    messageId,
+                    emoji,
+                    delta = +1,
+                    me = true,
+                    burst = false
+                )
+            }
+        }
+    }
+
+    private fun updateReactionLocally(
+        channelId: String, messageId: String,
+        emoji: ReactionEmoji, delta: Int, me: Boolean?, burst: Boolean = false
+    ) {
+        _messages.update { current ->
+            val list = current[channelId]?.map { msg ->
+                if (msg.id != messageId) return@map msg
+                val existing = msg.reactions.firstOrNull { it.emoji.apiKey == emoji.apiKey }
+                val newReactions = if (existing != null) {
+                    val newCount = existing.count + delta
+                    val newMe = if (burst) existing.me else (me ?: existing.me)
+                    val newMeBurst = if (burst) (me ?: existing.meBurst) else existing.meBurst
+                    val newBurstCount =
+                        if (burst) existing.burstCount + delta else existing.burstCount
+                    if (newCount <= 0 && !newMe && !newMeBurst) {
+                        msg.reactions.filter { it.emoji.apiKey != emoji.apiKey }
+                    } else {
+                        msg.reactions.map {
+                            if (it.emoji.apiKey == emoji.apiKey) {
+                                it.copy(
+                                    count = maxOf(0, newCount),
+                                    me = newMe,
+                                    meBurst = newMeBurst,
+                                    burstCount = maxOf(0, newBurstCount)
+                                )
+                            } else it
+                        }
+                    }
+                } else {
+                    if (delta > 0) {
+                        msg.reactions + Reaction(
+                            emoji = emoji,
+                            count = delta,
+                            me = if (burst) false else (me == true),
+                            meBurst = if (burst) (me == true) else false,
+                            burstCount = if (burst) delta else 0
+                        )
+                    } else msg.reactions
+                }
+                msg.copy(reactions = newReactions)
+            } ?: return@update current
+            current + (channelId to list)
+        }
+    }
+
+    private fun observeGatewayEvents() {
+        scope.launch {
+            gateway.events.collect { event ->
+                when (event) {
+                    is GatewayEvent.InvalidToken -> {
+                        _isTokenInvalid.value = true
+                    }
+
+                    is GatewayEvent.Ready -> {
+                        _currentUser.value = event.user
+                        currentUserId = event.user.id
+                        if (event.readState.isNotEmpty()) {
+                            _readState.value = event.readState
+                            event.readState.filter { it.value.mentionCount > 0 }
+                                .forEach { (chId, _) ->
+                                    ensureChannelCached(chId)
+                                }
+                        }
+                        if (event.presences.isNotEmpty()) {
+                            _presences.value = event.presences
+                                .filter { it.userId.isNotEmpty() }
+                                .associateBy { it.userId }
+                        }
+                    }
+
+                    is GatewayEvent.MessageCreate -> {
+                        val msg = event.message
+                        userDisplayNames[msg.author.id] = msg.author.displayName
+                        val myId = currentUserId
+                        if (myId != null && msg.author.id == myId &&
+                            event.guildId != null && event.memberRoleIds.isNotEmpty()
+                        ) {
+                            myRolesByGuild[event.guildId] = event.memberRoleIds
+                        }
+                        _messages.update { current ->
+                            val list = current[msg.channelId]?.toMutableList() ?: mutableListOf()
+                            if (list.none { it.id == msg.id }) list.add(msg)
+                            current + (msg.channelId to list)
+                        }
+                        val isDmChannel = _dmChannels.value.any { it.id == msg.channelId }
+                        if (isDmChannel) {
+                            _dmChannels.update { channels ->
+                                channels.map { ch ->
+                                    if (ch.id == msg.channelId &&
+                                        (ch.lastMessageId == null || msg.id > ch.lastMessageId)
+                                    )
+                                        ch.copy(lastMessageId = msg.id)
+                                    else ch
+                                }
+                            }
+                        }
+                        msg.guildId?.let { channelGuildCache[msg.channelId] = it }
+                        if (myId != null && msg.author.id != myId) {
+                            val guildId = event.guildId ?: msg.guildId
+                            val memberRoles = if (guildId != null) myRolesByGuild[guildId]
+                                ?: emptyList() else emptyList()
+                            if (msg.pingFor(myId, memberRoles)) {
+                                val channelName = channelNameCache[msg.channelId] ?: msg.channelId
+                                val guildName = msg.guildId?.let { gid ->
+                                    _guilds.value.firstOrNull { it.id == gid }?.name
+                                }
+                                _pings.update { current ->
+                                    (listOf(Ping(msg, channelName, guildName)) + current).take(5)
+                                }
+                            }
+                        }
+                        _typing.update { current ->
+                            val users = current[msg.channelId].orEmpty() - msg.author.id
+                            if (users.isEmpty()) current - msg.channelId
+                            else current + (msg.channelId to users)
+                        }
+                        val typingKey = "${msg.channelId}:${msg.author.id}"
+                        typingJobs[typingKey]?.cancel()
+                        typingJobs.remove(typingKey)
+                    }
+
+                    is GatewayEvent.MessageUpdate -> {
+                        val updated = event.message
+                        _messages.update { current ->
+                            val list = current[updated.channelId]?.map {
+                                if (it.id == updated.id) updated else it
+                            } ?: return@update current
+                            current + (updated.channelId to list)
+                        }
+                    }
+
+                    is GatewayEvent.MessageDelete -> {
+                        _messages.update { current ->
+                            val list = current[event.channelId]?.filter { it.id != event.id }
+                                ?: return@update current
+                            current + (event.channelId to list)
+                        }
+                    }
+
+                    is GatewayEvent.ReactionAdd -> {
+                        val isMe = event.userId == currentUserId
+                        if (!isMe) {
+                            updateReactionLocally(
+                                event.channelId,
+                                event.messageId,
+                                event.emoji,
+                                +1,
+                                null,
+                                burst = event.burst
+                            )
+                        }
+                    }
+
+                    is GatewayEvent.ReactionRemove -> {
+                        val isMe = event.userId == currentUserId
+                        if (!isMe) {
+                            updateReactionLocally(
+                                event.channelId,
+                                event.messageId,
+                                event.emoji,
+                                -1,
+                                null,
+                                burst = event.burst
+                            )
+                        }
+                    }
+
+                    is GatewayEvent.TypingStart -> {
+                        android.util.Log.d(
+                            "DiscordRepository",
+                            "TypingStart event: channel=${event.channelId}, user=${event.userId}"
+                        )
+                        event.displayName?.let { userDisplayNames[event.userId] = it }
+                        val updated = _typing.value.toMutableMap()
+                        val users = (updated[event.channelId] ?: emptySet()) + event.userId
+                        updated[event.channelId] = users
+                        _typing.value = updated.toMap()
+                        val key = "${event.channelId}:${event.userId}"
+                        typingJobs[key]?.cancel()
+                        typingJobs[key] = scope.launch {
+                            delay(10_000)
+                            _typing.update { current ->
+                                val users = current[event.channelId].orEmpty() - event.userId
+                                if (users.isEmpty()) current - event.channelId
+                                else current + (event.channelId to users)
+                            }
+                            typingJobs.remove(key)
+                        }
+                    }
+
+                    is GatewayEvent.PresenceUpdate -> {
+                        val p = event.presence
+                        if (p.userId.isNotEmpty()) {
+                            _presences.update { current -> current + (p.userId to p) }
+                        }
+                    }
+
+                    is GatewayEvent.ChannelCreate -> {
+                        val ch = event.channel
+                        if (ch.isDm) {
+                            scope.launch { refreshDmChannels() }
+                        } else if (ch.guildId != null) {
+                            scope.launch { refreshGuildChannels(ch.guildId) }
+                        }
+                    }
+
+                    is GatewayEvent.ChannelUpdate -> {
+                        val ch = event.channel
+                        channelCache[ch.id] = ch
+                        channelNameCache[ch.id] = ch.displayName
+                        if (ch.guildId != null) {
+                            channelGuildCache[ch.id] = ch.guildId
+                            scope.launch { refreshGuildChannels(ch.guildId) }
+                        } else if (ch.isDm) {
+                            scope.launch { refreshDmChannels() }
+                        }
+                    }
+
+                    is GatewayEvent.ChannelDelete -> {
+                        val ch = event.channel
+                        channelCache.remove(ch.id)
+                        channelNameCache.remove(ch.id)
+                        channelGuildCache.remove(ch.id)
+                        if (ch.guildId != null) {
+                            scope.launch { refreshGuildChannels(ch.guildId) }
+                        } else if (ch.isDm) {
+                            scope.launch { refreshDmChannels() }
+                        }
+                    }
+
+                    is GatewayEvent.Unknown -> {}
+                }
+            }
+        }
+    }
+
+    private fun loadCachedGuilds(): List<Guild> = runCatching {
+        val json = prefs?.getString("guilds", null) ?: return emptyList()
+        val arr = JSONArray(json)
+        (0 until arr.length()).map { Guild.fromJson(arr.getJSONObject(it)) }
+    }.getOrElse { emptyList() }
+
+    private fun saveGuilds(list: List<Guild>) = runCatching {
+        prefs?.edit()?.putString("guilds", JSONArray(list.map { it.toJson() }).toString())?.apply()
+    }
+
+    private fun loadCachedDmChannels(): List<Channel> = runCatching {
+        val json = prefs?.getString("dm_channels", null) ?: return emptyList()
+        val channels = Channel.listFromJson(JSONArray(json))
+        // Populate in-memory cache
+        channels.forEach { ch ->
+            channelNameCache[ch.id] = ch.displayName
+            channelCache[ch.id] = ch
+        }
+        channels
+    }.getOrElse { emptyList() }
+
+    private fun saveDmChannels(list: List<Channel>) = runCatching {
+        prefs?.edit()?.putString("dm_channels", JSONArray(list.map { it.toJson() }).toString())
+            ?.apply()
+    }
+}
