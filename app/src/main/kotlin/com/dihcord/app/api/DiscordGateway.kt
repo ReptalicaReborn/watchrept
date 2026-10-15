@@ -5,7 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.Channel as EventQueue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -27,7 +27,7 @@ class DiscordGateway(private val token: String) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** Events are queued here and emitted by one coroutine, so they arrive in the order Discord sent them. */
-    private val outbox = Channel<GatewayEvent>(Channel.UNLIMITED)
+    private val outbox = EventQueue<GatewayEvent>(EventQueue.UNLIMITED)
 
     init {
         scope.launch { for (event in outbox) _events.emit(event) }
