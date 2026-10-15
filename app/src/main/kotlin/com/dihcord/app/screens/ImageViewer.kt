@@ -13,7 +13,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material3.Text
-import com.dihcord.app.ApkInstaller
 import com.dihcord.app.ImageSaver
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
@@ -41,8 +40,8 @@ private const val MAX_ZOOM = 5f
 private const val DOUBLE_TAP_ZOOM = 2.5f
 
 /**
- * Full-screen image viewer. Tap to close, pinch or drag to zoom/pan, double-tap to toggle zoom; the buttons at
- * the bottom save the image to the watch's gallery or open it on the paired phone.
+ * Full-screen image viewer. Tap to close, pinch or drag to zoom/pan, double-tap to toggle zoom; the Save button at
+ * the bottom saves the image to the watch's gallery.
  * Back / swipe-back also dismisses (it is a dialog).
  */
 @Composable
@@ -115,7 +114,6 @@ fun ImageViewer(url: String, contentDescription: String?, imageLoader: ImageLoad
                         }
                     }
                 }
-                ViewerButton("Phone") { ApkInstaller.openInPhoneBrowser(context, url) }
             }
         }
     }
