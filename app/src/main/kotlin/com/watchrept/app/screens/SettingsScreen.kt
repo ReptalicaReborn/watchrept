@@ -62,7 +62,11 @@ fun SettingsScreen(
     var quietEnabled by remember { mutableStateOf(SetupPreferences.getQuietHoursEnabled(context)) }
     var quietStart by remember { mutableStateOf(SetupPreferences.getQuietStartHour(context)) }
     var quietEnd by remember { mutableStateOf(SetupPreferences.getQuietEndHour(context)) }
-    var mutedCount by remember { mutableStateOf(SetupPreferences.getMutedChannels(context).size) }
+    var mutedCount by remember {
+        mutableStateOf(
+            SetupPreferences.getMutedChannels(context).size + SetupPreferences.getMutedServers(context).size
+        )
+    }
     var compactMode by remember {
         mutableStateOf(SetupPreferences.getCompactMode(context))
     }
@@ -138,7 +142,7 @@ fun SettingsScreen(
 
             item {
                 Text(
-                    "GENERAL",
+                    "NOTIFICATIONS",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
@@ -204,9 +208,10 @@ fun SettingsScreen(
                             quietStart = (quietStart + 1) % 24
                             SetupPreferences.setQuietHours(context, quietStart, quietEnd)
                         },
-                        modifier = Modifier.fillMaxWidth().height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) { Text("Starts %02d:00 (tap +1h)".format(quietStart)) }
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.filledTonalButtonColors(),
+                        secondaryLabel = { Text("Tap to move 1 hour later", style = MaterialTheme.typography.labelSmall) }
+                    ) { Text("From %02d:00".format(quietStart)) }
                 }
                 item {
                     Button(
@@ -214,9 +219,10 @@ fun SettingsScreen(
                             quietEnd = (quietEnd + 1) % 24
                             SetupPreferences.setQuietHours(context, quietStart, quietEnd)
                         },
-                        modifier = Modifier.fillMaxWidth().height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) { Text("Ends %02d:00 (tap +1h)".format(quietEnd)) }
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.filledTonalButtonColors(),
+                        secondaryLabel = { Text("Tap to move 1 hour later", style = MaterialTheme.typography.labelSmall) }
+                    ) { Text("Until %02d:00".format(quietEnd)) }
                 }
             }
 
@@ -225,12 +231,25 @@ fun SettingsScreen(
                     Button(
                         onClick = {
                             SetupPreferences.clearMutedChannels(context)
+                            SetupPreferences.clearMutedServers(context)
                             mutedCount = 0
                         },
-                        modifier = Modifier.fillMaxWidth().height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) { Text("Unmute $mutedCount chat${if (mutedCount == 1) "" else "s"}") }
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.filledTonalButtonColors(),
+                        secondaryLabel = { Text("Chats and servers", style = MaterialTheme.typography.labelSmall) }
+                    ) { Text("Unmute all ($mutedCount)") }
                 }
+            }
+
+            item {
+                Text(
+                    "GENERAL",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 2.dp)
+                )
             }
 
             item {

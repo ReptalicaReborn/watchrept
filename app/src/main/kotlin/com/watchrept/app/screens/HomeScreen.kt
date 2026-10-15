@@ -82,7 +82,7 @@ fun HomeScreen(
 
             item {
                 Text(
-                    text = "Discord",
+                    text = "WatchRept",
                     style = MaterialTheme.typography.titleMedium
                 )
             }
@@ -160,10 +160,9 @@ fun HomeScreen(
                 // readState-derived cards (visible from startup)
                 items(mentionEntries.size) { index ->
                     val entry = mentionEntries[index]
-                    val label = if (entry.isDm) "DM • ${entry.channelName}"
-                    else "${entry.guildName ?: "Server"} • #${entry.channelName}"
                     MentionCard(
-                        label = label,
+                        title = if (entry.isDm) entry.channelName else "#${entry.channelName}",
+                        subtitle = if (entry.isDm) "Direct message" else entry.guildName ?: "Server",
                         count = entry.count,
                         onClick = {
                             onNavigateToChat(
@@ -216,7 +215,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun MentionCard(label: String, count: Int, onClick: () -> Unit) {
+private fun MentionCard(title: String, subtitle: String, count: Int, onClick: () -> Unit) {
     TitleCard(
         modifier = Modifier.fillMaxWidth(),
         onClick = onClick,
@@ -227,7 +226,7 @@ private fun MentionCard(label: String, count: Int, onClick: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = label,
+                    text = title,
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
@@ -243,9 +242,11 @@ private fun MentionCard(label: String, count: Int, onClick: () -> Unit) {
         }
     ) {
         Text(
-            text = "Tap to open",
+            text = subtitle,
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
         )
     }
 }

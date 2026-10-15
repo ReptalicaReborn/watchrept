@@ -62,6 +62,7 @@ fun ServerScreen(onNavigateToChannels: (guildId: String, guildName: String) -> U
 
     var pinnedIds by remember { mutableStateOf(SetupPreferences.getPinnedServers(context)) }
     var hiddenIds by remember { mutableStateOf(SetupPreferences.getHiddenServers(context)) }
+    var mutedIds by remember { mutableStateOf(SetupPreferences.getMutedServers(context)) }
     var showHidden by remember { mutableStateOf(false) }
     var menuGuild by remember { mutableStateOf<Guild?>(null) }
 
@@ -84,6 +85,7 @@ fun ServerScreen(onNavigateToChannels: (guildId: String, guildName: String) -> U
     if (activeMenu != null) {
         val isPinned = pinnedIds.contains(activeMenu.id)
         val isHidden = hiddenIds.contains(activeMenu.id)
+        val isMuted = mutedIds.contains(activeMenu.id)
         ScreenScaffold(scrollState = menuState) {
             ScalingLazyColumn(state = menuState, modifier = Modifier.fillMaxSize()) {
                 item {
@@ -141,6 +143,28 @@ fun ServerScreen(onNavigateToChannels: (guildId: String, guildName: String) -> U
                 }
                 item {
                     Button(
+                        onClick = {
+                            SetupPreferences.toggleMutedServer(context, activeMenu.id)
+                            mutedIds = SetupPreferences.getMutedServers(context)
+                            menuGuild = null
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(36.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors()
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.mute),
+                            tint = Color.White,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (isMuted) "Unmute" else "Mute notifications")
+                    }
+                }
+                item {
+                    Button(
                         onClick = { menuGuild = null },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -190,6 +214,7 @@ fun ServerScreen(onNavigateToChannels: (guildId: String, guildName: String) -> U
                         imageLoader = imageLoader,
                         isPinned = isPinned,
                         isHidden = isHidden,
+                        isMuted = mutedIds.contains(guild.id),
                         mentionCount = guildMentionCounts[guild.id] ?: 0,
                         onClick = { if (!isHidden) onNavigateToChannels(guild.id, guild.name) },
                         onLongClick = { menuGuild = guild }
@@ -224,6 +249,7 @@ private fun ServerButton(
     imageLoader: ImageLoader,
     isPinned: Boolean,
     isHidden: Boolean,
+    isMuted: Boolean = false,
     mentionCount: Int = 0,
     onClick: () -> Unit,
     onLongClick: () -> Unit
@@ -320,6 +346,12 @@ private fun ServerButton(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
+            )
+            if (isMuted) Icon(
+                painter = painterResource(id = R.drawable.mute),
+                tint = Color.White.copy(alpha = 0.7f),
+                contentDescription = "Muted",
+                modifier = Modifier.size(12.dp)
             )
         }
 

@@ -25,6 +25,7 @@ object Notifier {
     const val EXTRA_CHANNEL_ID = "channel_id"
     const val EXTRA_CHANNEL_NAME = "channel_name"
     const val EXTRA_GUILD_ID = "guild_id"
+    const val EXTRA_MUTE_SERVER = "mute_server"
     private const val MAX_HISTORY = 6
 
     private class Line(val sender: String, val text: String, val time: Long)
@@ -90,7 +91,19 @@ object Notifier {
         val mutePending = PendingIntent.getBroadcast(
             context, id, muteIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val muteAction = NotificationCompat.Action.Builder(R.drawable.hide, "Mute", mutePending).build()
+        val muteAction = NotificationCompat.Action.Builder(
+            R.drawable.mute, if (info.isDm) "Mute" else "Mute channel", mutePending
+        ).build()
+        val muteServerAction = info.guildId?.let { guildId ->
+            val intent = Intent(context, MuteReceiver::class.java)
+                .putExtra(EXTRA_CHANNEL_ID, info.channelId)
+                .putExtra(EXTRA_GUILD_ID, guildId)
+                .putExtra(EXTRA_MUTE_SERVER, true)
+            val pending = PendingIntent.getBroadcast(
+                context, id + 1, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            NotificationCompat.Action.Builder(R.drawable.mute, "Mute server", pending).build()
+        }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
             .setSmallIcon(R.drawable.send)
@@ -104,6 +117,7 @@ object Notifier {
             .setContentIntent(openAppIntent(context, id, info))
             .addAction(replyAction)
             .addAction(muteAction)
+            .apply { muteServerAction?.let { addAction(it) } }
             .build()
         NotificationManagerCompat.from(context).notify(id, notification)
     }

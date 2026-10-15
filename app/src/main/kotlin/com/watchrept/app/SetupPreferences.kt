@@ -170,6 +170,25 @@ object SetupPreferences {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { remove(KEY_MUTED_CHANNELS) }
     }
 
+    private const val KEY_MUTED_SERVERS = "muted_servers"
+
+    fun getMutedServers(context: Context): Set<String> =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getStringSet(KEY_MUTED_SERVERS, emptySet()) ?: emptySet()
+
+    /** Mutes or unmutes notifications for a whole server; returns the new muted state. */
+    fun toggleMutedServer(context: Context, guildId: String): Boolean {
+        val current = getMutedServers(context)
+        val muted = guildId !in current
+        val updated = if (muted) current + guildId else current - guildId
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { putStringSet(KEY_MUTED_SERVERS, updated) }
+        return muted
+    }
+
+    fun clearMutedServers(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { remove(KEY_MUTED_SERVERS) }
+    }
+
     fun isSetupComplete(context: Context): Boolean = getToken(context) != null
     private const val KEY_PINNED_SERVERS = "pinned_servers"
 

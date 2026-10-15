@@ -53,7 +53,11 @@ class NotificationService : Service() {
                 if (AppState.inForeground) return@collect
                 if (SetupPreferences.isQuietNow(this@NotificationService)) return@collect
                 if (msg.channelId in SetupPreferences.getMutedChannels(this@NotificationService)) return@collect
-                repo.notificationFor(msg)?.let { Notifier.show(this@NotificationService, it) }
+                val info = repo.notificationFor(msg) ?: return@collect
+                if (info.guildId != null && info.guildId in SetupPreferences.getMutedServers(this@NotificationService)) {
+                    return@collect
+                }
+                Notifier.show(this@NotificationService, info)
             }
         }
         return START_STICKY

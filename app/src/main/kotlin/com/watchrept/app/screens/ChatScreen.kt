@@ -572,11 +572,41 @@ fun ChatScreen(
         return
     }
 
-    val isAtBottom by remember {
+    // Index of the newest message in the list: title + optional draft banner come first.
+    val lastMsgId = messages.lastOrNull()?.id
+    val lastMessageIndex = 1 + (if (pendingText.isNotBlank()) 1 else 0) + messages.size - 1
+    val isAtBottom by remember(lastMsgId, lastMessageIndex) {
         derivedStateOf {
-            val info = listState.layoutInfo
-            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 5
-            info.totalItemsCount == 5 || lastVisible >= info.totalItemsCount - 6
+            val visible = listState.layoutInfo.visibleItemsInfo
+            lastMsgId == null || visible.any { it.key == lastMsgId } ||
+                (visible.lastOrNull()?.index ?: 0) > lastMessageIndex
+        }
+    }
+
+    // Newest message the user has actually seen; anything after it counts as "new".
+    var seenUpToId by remember(channelId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(isAtBottom, lastMsgId) { if (isAtBottom) seenUpToId = lastMsgId }
+    val unseenCount = remember(messages, seenUpToId) {
+        val seen = seenUpToId?.toLongOrNull() ?: return@remember 0
+        messages.count { (it.id.toLongOrNull() ?: 0L) > seen }
+    }
+
+    // Follow the conversation: if the user was caught up when a message arrived, keep them at the bottom.
+    var previousLastId by remember(channelId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(lastMsgId) {
+        val prev = previousLastId
+        previousLastId = lastMsgId
+        val wasCaughtUp = seenUpToId == prev || seenUpToId == lastMsgId
+        if (prev != null && lastMsgId != null && prev != lastMsgId && wasCaughtUp && scrolledToUnread.value) {
+            listState.animateScrollToItem(lastMessageIndex)
+        }
+    }
+
+    fun jumpToLatest() {
+        scope.launch {
+            // Snap close first so long jumps don't animate through the whole history.
+            listState.scrollToItem((lastMessageIndex - 2).coerceAtLeast(0))
+            listState.animateScrollToItem(lastMessageIndex)
         }
     }
 
@@ -1052,20 +1082,36 @@ fun ChatScreen(
             }
         }
 
-        if (!isAtBottom) {//need to be higher up to show this
+        if (!isAtBottom && !loading && lastMsgId != null) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(bottom = 10.dp),
+                    .padding(bottom = 18.dp),
                 contentAlignment = Alignment.BottomCenter
             ) {
-                FilledIconButton(
-                    onClick = { scope.launch { listState.animateScrollToItem(Int.MAX_VALUE) } },
-                    modifier = Modifier.size(32.dp)
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.primary)
+                        .clickable { jumpToLatest() }
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Icon(
                         painter = painterResource(id = R.drawable.down),
-                        contentDescription = "Down"
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = when {
+                            unseenCount > 99 -> "99+ new"
+                            unseenCount > 0 -> "$unseenCount new"
+                            else -> "Latest"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimary
                     )
                 }
             }
