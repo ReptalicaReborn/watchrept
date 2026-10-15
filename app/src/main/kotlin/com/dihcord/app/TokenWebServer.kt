@@ -28,7 +28,7 @@ class TokenWebServer(
     val pin: String = generatePin(),
     private val onTokenReceived: suspend (String) -> Unit,
 ) {
-    private var serverSocket: ServerSocket? = null
+    @Volatile private var serverSocket: ServerSocket? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile private var running = false
