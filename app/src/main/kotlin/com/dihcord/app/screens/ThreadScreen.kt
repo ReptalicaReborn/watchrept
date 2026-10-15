@@ -427,7 +427,7 @@ fun ThreadScreen(
             }
 
             when {
-                loading -> item { CircularProgressIndicator() }
+                loading -> items(4, key = { "skeleton$it" }) { MessageSkeleton(it) }
                 threadMessages.isEmpty() -> item {
                     Text("No messages in thread.", style = MaterialTheme.typography.bodySmall)
                 }

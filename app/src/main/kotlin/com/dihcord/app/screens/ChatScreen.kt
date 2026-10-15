@@ -845,7 +845,7 @@ fun ChatScreen(
                 }
 
                 when {
-                    loading -> item(key = "loading") { CircularProgressIndicator() }
+                    loading -> items(4, key = { "skeleton$it" }) { MessageSkeleton(it) }
                     messages.isEmpty() -> item(key = "empty") {
                         Text("No messages yet.", style = MaterialTheme.typography.bodySmall)
                     }
