@@ -1,6 +1,6 @@
 # Dihcord
 
-Dihcord (project name: WatchRept) is a third-party Discord client for Wear OS (Compose for Wear OS, Material 3). GPL-3.0; derived from
+Dihcord is a third-party Discord client for Wear OS (Compose for Wear OS, Material 3). GPL-3.0; derived from
 [Discord-WearOS](https://github.com/Zaffox/Discord-WearOS) — see `NOTICE.md`.
 
 > **Third-party clients violate Discord's Terms of Service.** Use at your own risk, on your own account.

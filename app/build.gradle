@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace "com.watchrept.app"
+    namespace "com.dihcord.app"
     compileSdk 35
 
     testOptions {
@@ -20,7 +20,7 @@ android {
     }
 
     defaultConfig {
-        applicationId "com.watchrept.app"
+        applicationId "com.dihcord.app"
         minSdk 30
         targetSdk 35
         versionCode 10

@@ -1,6 +1,6 @@
 # Notice
 
-WatchRept is free software licensed under the GNU General Public License v3.0 (see `LICENSE`).
+Dihcord is free software licensed under the GNU General Public License v3.0 (see `LICENSE`).
 
 It is derived from **Discord-WearOS** by Zaffox (https://github.com/Zaffox/Discord-WearOS),
 also GPL-3.0. The upstream feature set (chat UI, embeds, threads, QR login, voice messages, photo
