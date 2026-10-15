@@ -571,6 +571,7 @@ fun ThreadScreen(
                                 contentDescription = "Emoji")
                         }
                         FilledIconButton(
+                            colors = altIconButtonColors(),
                             onClick = {
                                 reactingToMsg = null
                                 showPicker = true
@@ -640,6 +641,7 @@ fun ThreadScreen(
                                 )
                             }
                             FilledIconButton(
+                                colors = altIconButtonColors(),
                                 onClick = { startRecording() },
                                 modifier = Modifier
                                     .height(40.dp)

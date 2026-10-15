@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.wear.compose.material3.ColorScheme
@@ -27,6 +28,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material3.CircularProgressIndicator
+import androidx.wear.compose.material3.IconButtonColors
+import androidx.wear.compose.material3.IconButtonDefaults
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.Text
 
@@ -38,9 +41,11 @@ import androidx.wear.compose.material3.Text
 /** The title at the top of a screen. */
 @Composable
 fun ScreenTitle(text: String, modifier: Modifier = Modifier) {
+    val base = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
     Text(
         text = text,
-        style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, fontWeight = FontWeight.SemiBold),
+        // Pride themes paint titles in both accent colours.
+        style = if (AppTheme.preset.isPride) base.copy(brush = accentBrush()) else base,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         textAlign = TextAlign.Center,
@@ -70,7 +75,7 @@ fun SectionHeader(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text.uppercase(),
         style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, letterSpacing = 1.sp),
-        color = MaterialTheme.colorScheme.primary,
+        color = if (AppTheme.preset.isPride) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
         textAlign = TextAlign.Center,
         maxLines = 1,
         modifier = modifier
@@ -130,3 +135,19 @@ fun PrideBar(modifier: Modifier = Modifier) {
         stripes.forEach { c -> Box(Modifier.weight(1f).fillMaxSize().background(Color(c))) }
     }
 }
+
+/** A left-to-right gradient of the theme's two accent colours (primary, secondary). */
+@Composable
+fun accentBrush(): Brush =
+    Brush.horizontalGradient(listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary))
+
+/**
+ * Colours for every other filled icon button: the second accent colour on pride themes, so both flag colours show
+ * (e.g. purple and yellow for nonbinary), and the normal colours otherwise.
+ */
+@Composable
+fun altIconButtonColors(): IconButtonColors =
+    if (AppTheme.preset.isPride) IconButtonDefaults.filledIconButtonColors(
+        containerColor = MaterialTheme.colorScheme.secondary,
+        contentColor = MaterialTheme.colorScheme.onSecondary
+    ) else IconButtonDefaults.filledIconButtonColors()

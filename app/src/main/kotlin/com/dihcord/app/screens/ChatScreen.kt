@@ -1064,6 +1064,7 @@ fun ChatScreen(
                                         )
                                     }
                                     FilledIconButton(
+                                        colors = altIconButtonColors(),
                                         onClick = {
                                             reactingToMsg = null
                                             showPicker = true
@@ -1101,6 +1102,7 @@ fun ChatScreen(
                                         )
                                     }
                                     if (abilities.canSendVoice) FilledIconButton(
+                                        colors = altIconButtonColors(),
                                         onClick = { startRecording() },
                                         modifier = Modifier
                                             .size(36.dp),
