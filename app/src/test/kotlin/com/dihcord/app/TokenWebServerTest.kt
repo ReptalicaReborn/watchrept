@@ -7,25 +7,27 @@ import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
 import java.net.HttpURLConnection
-import java.net.Socket
 import java.net.URL
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 class TokenWebServerTest {
-    private val port = 18_089
+    private var port = -1
     private val received = CompletableFuture<String>()
     private lateinit var server: TokenWebServer
 
     @Before
     fun setUp() {
-        server = TokenWebServer(port = port, pin = "123456") { received.complete(it) }
+        // Port 0: the OS picks a free port, so tests never collide with each other or other processes.
+        server = TokenWebServer(port = 0, pin = "123456") { received.complete(it) }
         server.start()
         // Wait for the accept loop to bind, without spending any PIN attempts.
-        repeat(100) {
-            if (runCatching { Socket("127.0.0.1", port).close() }.isSuccess) return
-            Thread.sleep(50)
+        repeat(200) {
+            port = server.boundPort
+            if (port > 0) return
+            Thread.sleep(25)
         }
+        error("TokenWebServer did not bind")
     }
 
     @After

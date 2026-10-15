@@ -9,6 +9,7 @@ import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
@@ -33,6 +34,9 @@ class TokenWebServer(
     @Volatile private var running = false
     @Volatile private var failedAttempts = 0
     @Volatile private var done = false
+
+    /** The port actually bound (useful when constructed with port 0), or -1 before binding. */
+    val boundPort: Int get() = serverSocket?.localPort ?: -1
 
     fun getLocalAddresses(): List<String> {
         val addresses = mutableListOf<String>()
@@ -60,7 +64,11 @@ class TokenWebServer(
         running = true
         scope.launch {
             try {
-                serverSocket = ServerSocket(port, 5, InetAddress.getByName("0.0.0.0"))
+                // reuseAddress lets the server restart right away even if old connections linger in TIME_WAIT.
+                serverSocket = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), port), 5)
+                }
                 Log.i(TAG, "Listening on port $port")
                 while (running) {
                     val client = serverSocket?.accept() ?: break
