@@ -33,7 +33,7 @@ class DihcordApp : Application(), ImageLoaderFactory {
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(64L * 1024 * 1024)
+                    .maxSizeBytes(if (Perf.lite) 32L * 1024 * 1024 else 64L * 1024 * 1024)
                     .build()
             }
             // Discord CDN URLs are content-addressed, so cached copies never go stale.

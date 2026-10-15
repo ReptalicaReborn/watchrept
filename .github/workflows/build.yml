@@ -31,6 +31,21 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      - name: Report APK sizes
+        run: |
+          {
+            echo "### APK sizes"
+            for f in app/build/outputs/apk/release/*.apk app/build/outputs/apk/debug/*.apk; do
+              echo "- \`$(basename "$f")\`: $(du -h "$f" | cut -f1)"
+            done
+            echo
+            echo "<details><summary>Largest entries in the release APK</summary>"
+            echo
+            echo '```'
+            unzip -lv app/build/outputs/apk/release/*.apk | sort -k1 -n -r | head -15
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: dihcord-release

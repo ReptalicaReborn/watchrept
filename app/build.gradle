@@ -27,12 +27,6 @@ android {
         versionName "2.1"
     }
 
-    packagingOptions {
-        jniLibs {
-            useLegacyPackaging = true
-        }
-    }
-
     buildFeatures {
         buildConfig true
         compose true
