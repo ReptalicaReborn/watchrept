@@ -183,6 +183,10 @@ class MainActivity : ComponentActivity() {
                                         java.net.URLEncoder.encode(threadName, "UTF-8")
                                     navController.navigate("thread/$threadId/$encodedName/${guildIdArg ?: "dm"}")
                                 },
+                                onOpenThreads = {
+                                    val encoded = java.net.URLEncoder.encode(channelName, "UTF-8")
+                                    navController.navigate("threads/$channelId/$encoded/${guildIdArg ?: "dm"}/channel")
+                                },
                                 onBack = { navController.popBackStack() }
                             )
                         }
@@ -230,6 +234,29 @@ class MainActivity : ComponentActivity() {
                                 guildName = guildName,
                                 onNavigateToChatScreen = { chId, chName ->
                                     navController.navigate("chatscreen/$chId/$chName/$guildId")
+                                },
+                                onOpenForum = { chId, chName ->
+                                    val encoded = java.net.URLEncoder.encode(chName, "UTF-8")
+                                    navController.navigate("threads/$chId/$encoded/$guildId/forum")
+                                }
+                            )
+                        }
+
+                        // Threads of a text channel, or posts of a forum channel ("forum"/"channel").
+                        composable("threads/{channelId}/{channelName}/{guildId}/{kind}") { back ->
+                            val chId = back.arguments?.getString("channelId") ?: return@composable
+                            val chName = back.arguments?.getString("channelName")
+                                ?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: chId
+                            val gIdArg = back.arguments?.getString("guildId")
+                            activeChannelId = null
+                            ThreadListScreen(
+                                channelId = chId,
+                                channelName = chName,
+                                guildId = gIdArg?.takeIf { it != "dm" },
+                                isForum = back.arguments?.getString("kind") == "forum",
+                                onOpenThread = { threadId, threadName ->
+                                    val encodedName = java.net.URLEncoder.encode(threadName, "UTF-8")
+                                    navController.navigate("thread/$threadId/$encodedName/${gIdArg ?: "dm"}")
                                 }
                             )
                         }

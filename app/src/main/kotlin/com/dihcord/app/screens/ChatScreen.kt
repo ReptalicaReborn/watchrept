@@ -87,6 +87,7 @@ fun ChatScreen(
     currentUserId: String = "",
     onNavigateToProfile: ((userId: String, user: DiscordUser?) -> Unit)? = null,
     onNavigateToThread: ((threadId: String, threadName: String) -> Unit)? = null,
+    onOpenThreads: (() -> Unit)? = null,
     onBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -112,6 +113,11 @@ fun ChatScreen(
     var replyingTo by remember { mutableStateOf<DiscordMessage?>(null) }
     var replyPing by remember { mutableStateOf(true) }
     var selectedMsg by remember { mutableStateOf<DiscordMessage?>(null) }
+    var threadSourceMsg by remember { mutableStateOf<DiscordMessage?>(null) }
+    var threadNameDraft by remember { mutableStateOf("") }
+    var creatingThread by remember { mutableStateOf(false) }
+    var threadError by remember { mutableStateOf("") }
+    var highlightedId by remember(channelId) { mutableStateOf<String?>(null) }
     var reactingToMsg by remember { mutableStateOf<DiscordMessage?>(null) }
     val roleColorCache = remember { mutableStateMapOf<String, GuildRole?>() }
     val roleIconCache = remember { mutableStateMapOf<String, GuildRole?>() }
@@ -571,7 +577,41 @@ fun ChatScreen(
                     onNavigateToThread?.invoke(tid, tname)
                 }
             } else null,
+            onCreateThread = if (msgForOptions.threadId == null && guildId != null && canSend) {
+                {
+                    selectedMsg = null
+                    threadNameDraft = msgForOptions.content.lineSequence().firstOrNull().orEmpty()
+                        .take(40).ifBlank { "Thread" }
+                    threadSourceMsg = msgForOptions
+                }
+            } else null,
             onDismiss = { selectedMsg = null }
+        )
+        return
+    }
+
+    val sourceForThread = threadSourceMsg
+    if (sourceForThread != null) {
+        CreateThreadDialog(
+            name = threadNameDraft,
+            onNameChange = { threadNameDraft = it },
+            creating = creatingThread,
+            error = threadError,
+            onCreate = {
+                val name = threadNameDraft.trim().ifBlank { "Thread" }
+                creatingThread = true
+                threadError = ""
+                scope.launch {
+                    repo.rest.createThreadFromMessage(channelId, sourceForThread.id, name)
+                        .onSuccess { thread ->
+                            threadSourceMsg = null
+                            onNavigateToThread?.invoke(thread.id, thread.name)
+                        }
+                        .onFailure { threadError = it.message ?: "Couldn't create thread" }
+                    creatingThread = false
+                }
+            },
+            onDismiss = { threadSourceMsg = null; threadError = "" }
         )
         return
     }
@@ -614,6 +654,22 @@ fun ChatScreen(
         }
     }
 
+    /** Scrolls to [messageId] (e.g. the message a reply points at) and briefly highlights it. */
+    fun jumpToMessage(messageId: String) {
+        val idx = messages.indexOfFirst { it.id == messageId }
+        if (idx < 0) {
+            android.widget.Toast.makeText(context, "Original message isn't loaded", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        val target = 1 + (if (pendingText.isNotBlank()) 1 else 0) + idx
+        scope.launch {
+            highlightedId = messageId
+            listState.animateScrollToItem(target)
+            delay(1_600)
+            if (highlightedId == messageId) highlightedId = null
+        }
+    }
+
     fun sendTyped() {
         val text = inputText.trim()
         if (text.isBlank() || slowRemaining > 0) return
@@ -653,10 +709,23 @@ fun ChatScreen(
         ScreenScaffold(scrollState = listState) {
             ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 item(key = "channel_title") {
-                    Text(
-                        "#$channelName",
-                        style = MaterialTheme.typography.titleMedium
-                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            "#$channelName",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        if (onOpenThreads != null && guildId != null) {
+                            Text(
+                                "Threads ›",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { onOpenThreads() }
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
                 }
 
                 if (pendingText.isNotBlank()) {
@@ -793,7 +862,9 @@ fun ChatScreen(
                             onOpenThread = if (msg.threadId != null) { threadId ->
                                 val tname = msg.content.take(30).ifBlank { "Thread" }
                                 onNavigateToThread?.invoke(threadId, tname)
-                            } else null
+                            } else null,
+                            onJumpToReply = { refId -> jumpToMessage(refId) },
+                            highlighted = msg.id == highlightedId
                         )
                     }
                 }
@@ -1117,6 +1188,64 @@ fun ChatScreen(
 private val BareUrlRegex = Regex("^https?://\\S+$")
 
 @Composable
+private fun CreateThreadDialog(
+    name: String,
+    onNameChange: (String) -> Unit,
+    creating: Boolean,
+    error: String,
+    onCreate: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    BackHandler(onBack = onDismiss)
+    val listState = rememberScalingLazyListState()
+    ScreenScaffold(scrollState = listState) {
+        ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+            item { Text("New thread", style = MaterialTheme.typography.titleMedium) }
+            item {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { onNameChange(it.take(100)) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 36.dp, max = 72.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    placeholder = { Text("Thread name", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                    textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface),
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                        cursorColor = MaterialTheme.colorScheme.primary
+                    ),
+                    singleLine = true
+                )
+            }
+            if (error.isNotEmpty()) {
+                item {
+                    Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            item {
+                Button(
+                    onClick = { if (!creating) onCreate() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp)
+                ) { Text(if (creating) "Creating…" else "Create") }
+            }
+            item {
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors()
+                ) { Text("Cancel") }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SpoilerText(text: String, revealOnTap: Boolean) {
     var revealed by remember { mutableStateOf(false) }
     val modifier = if (revealOnTap) Modifier.clickable { revealed = true } else Modifier
@@ -1176,6 +1305,7 @@ private fun MessageOptionsDialog(
     onDelete: () -> Unit,
     onReact: () -> Unit,
     onOpenThread: (() -> Unit)? = null,
+    onCreateThread: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     BackHandler(onBack = onDismiss)
@@ -1224,6 +1354,26 @@ private fun MessageOptionsDialog(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text("Open Thread")
+                    }
+                }
+            }
+            if (onCreateThread != null) {
+                item {
+                    Button(
+                        onClick = onCreateThread,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(36.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors()
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.reply),
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Create Thread")
                     }
                 }
             }
@@ -1335,7 +1485,9 @@ internal fun MessageBubble(
     onSwipeToReply: ((DiscordMessage) -> Unit)? = null,
     onLongPress: () -> Unit,
     onAvatarClick: (userId: String) -> Unit = {},
-    onOpenThread: ((threadId: String) -> Unit)? = null
+    onOpenThread: ((threadId: String) -> Unit)? = null,
+    onJumpToReply: ((messageId: String) -> Unit)? = null,
+    highlighted: Boolean = false
 ) {
     val context = LocalContext.current
     val repo = context.discordApp.repository
@@ -1434,6 +1586,10 @@ internal fun MessageBubble(
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .background(
+                if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent,
+                RoundedCornerShape(8.dp)
+            )
             .then(swipeModifier)
     ) {
         if (onSwipeToReply != null && currentOffset < -2f) {
@@ -1622,10 +1778,9 @@ internal fun MessageBubble(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                                RoundedCornerShape(4.dp)
-                            )
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                            .then(if (onJumpToReply != null) Modifier.clickable { onJumpToReply(ref.id) } else Modifier)
                             .padding(horizontal = 4.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {

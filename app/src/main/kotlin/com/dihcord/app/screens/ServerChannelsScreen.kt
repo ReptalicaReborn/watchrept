@@ -66,7 +66,8 @@ private fun ChannelIcon(ch: Channel, allChannels: List<Channel>) {
 fun ServerChannels(
     guildId: String,
     guildName: String,
-    onNavigateToChatScreen: (channelId: String, channelName: String) -> Unit
+    onNavigateToChatScreen: (channelId: String, channelName: String) -> Unit,
+    onOpenForum: (channelId: String, channelName: String) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val repo = context.discordApp.repository
@@ -173,7 +174,10 @@ fun ServerChannels(
                                     .fillMaxWidth()
                                     .height(36.dp),
                                 colors = ButtonDefaults.filledTonalButtonColors(),
-                                onClick = { onNavigateToChatScreen(ch.id, ch.name) }
+                                onClick = {
+                                    if (ch.isForum) onOpenForum(ch.id, ch.name)
+                                    else onNavigateToChatScreen(ch.id, ch.name)
+                                }
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),

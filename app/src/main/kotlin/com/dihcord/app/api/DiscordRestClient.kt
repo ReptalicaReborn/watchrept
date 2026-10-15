@@ -122,6 +122,41 @@ class DiscordRestClient(private val token: String) {
         GuildFolder.listFromJson(arr)
     }
 
+    /**
+     * Threads in [channelId] (or posts in a forum), newest activity first. Active ones by default;
+     * [archived] lists older, archived ones. Falls back to the guild-wide active list if search isn't allowed.
+     */
+    suspend fun getChannelThreads(
+        channelId: String,
+        guildId: String?,
+        archived: Boolean = false
+    ): Result<List<ThreadSummary>> = runCatching {
+        val search = runCatching {
+            ThreadSummary.listFromResponse(
+                JSONObject(
+                    get("/channels/$channelId/threads/search?archived=$archived&sort_by=last_message_time&sort_order=desc&limit=25")
+                )
+            )
+        }
+        search.getOrNull() ?: if (archived) {
+            ThreadSummary.listFromResponse(JSONObject(get("/channels/$channelId/threads/archived/public?limit=25")))
+        } else {
+            val gid = guildId ?: throw search.exceptionOrNull() ?: IOException("No guild")
+            ThreadSummary.listFromResponse(JSONObject(get("/guilds/$gid/threads/active")))
+                .filter { it.parentId == channelId }
+        }
+    }
+
+    /** Starts a public thread on [messageId] (Discord's "Create Thread" on a message). */
+    suspend fun createThreadFromMessage(
+        channelId: String,
+        messageId: String,
+        name: String
+    ): Result<ThreadSummary> = runCatching {
+        val body = JSONObject().put("name", name.take(100)).put("auto_archive_duration", 1440)
+        ThreadSummary.fromJson(JSONObject(post("/channels/$channelId/messages/$messageId/threads", body)))
+    }
+
     suspend fun getGuildOwnerId(guildId: String): Result<String> = runCatching {
         JSONObject(get("/guilds/$guildId")).getString("owner_id")
     }
@@ -162,7 +197,8 @@ class DiscordRestClient(private val token: String) {
         }
 
         val categories = raw.filter { it.isCategory }.sortedBy { it.position }
-        val textChannels = raw.filter { it.isText }
+        // Forum/media channels are listed alongside text channels; opening one shows its posts.
+        val textChannels = raw.filter { it.isText || it.isForum }
         val byParent = textChannels.groupBy { it.parentId }
         val groups = mutableListOf<CategoryGroup>()
 

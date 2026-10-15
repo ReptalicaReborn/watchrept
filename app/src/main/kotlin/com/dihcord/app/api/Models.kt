@@ -270,7 +270,9 @@ data class Guild(
 
 enum class ChannelType(val code: Int) {
     GUILD_TEXT(0), DM(1), GUILD_VOICE(2), GROUP_DM(3),
-    GUILD_CATEGORY(4), GUILD_NEWS(5), UNKNOWN(-1);
+    GUILD_CATEGORY(4), GUILD_NEWS(5),
+    ANNOUNCEMENT_THREAD(10), PUBLIC_THREAD(11), PRIVATE_THREAD(12),
+    GUILD_FORUM(15), GUILD_MEDIA(16), UNKNOWN(-1);
 
     companion object {
         fun from(code: Int) = entries.firstOrNull { it.code == code } ?: UNKNOWN
@@ -451,6 +453,8 @@ data class Channel(
     val isDm: Boolean get() = type == ChannelType.DM || type == ChannelType.GROUP_DM
     val isText: Boolean get() = type == ChannelType.GUILD_TEXT || type == ChannelType.GUILD_NEWS
     val isCategory: Boolean get() = type == ChannelType.GUILD_CATEGORY
+    /** Forum and media channels hold posts (threads) instead of messages. */
+    val isForum: Boolean get() = type == ChannelType.GUILD_FORUM || type == ChannelType.GUILD_MEDIA
 
     val displayName: String
         get() = if (isDm && name.isEmpty())
@@ -1119,6 +1123,39 @@ data class GuildFolder(
 
         fun listFromJson(arr: JSONArray): List<GuildFolder> =
             (0 until arr.length()).mapNotNull { runCatching { fromJson(arr.getJSONObject(it)) }.getOrNull() }
+    }
+}
+
+/** A thread (or forum post) as listed in a channel's thread browser. */
+data class ThreadSummary(
+    val id: String,
+    val name: String,
+    val parentId: String?,
+    val messageCount: Int,
+    val archived: Boolean,
+    val locked: Boolean,
+    val lastMessageId: String?
+) {
+    companion object {
+        fun fromJson(o: JSONObject): ThreadSummary {
+            val meta = o.optJSONObject("thread_metadata")
+            fun str(key: String) = if (o.isNull(key)) null else o.optString(key).takeIf { it.isNotEmpty() }
+            return ThreadSummary(
+                id = o.getString("id"),
+                name = str("name") ?: "Thread",
+                parentId = str("parent_id"),
+                messageCount = o.optInt("message_count", 0),
+                archived = meta?.optBoolean("archived", false) ?: false,
+                locked = meta?.optBoolean("locked", false) ?: false,
+                lastMessageId = str("last_message_id")
+            )
+        }
+
+        /** Parses `{ "threads": [...] }` responses (thread search / active / archived endpoints). */
+        fun listFromResponse(o: JSONObject): List<ThreadSummary> {
+            val arr = o.optJSONArray("threads") ?: return emptyList()
+            return (0 until arr.length()).mapNotNull { runCatching { fromJson(arr.getJSONObject(it)) }.getOrNull() }
+        }
     }
 }
 
