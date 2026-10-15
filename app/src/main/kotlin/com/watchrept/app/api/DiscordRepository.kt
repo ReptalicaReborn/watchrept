@@ -167,7 +167,6 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
         val ownerId = guildOwnerCache[guildId]
             ?: (rest.getGuildOwnerId(guildId).getOrNull() ?: return true).also { guildOwnerCache[guildId] = it }
-        if (ownerId == myId) return true
 
         val roleIds = myRolesByGuild[guildId]
             ?: (rest.getGuildMemberRoles(guildId, myId).getOrNull() ?: return true)
@@ -175,14 +174,13 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         val roles = guildRolesCache.getOrPut(guildId) {
             rest.getGuildRoles(guildId).getOrNull() ?: return true
         }
-        val perms = Permissions.effectiveForMember(
+        return Permissions.canSendMessages(
             member = GuildMember(userId = myId, roleIds = roleIds),
             guildId = guildId,
-            everyoneRoleId = guildId,
+            ownerId = ownerId,
             roles = roles,
             channel = channel,
         )
-        return Permissions.has(perms, Permissions.SEND_MESSAGES)
     }
 
     fun connect() {

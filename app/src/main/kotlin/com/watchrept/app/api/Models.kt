@@ -396,6 +396,19 @@ object Permissions {
     }
 
     fun has(perms: Long, flag: Long) = perms and flag != 0L
+
+    /** Whether [member] may post in [channel]. The guild owner always can, as can administrators. */
+    fun canSendMessages(
+        member: GuildMember,
+        guildId: String,
+        ownerId: String?,
+        roles: List<GuildRole>,
+        channel: Channel
+    ): Boolean {
+        if (member.userId == ownerId) return true
+        val perms = effectiveForMember(member, guildId, everyoneRoleId = guildId, roles = roles, channel = channel)
+        return has(perms, SEND_MESSAGES)
+    }
 }
 
 data class Channel(
