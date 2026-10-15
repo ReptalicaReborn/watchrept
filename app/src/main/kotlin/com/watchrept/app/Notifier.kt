@@ -41,7 +41,7 @@ object Notifier {
         )
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_SERVICE, "Background connection", NotificationManager.IMPORTANCE_MIN).apply {
-                description = "Keeps WatchRept connected so notifications can arrive"
+                description = "Keeps Dihcord connected so notifications can arrive"
                 setShowBadge(false)
             }
         )
@@ -50,7 +50,7 @@ object Notifier {
     fun serviceNotification(context: Context): Notification =
         NotificationCompat.Builder(context, CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.send)
-            .setContentTitle("WatchRept")
+            .setContentTitle("Dihcord")
             .setContentText("Listening for messages")
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_MIN)

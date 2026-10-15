@@ -41,7 +41,7 @@ class UnreadTileService : TileService() {
             .setHeight(DimensionBuilders.expand())
             .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
             .setModifiers(ModifiersBuilders.Modifiers.Builder().setClickable(open).build())
-            .addContent(text("WatchRept", 12f, 0xFF9AA0FF.toInt()))
+            .addContent(text("Dihcord", 12f, 0xFF9AA0FF.toInt()))
             .addContent(text(counts.total.toString(), 36f, 0xFFFFFFFF.toInt()))
             .addContent(text(if (counts.total == 1) "mention" else "mentions", 12f, 0xFFBBBBBB.toInt()))
             .addContent(text("${counts.dm} DM · ${counts.server} server", 12f, 0xFFBBBBBB.toInt()))

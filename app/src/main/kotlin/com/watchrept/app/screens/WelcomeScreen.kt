@@ -162,7 +162,7 @@ fun WelcomeScreen(onSetupComplete: () -> Unit, onNavigateToQrLogin: () -> Unit) 
         ) {
             item {
                 Text(
-                    "WatchRept",
+                    "Dihcord",
                     style = MaterialTheme.typography.titleMedium,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()

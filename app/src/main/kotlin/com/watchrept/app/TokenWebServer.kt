@@ -200,7 +200,7 @@ class TokenWebServer(
 </head>
 <body>
 <div class="card">
-  <h1>WatchRept</h1>
+  <h1>Dihcord</h1>
   <p>Enter your Discord token below to log in on your watch. The token is stored only on your device.</p>
   <div class="warn">Never share your token. Only enter it on your own device, on a network you trust (this page is not encrypted).</div>
   <form method="POST" action="/">
@@ -217,7 +217,7 @@ class TokenWebServer(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WatchRept</title>
+<title>Dihcord</title>
 <style>
   body { font-family: system-ui, sans-serif; background: #1e1f22; color: #dbdee1;
          display: flex; align-items: center; justify-content: center;

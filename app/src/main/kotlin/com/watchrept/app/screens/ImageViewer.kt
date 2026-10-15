@@ -107,7 +107,7 @@ fun ImageViewer(url: String, contentDescription: String?, imageLoader: ImageLoad
                         saving = true
                         scope.launch {
                             ImageSaver.save(context, url)
-                                .onSuccess { Toast.makeText(context, "Saved to Pictures", Toast.LENGTH_SHORT).show() }
+                                .onSuccess { Toast.makeText(context, "Saved to Pictures/Dihcord", Toast.LENGTH_SHORT).show() }
                                 .onFailure {
                                     Toast.makeText(context, it.message ?: "Save failed", Toast.LENGTH_SHORT).show()
                                 }

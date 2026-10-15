@@ -523,7 +523,7 @@ fun SettingsScreen(
 
                 item {
                     Text(
-                        "Open on phone to download, then sideload via ADB:\nadb install WatchRept.apk",
+                        "Open on phone to download, then sideload via ADB:\nadb install Dihcord.apk",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
@@ -536,7 +536,7 @@ fun SettingsScreen(
 
             item {
                 Text(
-                    "WatchRept v${UpdateChecker.CURRENT_VERSION}",
+                    "Dihcord v${UpdateChecker.CURRENT_VERSION}",
                     style = MaterialTheme.typography.labelSmall,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -141,7 +141,7 @@ fun PhotoPickerScreen(
                 item { Spacer(Modifier.height(8.dp)) }
                 item {
                     Text(
-                        "Allow WatchRept to access your photos",
+                        "Allow Dihcord to access your photos",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

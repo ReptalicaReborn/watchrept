@@ -82,7 +82,7 @@ fun HomeScreen(
 
             item {
                 Text(
-                    text = "WatchRept",
+                    text = "Dihcord",
                     style = MaterialTheme.typography.titleMedium
                 )
             }

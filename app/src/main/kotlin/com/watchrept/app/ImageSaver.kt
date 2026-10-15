@@ -10,7 +10,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
-/** Downloads an image and stores it in the watch's gallery (Pictures/WatchRept) via MediaStore. */
+/** Downloads an image and stores it in the watch's gallery (Pictures/Dihcord) via MediaStore. */
 object ImageSaver {
     private val http = OkHttpClient()
 
@@ -26,12 +26,12 @@ object ImageSaver {
                     ?.takeIf { it.startsWith("image/") }
                     ?: "image/png"
                 val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "png"
-                val name = "WatchRept_${System.currentTimeMillis()}.$ext"
+                val name = "Dihcord_${System.currentTimeMillis()}.$ext"
 
                 val values = ContentValues().apply {
                     put(MediaStore.Images.Media.DISPLAY_NAME, name)
                     put(MediaStore.Images.Media.MIME_TYPE, mime)
-                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/WatchRept")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Dihcord")
                     put(MediaStore.Images.Media.IS_PENDING, 1)
                 }
                 val resolver = context.contentResolver
