@@ -165,8 +165,9 @@ fun ChatScreen(
     }
 
     // Optimistic until the permission check (which may need a couple of requests) finishes.
-    var canSend by remember(channelId) { mutableStateOf(true) }
-    LaunchedEffect(channelId) { canSend = repo.canSendMessage(channelId) }
+    var abilities by remember(channelId) { mutableStateOf(ChannelAbilities.ALL) }
+    LaunchedEffect(channelId) { abilities = repo.channelAbilities(channelId) }
+    val canSend = abilities.canSend
 
 
     LaunchedEffect(channelId) {
@@ -613,6 +614,41 @@ fun ChatScreen(
         }
     }
 
+    fun sendTyped() {
+        val text = inputText.trim()
+        if (text.isBlank() || slowRemaining > 0) return
+        inputText = ""
+        pendingText = ""
+        scope.launch {
+            slowRemaining = slowModeSecs
+            val replyTarget = replyingTo
+            if (replyTarget != null) {
+                repo.sendReply(
+                    channelId,
+                    text,
+                    replyTarget.id,
+                    replyPing
+                )
+                    .onFailure {
+                        sendError = "Failed: ${it.message}"
+                    }
+                replyingTo = null
+                replyPing = true
+            } else {
+                repo.sendMessage(channelId, text)
+                    .onFailure {
+                        sendError = "Failed: ${it.message}"
+                    }
+            }
+            while (true) {
+                delay(1_000)
+                slowRemaining =
+                    repo.slowModeRemainingSeconds(channelId)
+                if (slowRemaining <= 0) break
+            }
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         ScreenScaffold(scrollState = listState) {
             ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
@@ -850,37 +886,54 @@ fun ChatScreen(
                         }
 
                         if (canSend) {
-                            OutlinedTextField(
-                                value = inputText,
-                                onValueChange = { newValue ->
-                                    inputText = newValue
-                                    pendingText = newValue
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 36.dp, max = 90.dp),
-                                shape = RoundedCornerShape(18.dp),
-                                placeholder = {
-                                    Text(
-                                        "Message #$channelName",
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = inputText,
+                                    onValueChange = { newValue ->
+                                        inputText = newValue
+                                        pendingText = newValue
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 36.dp, max = 90.dp),
+                                    shape = RoundedCornerShape(18.dp),
+                                    placeholder = {
+                                        Text(
+                                            "Message #$channelName",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    },
+                                    textStyle = MaterialTheme.typography.bodySmall.copy(
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        lineHeight = 14.sp
+                                    ),
+                                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                        cursorColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    minLines = 1,
+                                    maxLines = 4,
+                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done)
+                                )
+                                FilledIconButton(
+                                    onClick = { sendTyped() },
+                                    modifier = Modifier.size(36.dp),
+                                    enabled = inputText.isNotBlank() && slowRemaining <= 0
+                                ) {
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.send),
+                                        contentDescription = "Send",
+                                        modifier = Modifier.size(18.dp)
                                     )
-                                },
-                                textStyle = MaterialTheme.typography.bodySmall.copy(
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    lineHeight = 14.sp
-                                ),
-                                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                                    focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                                    unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                                    cursorColor = MaterialTheme.colorScheme.primary
-                                ),
-                                minLines = 1,
-                                maxLines = 4,
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done)
-                            )
+                                }
+                            }
                         } else {
                             Text(
                                 text = "You cannot send messages here",//add lock icon from /res/drawable
@@ -897,104 +950,45 @@ fun ChatScreen(
                 item(key = "action_buttons") {
                     if (canSend) {
                         Column(modifier = Modifier.fillMaxWidth()) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(
-                                    space = 16.dp,
-                                    alignment = Alignment.CenterHorizontally
-                                )
-                            ) {
-                                FilledIconButton(
-                                    onClick = {
-                                        reactingToMsg = null
-                                        showPicker = true
-                                        tab = 0
-                                    },
-                                    modifier = Modifier
-                                        .height(40.dp)
-                                        .width(40.dp),
-                                ) {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.emoji),
-                                        contentDescription = "Emoji"
-                                    )
-                                }
-                                FilledIconButton(
-                                    onClick = {
-                                        reactingToMsg = null
-                                        showPicker = true
-                                        tab = 1
-                                    },
-                                    modifier = Modifier
-                                        .height(40.dp)
-                                        .width(40.dp),
-                                ) {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.sticker),
-                                        contentDescription = "Stickers"
-                                    )
-                                }
-                                FilledIconButton(
-                                    onClick = {
-                                        val text = inputText.trim()
-                                        if (text.isBlank() || slowRemaining > 0) return@FilledIconButton
-                                        inputText = ""
-                                        pendingText = ""
-                                        scope.launch {
-                                            slowRemaining = slowModeSecs
-                                            val replyTarget = replyingTo
-                                            if (replyTarget != null) {
-                                                repo.sendReply(
-                                                    channelId,
-                                                    text,
-                                                    replyTarget.id,
-                                                    replyPing
-                                                )
-                                                    .onFailure {
-                                                        sendError = "Failed: ${it.message}"
-                                                    }
-                                                replyingTo = null
-                                                replyPing = true
-                                            } else {
-                                                repo.sendMessage(channelId, text)
-                                                    .onFailure {
-                                                        sendError = "Failed: ${it.message}"
-                                                    }
-                                            }
-                                            while (true) {
-                                                delay(1_000)
-                                                slowRemaining =
-                                                    repo.slowModeRemainingSeconds(channelId)
-                                                if (slowRemaining <= 0) break
-                                            }
-                                        }
-                                    },
-                                    modifier = Modifier
-                                        .height(40.dp)
-                                        .width(40.dp),
-                                    enabled = inputText.isNotBlank() && slowRemaining <= 0
-                                ) {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.send),
-                                        contentDescription = "Send"
-                                    )
-                                }
-                            }
-
                             if (!isRecording) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(6.dp),
                                     horizontalArrangement = Arrangement.spacedBy(
-                                        space = 16.dp,
+                                        space = 8.dp,
                                         alignment = Alignment.CenterHorizontally
                                     )
-
                                 ) {
                                     FilledIconButton(
+                                        onClick = {
+                                            reactingToMsg = null
+                                            showPicker = true
+                                            tab = 0
+                                        },
+                                        modifier = Modifier
+                                            .size(36.dp),
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.emoji),
+                                            contentDescription = "Emoji"
+                                        )
+                                    }
+                                    FilledIconButton(
+                                        onClick = {
+                                            reactingToMsg = null
+                                            showPicker = true
+                                            tab = 1
+                                        },
+                                        modifier = Modifier
+                                            .size(36.dp),
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.sticker),
+                                            contentDescription = "Stickers"
+                                        )
+                                    }
+                                    if (abilities.canAttach) FilledIconButton(
                                         onClick = {
                                             val perm = if (android.os.Build.VERSION.SDK_INT >= 33)
                                                 Manifest.permission.READ_MEDIA_IMAGES
@@ -1010,19 +1004,17 @@ fun ChatScreen(
                                             }
                                         },
                                         modifier = Modifier
-                                            .height(40.dp)
-                                            .width(40.dp),
+                                            .size(36.dp),
                                     ) {
                                         Icon(
                                             painter = painterResource(id = R.drawable.image),
                                             contentDescription = "Upload Photo"
                                         )
                                     }
-                                    FilledIconButton(
+                                    if (abilities.canSendVoice) FilledIconButton(
                                         onClick = { startRecording() },
                                         modifier = Modifier
-                                            .height(40.dp)
-                                            .width(40.dp),
+                                            .size(36.dp),
                                     ) {
                                         Icon(
                                             painter = painterResource(id = R.drawable.mic),

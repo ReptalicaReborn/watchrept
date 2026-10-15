@@ -100,4 +100,56 @@ class PermissionsTest {
     fun `announcement channels follow permissions instead of being blocked`() {
         assertTrue(canSend(channel(type = ChannelType.GUILD_NEWS)))
     }
+
+    private fun abilities(channel: Channel, roles: List<GuildRole> = listOf(everyoneCanSend, memberRole)) =
+        Permissions.abilities(me, guildId, ownerId = null, roles = roles, channel = channel)
+
+    @Test
+    fun `voice messages and attachments need their own permissions`() {
+        // @everyone can only send text
+        val textOnly = abilities(channel())
+        assertTrue(textOnly.canSend)
+        assertFalse(textOnly.canAttach)
+        assertFalse(textOnly.canSendVoice)
+
+        val everyoneAll = role(
+            guildId,
+            Permissions.VIEW_CHANNEL or Permissions.SEND_MESSAGES or Permissions.ATTACH_FILES or
+                Permissions.SEND_VOICE_MESSAGES
+        )
+        val all = abilities(channel(), roles = listOf(everyoneAll, memberRole))
+        assertTrue(all.canAttach)
+        assertTrue(all.canSendVoice)
+    }
+
+    @Test
+    fun `server can disable voice messages in a channel`() {
+        val everyoneAll = role(
+            guildId,
+            Permissions.VIEW_CHANNEL or Permissions.SEND_MESSAGES or Permissions.ATTACH_FILES or
+                Permissions.SEND_VOICE_MESSAGES
+        )
+        val ch = channel(PermissionOverwrite(guildId, 0, allow = 0, deny = Permissions.SEND_VOICE_MESSAGES))
+        val a = abilities(ch, roles = listOf(everyoneAll, memberRole))
+        assertTrue(a.canSend)
+        assertTrue(a.canAttach)
+        assertFalse(a.canSendVoice)
+    }
+
+    @Test
+    fun `no send permission means no attachments or voice either`() {
+        val everyoneAll = role(
+            guildId,
+            Permissions.VIEW_CHANNEL or Permissions.SEND_MESSAGES or Permissions.ATTACH_FILES or
+                Permissions.SEND_VOICE_MESSAGES
+        )
+        val ch = channel(PermissionOverwrite(guildId, 0, allow = 0, deny = Permissions.SEND_MESSAGES))
+        assertTrue(abilities(ch, roles = listOf(everyoneAll, memberRole)) == ChannelAbilities(false, false, false))
+    }
+
+    @Test
+    fun `owner can do everything`() {
+        val ch = channel(PermissionOverwrite(guildId, 0, allow = 0, deny = Permissions.SEND_VOICE_MESSAGES))
+        assertTrue(Permissions.abilities(me, guildId, ownerId = "42", roles = listOf(everyoneCanSend), channel = ch) == ChannelAbilities.ALL)
+    }
 }

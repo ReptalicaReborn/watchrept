@@ -359,10 +359,19 @@ data class GuildRole(
     }
 }
 
+/** What the current user may post in a channel. */
+data class ChannelAbilities(val canSend: Boolean, val canAttach: Boolean, val canSendVoice: Boolean) {
+    companion object {
+        val ALL = ChannelAbilities(canSend = true, canAttach = true, canSendVoice = true)
+    }
+}
+
 object Permissions {
     const val ADMINISTRATOR = 1L shl 3
     const val VIEW_CHANNEL = 1L shl 10
     const val SEND_MESSAGES = 1L shl 11
+    const val ATTACH_FILES = 1L shl 15
+    const val SEND_VOICE_MESSAGES = 1L shl 46
 
     fun effectiveForMember(
         member: GuildMember,
@@ -404,10 +413,24 @@ object Permissions {
         ownerId: String?,
         roles: List<GuildRole>,
         channel: Channel
-    ): Boolean {
-        if (member.userId == ownerId) return true
+    ): Boolean = abilities(member, guildId, ownerId, roles, channel).canSend
+
+    /** What [member] may post in [channel]: text, attachments and voice messages. */
+    fun abilities(
+        member: GuildMember,
+        guildId: String,
+        ownerId: String?,
+        roles: List<GuildRole>,
+        channel: Channel
+    ): ChannelAbilities {
+        if (member.userId == ownerId) return ChannelAbilities.ALL
         val perms = effectiveForMember(member, guildId, everyoneRoleId = guildId, roles = roles, channel = channel)
-        return has(perms, SEND_MESSAGES)
+        val canSend = has(perms, SEND_MESSAGES)
+        return ChannelAbilities(
+            canSend = canSend,
+            canAttach = canSend && has(perms, ATTACH_FILES),
+            canSendVoice = canSend && has(perms, SEND_VOICE_MESSAGES),
+        )
     }
 }
 

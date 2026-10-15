@@ -167,27 +167,27 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     private val guildOwnerCache = mutableMapOf<String, String>()
 
     /**
-     * Whether the current user may post in [channelId], computed the way Discord does (base role
+     * What the current user may post in [channelId] (text, files, voice messages), computed the way Discord does (base role
      * permissions, then @everyone / role / member overwrites; administrators and the guild owner
      * bypass everything). Fails open whenever something can't be determined, so the input box is only
      * hidden when we are sure the server would reject the message; the server stays the authority.
      */
-    suspend fun canSendMessage(channelId: String): Boolean {
-        val channel = channelCache[channelId] ?: return true
-        if (channel.type != ChannelType.GUILD_TEXT && channel.type != ChannelType.GUILD_NEWS) return true
-        val guildId = channel.guildId ?: return true
-        val myId = currentUserId ?: return true
+    suspend fun channelAbilities(channelId: String): ChannelAbilities {
+        val channel = channelCache[channelId] ?: return ChannelAbilities.ALL
+        if (channel.type != ChannelType.GUILD_TEXT && channel.type != ChannelType.GUILD_NEWS) return ChannelAbilities.ALL
+        val guildId = channel.guildId ?: return ChannelAbilities.ALL
+        val myId = currentUserId ?: return ChannelAbilities.ALL
 
         val ownerId = guildOwnerCache[guildId]
-            ?: (rest.getGuildOwnerId(guildId).getOrNull() ?: return true).also { guildOwnerCache[guildId] = it }
+            ?: (rest.getGuildOwnerId(guildId).getOrNull() ?: return ChannelAbilities.ALL).also { guildOwnerCache[guildId] = it }
 
         val roleIds = myRolesByGuild[guildId]
-            ?: (rest.getGuildMemberRoles(guildId, myId).getOrNull() ?: return true)
+            ?: (rest.getGuildMemberRoles(guildId, myId).getOrNull() ?: return ChannelAbilities.ALL)
                 .also { myRolesByGuild[guildId] = it }
         val roles = guildRolesCache.getOrPut(guildId) {
-            rest.getGuildRoles(guildId).getOrNull() ?: return true
+            rest.getGuildRoles(guildId).getOrNull() ?: return ChannelAbilities.ALL
         }
-        return Permissions.canSendMessages(
+        return Permissions.abilities(
             member = GuildMember(userId = myId, roleIds = roleIds),
             guildId = guildId,
             ownerId = ownerId,
