@@ -78,7 +78,7 @@ class DiscordGateway(private val token: String) {
                         .put("guild_id", guildId)
                         .put("typing", true)
                         .put("threads", true)
-                        .put("activities", true)
+                        .put("activities", !com.dihcord.app.Perf.lite)
                         .put(
                             "channels",
                             JSONObject().put(channelId, JSONArray().put(JSONArray().put(0).put(99)))

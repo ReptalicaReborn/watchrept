@@ -481,7 +481,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
             }
         }
 
-        rest.getMessages(channelId).onSuccess { fetched ->
+        rest.getMessages(channelId, limit = com.dihcord.app.Perf.messagePageSize).onSuccess { fetched ->
             val fetchedList = fetched.reversed()
             fetchedList.forEach { userDisplayNames[it.author.id] = it.author.displayName }
             _messages.update { current ->

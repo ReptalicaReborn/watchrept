@@ -66,6 +66,7 @@ import android.media.MediaRecorder
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
+import com.dihcord.app.Perf
 import com.dihcord.app.api.*
 import com.dihcord.app.discordApp
 import com.dihcord.app.SetupPreferences
@@ -2375,7 +2376,7 @@ private fun DiscordAvatarWithDecoration(
         guildId,
         32
     ) else user.avatarUrl(32)
-    val decorUrl = member?.avatarDecorationUrl() ?: user.avatarDecorationUrl()
+    val decorUrl = if (Perf.lite) null else member?.avatarDecorationUrl() ?: user.avatarDecorationUrl()
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier

@@ -16,6 +16,7 @@ import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
 import com.dihcord.app.ApkInstaller
 import com.dihcord.app.NotificationService
+import com.dihcord.app.Perf
 import com.dihcord.app.Notifier
 import com.dihcord.app.SetupPreferences
 import com.dihcord.app.UpdateChecker
@@ -67,6 +68,10 @@ fun SettingsScreen(
             SetupPreferences.getMutedChannels(context).size + SetupPreferences.getMutedServers(context).size
         )
     }
+    val initialPerfMode = remember { SetupPreferences.getPerfMode(context) }
+    var perfMode by remember { mutableStateOf(initialPerfMode) }
+    val perfModeChanged = perfMode != initialPerfMode
+    val weakDevice = remember { Perf.isWeakDevice(context) }
     var compactMode by remember {
         mutableStateOf(SetupPreferences.getCompactMode(context))
     }
@@ -138,6 +143,48 @@ fun SettingsScreen(
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
+            }
+
+            item {
+                Text(
+                    "PERFORMANCE",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 2.dp)
+                )
+            }
+
+            item {
+                Button(
+                    onClick = {
+                        perfMode = Perf.Mode.values()[(perfMode.ordinal + 1) % Perf.Mode.values().size]
+                        SetupPreferences.setPerfMode(context, perfMode)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.filledTonalButtonColors(),
+                    secondaryLabel = {
+                        Text(
+                            when {
+                                perfModeChanged -> "Restart the app to apply"
+                                perfMode == Perf.Mode.AUTO ->
+                                    if (weakDevice) "Auto: on for this watch" else "Auto: off for this watch"
+                                perfMode == Perf.Mode.ON -> "Static GIFs, no extras, smaller pages"
+                                else -> "Full animations and effects"
+                            },
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                ) {
+                    Text(
+                        "Lite mode: " + when (perfMode) {
+                            Perf.Mode.AUTO -> "Auto"
+                            Perf.Mode.ON -> "On"
+                            Perf.Mode.OFF -> "Off"
+                        }
+                    )
+                }
             }
 
             item {

@@ -26,6 +26,7 @@ import coil.ImageLoader
 import coil.imageLoader
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
+import com.dihcord.app.Perf
 import com.dihcord.app.SetupPreferences
 import com.dihcord.app.api.*
 import com.dihcord.app.discordApp
@@ -198,7 +199,7 @@ private fun DmButton(
 ) {
     val context = LocalContext.current
     val avatarUrl = recipient?.avatarUrl(64)
-    val nameplateUrl = recipient?.nameplateUrl()
+    val nameplateUrl = if (Perf.lite) null else recipient?.nameplateUrl()
     val status = presence?.status ?: OnlineStatus.OFFLINE
     val initial = dm.displayName.firstOrNull()?.uppercaseChar()?.toString() ?: "?"
 
@@ -298,7 +299,7 @@ private fun DmButton(
                         }
                     }
 
-                    val decorUrl = recipient?.avatarDecorationUrl()
+                    val decorUrl = if (Perf.lite) null else recipient?.avatarDecorationUrl()
                     if (decorUrl != null && !isHidden) {
                         SubcomposeAsyncImage(
                             model = ImageRequest.Builder(context).data(decorUrl).crossfade(false)

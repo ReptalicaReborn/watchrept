@@ -189,6 +189,16 @@ object SetupPreferences {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { remove(KEY_MUTED_SERVERS) }
     }
 
+    private const val KEY_PERF_MODE = "perf_mode"
+
+    fun getPerfMode(context: Context): Perf.Mode =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_PERF_MODE, null)
+            ?.let { runCatching { Perf.Mode.valueOf(it) }.getOrNull() } ?: Perf.Mode.AUTO
+
+    fun setPerfMode(context: Context, mode: Perf.Mode) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { putString(KEY_PERF_MODE, mode.name) }
+    }
+
     fun isSetupComplete(context: Context): Boolean = getToken(context) != null
     private const val KEY_PINNED_SERVERS = "pinned_servers"
 

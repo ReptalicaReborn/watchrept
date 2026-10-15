@@ -24,10 +24,12 @@ class DihcordApp : Application(), ImageLoaderFactory {
     override fun newImageLoader(): ImageLoader =
         ImageLoader.Builder(this)
             .components {
-                add(ImageDecoderDecoder.Factory())
+                // In lite mode GIFs (animated emoji, avatars, attachments) fall back to the platform
+                // decoder, which shows the first frame only: no per-frame decoding on weak CPUs.
+                if (!Perf.lite) add(ImageDecoderDecoder.Factory())
                 add(SvgDecoder.Factory())
             }
-            .memoryCache { MemoryCache.Builder(this).maxSizePercent(0.20).build() }
+            .memoryCache { MemoryCache.Builder(this).maxSizePercent(if (Perf.lite) 0.15 else 0.20).build() }
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("image_cache"))
@@ -36,7 +38,7 @@ class DihcordApp : Application(), ImageLoaderFactory {
             }
             // Discord CDN URLs are content-addressed, so cached copies never go stale.
             .respectCacheHeaders(false)
-            .crossfade(true)
+            .crossfade(!Perf.lite)
             .build()
 
     var repository: DiscordRepository? = null
@@ -47,6 +49,7 @@ class DihcordApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        Perf.init(this)
         UpdateChecker.start(this)
         UpdateChecker.checkNow(this)
     }

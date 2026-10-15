@@ -1,0 +1,5 @@
+# Baseline profile: ART compiles these ahead of time at install (via profileinstaller for sideloaded
+# APKs), so first launch and scrolling don't run interpreted. This matters most on slow watch CPUs.
+# Library profiles (Compose, Wear, Coil, OkHttp) are merged in automatically.
+Lcom/dihcord/app/**;
+HSPLcom/dihcord/app/**;->**(**)**
