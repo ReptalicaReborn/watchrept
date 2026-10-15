@@ -262,6 +262,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    val captcha by com.dihcord.app.captcha.CaptchaBroker.pending.collectAsState()
+                    captcha?.let { com.dihcord.app.captcha.CaptchaScreen(it) }
+
                     if (showInvalidTokenPopup) {
                         Box(
                             modifier = Modifier

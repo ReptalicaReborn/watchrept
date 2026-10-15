@@ -7,6 +7,8 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import com.dihcord.app.captcha.CaptchaBroker
+import com.dihcord.app.captcha.CaptchaChallenge
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -29,14 +31,43 @@ class DiscordRestClient(private val token: String) {
             .header("Authorization", token)
             .header("User-Agent", "Dihcord/1.0 (WearOS)")
 
-    private suspend fun execute(request: Request): String = withContext(Dispatchers.IO) {
-        val response = http.newCall(request).execute()
-        val body = response.body?.string() ?: ""
-        if (!response.isSuccessful) {
-            val msg = runCatching { JSONObject(body).optString("message", body) }.getOrDefault(body)
+    private class RawResponse(val code: Int, val body: String, val ok: Boolean)
+
+    private suspend fun send(request: Request): RawResponse = withContext(Dispatchers.IO) {
+        http.newCall(request).execute().use { RawResponse(it.code, it.body?.string().orEmpty(), it.isSuccessful) }
+    }
+
+    /**
+     * Runs [request]. If Discord answers with a captcha challenge, asks the user to solve it (see CaptchaBroker)
+     * and retries once with the solution; if they can't, fails with [CaptchaRequiredException].
+     */
+    private suspend fun execute(request: Request): String {
+        val first = send(request)
+        if (first.code == 400) {
+            val challenge = CaptchaChallenge.parse(first.body)
+            if (challenge != null) {
+                val key = CaptchaBroker.solve(challenge) ?: throw CaptchaRequiredException()
+                val retry = request.newBuilder()
+                    .header("X-Captcha-Key", key)
+                    .apply {
+                        challenge.rqtoken?.let { header("X-Captcha-Rqtoken", it) }
+                        challenge.sessionId?.let { header("X-Captcha-Session-Id", it) }
+                    }
+                    .build()
+                return checked(send(retry))
+            }
+        }
+        return checked(first)
+    }
+
+    private fun checked(response: RawResponse): String {
+        if (!response.ok) {
+            if (response.code == 400 && CaptchaChallenge.parse(response.body) != null) throw CaptchaRequiredException()
+            val msg = runCatching { JSONObject(response.body).optString("message", response.body) }
+                .getOrDefault(response.body)
             throw DiscordApiException(response.code, msg)
         }
-        body
+        return response.body
     }
 
     private suspend fun get(path: String): String =
@@ -255,11 +286,7 @@ class DiscordRestClient(private val token: String) {
                 .build()
 
             val request = buildRequest("/channels/$channelId/messages").post(multipart).build()
-            val responseText = http.newCall(request).execute().use { resp ->
-                val text = resp.body?.string() ?: throw IOException("Empty response")
-                if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}: $text")
-                text
-            }
+            val responseText = execute(request)
             DiscordMessage.fromJson(JSONObject(responseText))
         }
     }
@@ -297,11 +324,7 @@ class DiscordRestClient(private val token: String) {
                 .build()
 
             val request = buildRequest("/channels/$channelId/messages").post(multipart).build()
-            val responseText = http.newCall(request).execute().use { resp ->
-                val text = resp.body?.string() ?: throw IOException("Empty response")
-                if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}: $text")
-                text
-            }
+            val responseText = execute(request)
             DiscordMessage.fromJson(JSONObject(responseText))
         }
     }
@@ -359,5 +382,11 @@ class DiscordRestClient(private val token: String) {
 
 }
 
-class DiscordApiException(val httpCode: Int, message: String) :
+/** Discord wanted a captcha and it wasn't solved (cancelled, timed out, or the app wasn't on screen). */
+class CaptchaRequiredException : DiscordApiException(
+    400,
+    "Discord wants a captcha. Do this once in the Discord app on your phone, then try again."
+)
+
+open class DiscordApiException(val httpCode: Int, message: String) :
     IOException("Discord API error $httpCode: $message")

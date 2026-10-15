@@ -6,8 +6,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import java.io.ByteArrayOutputStream
-import java.io.InputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -92,16 +90,16 @@ class TokenWebServer(
             socket.use {
                 it.soTimeout = READ_TIMEOUT_MS
                 val input = it.getInputStream()
-                val headBytes = readHead(input) ?: return respond(it, 400, "Bad request")
+                val headBytes = MiniHttp.readHead(input, MAX_HEAD) ?: return MiniHttp.respond(it, 400, "Bad request")
                 val lines = headBytes.toString(Charsets.ISO_8859_1).split("\r\n")
                 val isPost = lines.firstOrNull()?.startsWith("POST ") == true
-                if (!isPost) return respond(it, 200, buildFormPage())
+                if (!isPost) return MiniHttp.respond(it, 200, buildFormPage())
 
                 val length = lines.firstOrNull { l -> l.startsWith("content-length:", ignoreCase = true) }
                     ?.substringAfter(":")?.trim()?.toIntOrNull() ?: -1
-                if (length !in 1..MAX_BODY) return respond(it, 413, "Request too large")
+                if (length !in 1..MAX_BODY) return MiniHttp.respond(it, 413, "Request too large")
 
-                val body = String(readExactly(input, length) ?: return respond(it, 400, "Bad request"), Charsets.UTF_8)
+                val body = String(MiniHttp.readExactly(input, length) ?: return MiniHttp.respond(it, 400, "Bad request"), Charsets.UTF_8)
                 val form = body.split("&").mapNotNull { kv ->
                     val k = kv.substringBefore("=", "")
                     if (k.isEmpty()) null else k to URLDecoder.decode(kv.substringAfter("=", ""), "UTF-8")
@@ -109,16 +107,16 @@ class TokenWebServer(
 
                 when {
                     done || failedAttempts >= MAX_FAILED_ATTEMPTS ->
-                        respond(it, 403, buildErrorPage("Too many wrong PINs. Restart the web server on the watch."))
+                        MiniHttp.respond(it, 403, buildErrorPage("Too many wrong PINs. Restart the web server on the watch."))
                     !pinMatches(form["pin"].orEmpty().trim()) -> {
                         failedAttempts++
-                        respond(it, 403, buildErrorPage("Wrong PIN."))
+                        MiniHttp.respond(it, 403, buildErrorPage("Wrong PIN."))
                     }
-                    form["token"].isNullOrBlank() -> respond(it, 400, buildErrorPage("Token is empty."))
+                    form["token"].isNullOrBlank() -> MiniHttp.respond(it, 400, buildErrorPage("Token is empty."))
                     else -> {
                         done = true
                         submitted = form["token"]!!.trim()
-                        respond(it, 200, buildSuccessPage())
+                        MiniHttp.respond(it, 200, buildSuccessPage())
                     }
                 }
             }
@@ -135,47 +133,6 @@ class TokenWebServer(
 
     private fun pinMatches(candidate: String) =
         MessageDigest.isEqual(candidate.toByteArray(), pin.toByteArray())
-
-    /** Reads up to and including the blank line ending the headers; null if oversized or truncated. */
-    private fun readHead(input: InputStream): ByteArray? {
-        val out = ByteArrayOutputStream()
-        var matched = 0
-        val end = byteArrayOf(13, 10, 13, 10)
-        while (out.size() < MAX_HEAD) {
-            val b = input.read()
-            if (b < 0) return null
-            out.write(b)
-            matched = if (b.toByte() == end[matched]) matched + 1 else if (b.toByte() == end[0]) 1 else 0
-            if (matched == end.size) return out.toByteArray()
-        }
-        return null
-    }
-
-    private fun readExactly(input: InputStream, length: Int): ByteArray? {
-        val buf = ByteArray(length)
-        var read = 0
-        while (read < length) {
-            val n = input.read(buf, read, length - read)
-            if (n < 0) return null
-            read += n
-        }
-        return buf
-    }
-
-    private fun respond(socket: Socket, status: Int, html: String) {
-        val bytes = html.toByteArray(Charsets.UTF_8)
-        val text = when (status) {
-            200 -> "OK"; 400 -> "Bad Request"; 403 -> "Forbidden"; else -> "Payload Too Large"
-        }
-        val out = socket.getOutputStream()
-        out.write(
-            ("HTTP/1.1 $status $text\r\nContent-Type: text/html; charset=utf-8\r\n" +
-                "Content-Length: ${bytes.size}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")
-                .toByteArray(),
-        )
-        out.write(bytes)
-        out.flush()
-    }
 
     private fun buildFormPage() = """<!DOCTYPE html>
 <html lang="en">

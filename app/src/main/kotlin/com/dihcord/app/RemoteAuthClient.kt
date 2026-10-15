@@ -1,5 +1,7 @@
 package com.dihcord.app
 
+import com.dihcord.app.captcha.CaptchaBroker
+import com.dihcord.app.captcha.CaptchaChallenge
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.*
@@ -239,12 +241,20 @@ class RemoteAuthClient(
                 .build()
             val response = withContext(Dispatchers.IO) { http.newCall(request).execute() }
             val responseBody = response.body?.string() ?: throw Exception("Empty response")
-            log("Ticket exchange HTTP ${response.code}: $responseBody")
+            log("Ticket exchange HTTP ${response.code}")
 
             if (response.code == 400) {
-                val jsonRes = runCatching { JSONObject(responseBody) }.getOrNull()
-                if (jsonRes != null && jsonRes.optString("captcha_service") == "hcaptcha") {
-                    log("hCaptcha required! Captcha verification is not supported on Wear OS.")
+                val challenge = CaptchaChallenge.parse(responseBody)
+                if (challenge != null) {
+                    if (captchaKey == null) {
+                        log("Captcha required, waiting for it to be solved on the phone…")
+                        val key = CaptchaBroker.solve(challenge)
+                        if (key != null) {
+                            exchangeTicketForToken(ticket, key, challenge.rqtoken)
+                            return
+                        }
+                    }
+                    log("Captcha was not solved.")
                     setState(RemoteAuthState.CaptchaRequired)
                     return
                 }
