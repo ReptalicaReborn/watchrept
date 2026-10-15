@@ -127,7 +127,7 @@ fun ServerChannels(
     ScreenScaffold(scrollState = listState) {
         ScalingLazyColumn(state = listState) {
             item {
-                Text(guildName, style = MaterialTheme.typography.titleMedium)
+                ScreenTitle(guildName)
             }
 
             when {

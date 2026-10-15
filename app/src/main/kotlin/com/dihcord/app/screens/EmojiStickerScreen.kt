@@ -97,29 +97,17 @@ fun EmojiStickerScreen(
     ScreenScaffold(scrollState = listState) {
         ScalingLazyColumn(state = listState) {
             item {
-                Text(
-                    if (reactMode) "React" else if (showStickers) "Stickers" else "Emojis",
-                    style = MaterialTheme.typography.bodySmall,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                ScreenTitle(if (reactMode) "React" else if (showStickers) "Stickers" else "Emojis")
             }
             item {
-                OutlinedTextField(
+                CompactTextField(
                     value = query,
                     onValueChange = { query = it.take(32) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 36.dp, max = 48.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    singleLine = true,
-                    placeholder = { Text("Search", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                    textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface),
-                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                        cursorColor = MaterialTheme.colorScheme.primary
-                    )
+                    placeholder = "Search",
+                    singleLine = true
                 )
             }
 
@@ -147,13 +135,15 @@ fun EmojiStickerScreen(
             } else {
                 val unicode = COMMON_UNICODE_EMOJI.filter { (_, words) -> q.isEmpty() || words.contains(q) }
                 if (unicode.isNotEmpty()) {
-                    gridRows(unicode, perRow = 6) { (emoji, _) ->
+                    gridRows(unicode, perRow = 5) { (emoji, _) ->
                         Text(
                             text = emoji,
-                            fontSize = 20.sp,
+                            fontSize = 19.sp,
+                            textAlign = TextAlign.Center,
                             modifier = Modifier
+                                .size(32.dp)
                                 .clickable { onUnicodeEmojiPicked(emoji) }
-                                .padding(4.dp)
+                                .wrapContentSize()
                         )
                     }
                 }
@@ -232,7 +222,7 @@ private fun EmojiCell(
     val context = LocalContext.current
     Box(
         modifier = Modifier
-            .size(34.dp)
+            .size(32.dp)
             .clickable(enabled = use != EmojiUse.LOCKED) { onPicked(emoji, use == EmojiUse.AS_LINK) },
         contentAlignment = Alignment.Center
     ) {
@@ -242,7 +232,7 @@ private fun EmojiCell(
             contentDescription = emoji.name,
             contentScale = ContentScale.Fit,
             modifier = Modifier
-                .size(30.dp)
+                .size(26.dp)
                 .alpha(if (use == EmojiUse.LOCKED) 0.35f else 1f)
         )
         if (use == EmojiUse.LOCKED) {
@@ -265,7 +255,7 @@ private fun StickerCell(
     val context = LocalContext.current
     Box(
         modifier = Modifier
-            .size(52.dp)
+            .size(46.dp)
             .clickable(enabled = use != EmojiUse.LOCKED) { onPicked(sticker, use == EmojiUse.AS_LINK) },
         contentAlignment = Alignment.Center
     ) {
@@ -275,7 +265,7 @@ private fun StickerCell(
             contentDescription = sticker.name,
             contentScale = ContentScale.Fit,
             modifier = Modifier
-                .size(48.dp)
+                .size(42.dp)
                 .alpha(if (use == EmojiUse.LOCKED) 0.35f else 1f)
         )
         if (use == EmojiUse.LOCKED) {

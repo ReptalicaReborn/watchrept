@@ -119,7 +119,7 @@ fun DmsScreen(
 
     ScreenScaffold(scrollState = listState) {
         ScalingLazyColumn(state = listState) {
-            item { Text("Direct Messages", style = MaterialTheme.typography.titleMedium) }
+            item { ScreenTitle("Direct Messages") }
 
             if (loading) {
                 item { CircularProgressIndicator() }

@@ -140,23 +140,11 @@ fun SettingsScreen(
         ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
 
             item {
-                Text(
-                    "Settings",
-                    style = MaterialTheme.typography.titleMedium,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                ScreenTitle("Settings")
             }
 
             item {
-                Text(
-                    "PERFORMANCE",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                )
+                SectionHeader("Performance")
             }
 
             item {
@@ -191,14 +179,7 @@ fun SettingsScreen(
             }
 
             item {
-                Text(
-                    "NOTIFICATIONS",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                )
+                SectionHeader("Notifications")
             }
 
             item {
@@ -220,13 +201,13 @@ fun SettingsScreen(
                     },
                     label = {
                         Text(
-                            "Background notifications",
+                            "Notifications",
                             style = MaterialTheme.typography.bodySmall
                         )
                     },
                     secondaryLabel = {
                         Text(
-                            "DMs & mentions. Uses more battery.",
+                            "DMs & mentions",
                             style = MaterialTheme.typography.labelSmall
                         )
                     }
@@ -292,14 +273,7 @@ fun SettingsScreen(
             }
 
             item {
-                Text(
-                    "APPEARANCE",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                )
+                SectionHeader("Appearance")
             }
 
             item {
@@ -350,14 +324,7 @@ fun SettingsScreen(
             }
 
             item {
-                Text(
-                    "GENERAL",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                )
+                SectionHeader("General")
             }
 
             item {
@@ -420,14 +387,7 @@ fun SettingsScreen(
             }
 
             item {
-                Text(
-                    "VENCORD",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                )
+                SectionHeader("Vencord")
             }
 
             item {
@@ -476,14 +436,7 @@ fun SettingsScreen(
             }
 
             item {
-                Text(
-                    "ACCOUNT",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                )
+                SectionHeader("Account")
             }
 
             item {
@@ -497,14 +450,7 @@ fun SettingsScreen(
             }
 
             item {
-                Text(
-                    "UPDATE",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                )
+                SectionHeader("Update")
             }
 
             item {

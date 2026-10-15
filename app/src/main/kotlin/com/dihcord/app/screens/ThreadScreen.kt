@@ -414,7 +414,13 @@ fun ThreadScreen(
                         Icon(painter = painterResource(id = R.drawable.reply),
                             contentDescription = null, tint = Color(0xFF5865F2),
                             modifier = Modifier.size(14.dp))
-                        Text("# $threadName", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            threadName,
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = 150.dp)
+                        )
                     }
                     if (history.loadingOlder) {
                         Text("Loading older messages…", style = MaterialTheme.typography.labelSmall,
@@ -528,26 +534,12 @@ fun ThreadScreen(
                         mentionSuggestions = emptyList()
                     }
                 }
-                OutlinedTextField(
+                CompactTextField(
                     value = inputText,
                     onValueChange = { inputText = it; pendingText = it },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(18.dp),
-                    placeholder = {
-                        Text(
-                            "Reply in thread",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    },
-                    textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface),
-                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                        cursorColor = MaterialTheme.colorScheme.primary
-                    ),
-                    minLines = 1, maxLines = 4,
+                    placeholder = "Reply in thread",
+                    maxLines = 4,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done)
                 )
               }

@@ -231,12 +231,7 @@ fun ServerScreen(
     ScreenScaffold(scrollState = listState) {
         ScalingLazyColumn(state = listState) {
             item {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                ScreenTitle(title)
             }
 
             if (folderKey == null && serverPings.isNotEmpty()) {

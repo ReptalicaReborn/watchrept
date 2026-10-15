@@ -30,6 +30,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.text.withLink
+import androidx.compose.ui.text.appendInlineContent
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -409,27 +412,11 @@ fun ChatScreen(
                     )
                 }
                 item {
-                    OutlinedTextField(
+                    CompactTextField(
                         value = editText,
                         onValueChange = { editText = it },
                         modifier = Modifier.fillMaxWidth(),
-                        label = {
-                            Text(
-                                "Edit",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        shape = RoundedCornerShape(18.dp),
-                        textStyle = MaterialTheme.typography.bodySmall.copy(
-                            color = MaterialTheme.colorScheme.onSurface,
-                            lineHeight = 14.sp
-                        ),
-                        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                            cursorColor = MaterialTheme.colorScheme.primary
-                        ),
-                        minLines = 1,
+                        placeholder = "Edit",
                         maxLines = 4,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done)
                     )
@@ -732,10 +719,7 @@ fun ChatScreen(
             ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 item(key = "channel_title") {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "#$channelName",
-                            style = MaterialTheme.typography.titleMedium
-                        )
+                        ScreenTitle("#$channelName")
                         if (history.loadingOlder) {
                             Text(
                                 "Loading older messages…",
@@ -1006,7 +990,7 @@ fun ChatScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                OutlinedTextField(
+                                CompactTextField(
                                     value = inputText,
                                     onValueChange = { newValue ->
                                         inputText = newValue
@@ -1015,25 +999,7 @@ fun ChatScreen(
                                     modifier = Modifier
                                         .weight(1f)
                                         .heightIn(min = 36.dp, max = 90.dp),
-                                    shape = RoundedCornerShape(18.dp),
-                                    placeholder = {
-                                        Text(
-                                            "Message #$channelName",
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    },
-                                    textStyle = MaterialTheme.typography.bodySmall.copy(
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        lineHeight = 14.sp
-                                    ),
-                                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                                        cursorColor = MaterialTheme.colorScheme.primary
-                                    ),
-                                    minLines = 1,
+                                    placeholder = "Message #$channelName",
                                     maxLines = 4,
                                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done)
                                 )
@@ -1196,7 +1162,7 @@ fun ChatScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(bottom = 18.dp),
+                    .padding(bottom = 12.dp),
                 contentAlignment = Alignment.BottomCenter
             ) {
                 Row(
@@ -1204,15 +1170,15 @@ fun ChatScreen(
                         .clip(RoundedCornerShape(16.dp))
                         .background(MaterialTheme.colorScheme.primary)
                         .clickable { jumpToLatest() }
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
                     Icon(
                         painter = painterResource(id = R.drawable.down),
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(11.dp)
                     )
                     Text(
                         text = when {
@@ -1220,7 +1186,8 @@ fun ChatScreen(
                             unseenCount > 0 -> "$unseenCount new"
                             else -> "Latest"
                         },
-                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 11.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onPrimary
                     )
                 }
@@ -1244,22 +1211,15 @@ private fun CreateThreadDialog(
     val listState = rememberScalingLazyListState()
     ScreenScaffold(scrollState = listState) {
         ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-            item { Text("New thread", style = MaterialTheme.typography.titleMedium) }
+            item { ScreenTitle("New thread") }
             item {
-                OutlinedTextField(
+                CompactTextField(
                     value = name,
                     onValueChange = { onNameChange(it.take(100)) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 36.dp, max = 72.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    placeholder = { Text("Thread name", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                    textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface),
-                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                        cursorColor = MaterialTheme.colorScheme.primary
-                    ),
+                    placeholder = "Thread name",
                     singleLine = true
                 )
             }
@@ -2002,6 +1962,93 @@ private fun isOnlyEmojis(content: String): Boolean {
 }
 
 @OptIn(ExperimentalLayoutApi::class)
+/**
+ * One line of a message as a single flowing paragraph: markdown styling, mentions, channel/role links, URLs and
+ * custom emoji (embedded at text size) all wrap together, the way Discord lays text out.
+ */
+@Composable
+private fun InlineMessageLine(
+    parts: List<ContentParser.Part>,
+    headingLevel: Int,
+    isSubtext: Boolean,
+    isOnlyEmoji: Boolean,
+    imageLoader: ImageLoader
+) {
+    val context = LocalContext.current
+    val colors = MaterialTheme.colorScheme
+    val baseStyle = when {
+        headingLevel == 1 -> MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+        headingLevel == 2 -> MaterialTheme.typography.titleSmall.copy(fontSize = 15.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+        headingLevel == 3 -> MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+        isSubtext -> MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, color = colors.onSurfaceVariant.copy(alpha = 0.7f))
+        isOnlyEmoji -> MaterialTheme.typography.bodySmall.copy(fontSize = 28.sp, lineHeight = 32.sp)
+        else -> MaterialTheme.typography.bodySmall
+    }
+    val emojiEm = if (isOnlyEmoji) 1.25f else 1.35f
+
+    val inline = HashMap<String, androidx.compose.foundation.text.InlineTextContent>()
+    val text = buildAnnotatedString {
+        parts.forEachIndexed { index, part ->
+            when (part) {
+                is ContentParser.Part.PlainText -> {
+                    ContentParser.parseMarkdown(part.text, subtext = isSubtext, headingLevel = headingLevel).forEach { span ->
+                        withStyle(
+                            SpanStyle(
+                                fontWeight = if (span.bold) androidx.compose.ui.text.font.FontWeight.Bold else null,
+                                fontStyle = if (span.italic) androidx.compose.ui.text.font.FontStyle.Italic else null,
+                                textDecoration = markdownDecoration(span),
+                                fontFamily = if (span.code) androidx.compose.ui.text.font.FontFamily.Monospace else null,
+                                background = if (span.code) colors.surfaceContainer else androidx.compose.ui.graphics.Color.Unspecified
+                            )
+                        ) { append(span.text) }
+                    }
+                }
+
+                is ContentParser.Part.CustomEmoji -> {
+                    val id = "emoji$index"
+                    appendInlineContent(id, ":${part.name}:")
+                    inline[id] = androidx.compose.foundation.text.InlineTextContent(
+                        androidx.compose.ui.text.Placeholder(
+                            width = emojiEm.em,
+                            height = emojiEm.em,
+                            placeholderVerticalAlign = androidx.compose.ui.text.PlaceholderVerticalAlign.TextCenter
+                        )
+                    ) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(context).data(part.url).build(),
+                            imageLoader = imageLoader,
+                            contentDescription = part.name,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+
+                is ContentParser.Part.UserMention -> withStyle(
+                    SpanStyle(color = colors.primary, background = colors.primaryContainer.copy(alpha = 0.6f))
+                ) { append("@${part.displayName}") }
+
+                is ContentParser.Part.RoleMention -> withStyle(SpanStyle(color = colors.tertiary)) {
+                    append("@${part.roleName}")
+                }
+
+                is ContentParser.Part.ChannelMention -> withStyle(SpanStyle(color = colors.secondary)) {
+                    append("#${part.channelName}")
+                }
+
+                is ContentParser.Part.Link -> withLink(
+                    androidx.compose.ui.text.LinkAnnotation.Url(
+                        part.url,
+                        androidx.compose.ui.text.TextLinkStyles(
+                            style = SpanStyle(color = colors.primary, textDecoration = TextDecoration.Underline)
+                        )
+                    )
+                ) { append(part.url) }
+            }
+        }
+    }
+    Text(text = text, style = baseStyle, inlineContent = inline, modifier = Modifier.fillMaxWidth())
+}
+
 @Composable
 private fun MessageContent(
     content: String,
@@ -2036,166 +2083,180 @@ private fun MessageContent(
                 ContentParser.parse(cleanLine, userNames, roleNames, channelNames)
             }
 
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                parts.forEach { part ->
-                    when (part) {
-                        is ContentParser.Part.PlainText -> {
-                            val spans = ContentParser.parseMarkdown(
-                                part.text,
-                                subtext = isSubtext,
-                                headingLevel = headingLevel
-                            )
-                            spans.forEach { span ->
-                                if (span.spoiler) {
-                                    SpoilerText(span.text, spoilerRevealOnTap)
-                                } else {
-                                    val fontSize = when (span.headingLevel) {
-                                        1 -> 18.sp
-                                        2 -> 15.sp
-                                        3 -> 13.sp
-                                        else -> if (span.subtext) 10.sp else androidx.compose.ui.unit.TextUnit.Unspecified
-                                    }
-                                    val fontWeight =
-                                        if (span.headingLevel > 0 || span.bold) androidx.compose.ui.text.font.FontWeight.Bold else null
-                                    val fontStyle =
-                                        if (span.italic) androidx.compose.ui.text.font.FontStyle.Italic else null
-                                    val textColor = when {
-                                        span.headingLevel > 0 -> MaterialTheme.colorScheme.onSurface
-                                        span.subtext -> MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                                            alpha = 0.7f
-                                        )
-
-                                        else -> androidx.compose.ui.graphics.Color.Unspecified
-                                    }
-
-                                    val annotated = buildAnnotatedString {
-                                        val style = SpanStyle(
-                                            fontWeight = fontWeight,
-                                            fontStyle = fontStyle,
-                                            textDecoration = markdownDecoration(span),
-                                            background = if (span.code)
-                                                MaterialTheme.colorScheme.surfaceContainer
-                                            else androidx.compose.ui.graphics.Color.Unspecified,
-                                            fontFamily = if (span.code)
-                                                androidx.compose.ui.text.font.FontFamily.Monospace
-                                            else null,
-                                            fontSize = fontSize,
-                                            color = textColor
-                                        )
-                                        withStyle(style) { append(span.text) }
-                                    }
-                                    val textStyle = when {
-                                        span.headingLevel == 1 -> MaterialTheme.typography.titleMedium.copy(
-                                            fontSize = 18.sp,
-                                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                                        )
-
-                                        span.headingLevel == 2 -> MaterialTheme.typography.titleSmall.copy(
-                                            fontSize = 15.sp,
-                                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                                        )
-
-                                        span.headingLevel == 3 -> MaterialTheme.typography.bodyMedium.copy(
-                                            fontSize = 13.sp,
-                                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                                        )
-
-                                        span.subtext -> MaterialTheme.typography.bodySmall.copy(
-                                            fontSize = 10.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+            val hasSpoiler = remember(parts) {
+                parts.any { p -> p is ContentParser.Part.PlainText && ContentParser.parseMarkdown(p.text).any { it.spoiler } }
+            }
+            if (!hasSpoiler) {
+                InlineMessageLine(
+                    parts = parts,
+                    headingLevel = headingLevel,
+                    isSubtext = isSubtext,
+                    isOnlyEmoji = isOnlyEmoji,
+                    imageLoader = imageLoader
+                )
+            } else {
+                // Spoilers need their own tappable element, so lines containing one keep the piecewise layout.
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    parts.forEach { part ->
+                        when (part) {
+                            is ContentParser.Part.PlainText -> {
+                                val spans = ContentParser.parseMarkdown(
+                                    part.text,
+                                    subtext = isSubtext,
+                                    headingLevel = headingLevel
+                                )
+                                spans.forEach { span ->
+                                    if (span.spoiler) {
+                                        SpoilerText(span.text, spoilerRevealOnTap)
+                                    } else {
+                                        val fontSize = when (span.headingLevel) {
+                                            1 -> 18.sp
+                                            2 -> 15.sp
+                                            3 -> 13.sp
+                                            else -> if (span.subtext) 10.sp else androidx.compose.ui.unit.TextUnit.Unspecified
+                                        }
+                                        val fontWeight =
+                                            if (span.headingLevel > 0 || span.bold) androidx.compose.ui.text.font.FontWeight.Bold else null
+                                        val fontStyle =
+                                            if (span.italic) androidx.compose.ui.text.font.FontStyle.Italic else null
+                                        val textColor = when {
+                                            span.headingLevel > 0 -> MaterialTheme.colorScheme.onSurface
+                                            span.subtext -> MaterialTheme.colorScheme.onSurfaceVariant.copy(
                                                 alpha = 0.7f
                                             )
-                                        )
 
-                                        isOnlyEmoji -> MaterialTheme.typography.bodySmall.copy(
-                                            fontSize = 28.sp,
-                                            lineHeight = 32.sp
-                                        )
+                                            else -> androidx.compose.ui.graphics.Color.Unspecified
+                                        }
 
-                                        else -> MaterialTheme.typography.bodySmall
-                                    }
-                                    Text(text = annotated, style = textStyle)
-                                }
-                            }
-                        }
+                                        val annotated = buildAnnotatedString {
+                                            val style = SpanStyle(
+                                                fontWeight = fontWeight,
+                                                fontStyle = fontStyle,
+                                                textDecoration = markdownDecoration(span),
+                                                background = if (span.code)
+                                                    MaterialTheme.colorScheme.surfaceContainer
+                                                else androidx.compose.ui.graphics.Color.Unspecified,
+                                                fontFamily = if (span.code)
+                                                    androidx.compose.ui.text.font.FontFamily.Monospace
+                                                else null,
+                                                fontSize = fontSize,
+                                                color = textColor
+                                            )
+                                            withStyle(style) { append(span.text) }
+                                        }
+                                        val textStyle = when {
+                                            span.headingLevel == 1 -> MaterialTheme.typography.titleMedium.copy(
+                                                fontSize = 18.sp,
+                                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                            )
 
-                        is ContentParser.Part.CustomEmoji -> {
-                            val emojiSize =
-                                if (isOnlyEmoji) 36.dp else if (isSubtext) 14.dp else 18.dp
-                            AsyncImage(
-                                model = ImageRequest.Builder(context)
-                                    .data(part.url).crossfade(true).build(),
-                                imageLoader = imageLoader,
-                                contentDescription = part.name,
-                                modifier = Modifier.size(emojiSize)
-                            )
-                        }
+                                            span.headingLevel == 2 -> MaterialTheme.typography.titleSmall.copy(
+                                                fontSize = 15.sp,
+                                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                            )
 
-                        is ContentParser.Part.UserMention -> {
-                            val annotated = buildAnnotatedString {
-                                withStyle(
-                                    SpanStyle(
-                                        color = MaterialTheme.colorScheme.primary,
-                                        background = MaterialTheme.colorScheme.primaryContainer,
-                                        fontSize = if (isSubtext) 10.sp else androidx.compose.ui.unit.TextUnit.Unspecified
-                                    )
-                                ) { append("@${part.displayName}") }
-                            }
-                            Text(text = annotated, style = MaterialTheme.typography.bodySmall)
-                        }
+                                            span.headingLevel == 3 -> MaterialTheme.typography.bodyMedium.copy(
+                                                fontSize = 13.sp,
+                                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                            )
 
-                        is ContentParser.Part.RoleMention -> {
-                            val annotated = buildAnnotatedString {
-                                withStyle(
-                                    SpanStyle(
-                                        color = MaterialTheme.colorScheme.tertiary,
-                                        fontSize = if (isSubtext) 10.sp else androidx.compose.ui.unit.TextUnit.Unspecified
-                                    )
-                                ) {
-                                    append("@${part.roleName}")
-                                }
-                            }
-                            Text(text = annotated, style = MaterialTheme.typography.bodySmall)
-                        }
+                                            span.subtext -> MaterialTheme.typography.bodySmall.copy(
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                                                    alpha = 0.7f
+                                                )
+                                            )
 
-                        is ContentParser.Part.ChannelMention -> {
-                            val annotated = buildAnnotatedString {
-                                withStyle(
-                                    SpanStyle(
-                                        color = MaterialTheme.colorScheme.secondary,
-                                        fontSize = if (isSubtext) 10.sp else androidx.compose.ui.unit.TextUnit.Unspecified
-                                    )
-                                ) {
-                                    append("#${part.channelName}")
-                                }
-                            }
-                            Text(text = annotated, style = MaterialTheme.typography.bodySmall)
-                        }
+                                            isOnlyEmoji -> MaterialTheme.typography.bodySmall.copy(
+                                                fontSize = 28.sp,
+                                                lineHeight = 32.sp
+                                            )
 
-                        is ContentParser.Part.Link -> {
-                            val annotated = buildAnnotatedString {
-                                withStyle(
-                                    SpanStyle(
-                                        color = MaterialTheme.colorScheme.primary,
-                                        textDecoration = TextDecoration.Underline,
-                                        fontSize = if (isSubtext) 10.sp else androidx.compose.ui.unit.TextUnit.Unspecified
-                                    )
-                                ) { append(part.url) }
-                            }
-                            Text(
-                                text = annotated,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.clickable {
-                                    runCatching {
-                                        val intent = Intent(Intent.ACTION_VIEW, part.url.toUri())
-                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        context.startActivity(intent)
+                                            else -> MaterialTheme.typography.bodySmall
+                                        }
+                                        Text(text = annotated, style = textStyle)
                                     }
                                 }
-                            )
+                            }
+
+                            is ContentParser.Part.CustomEmoji -> {
+                                val emojiSize =
+                                    if (isOnlyEmoji) 36.dp else if (isSubtext) 14.dp else 18.dp
+                                AsyncImage(
+                                    model = ImageRequest.Builder(context)
+                                        .data(part.url).crossfade(true).build(),
+                                    imageLoader = imageLoader,
+                                    contentDescription = part.name,
+                                    modifier = Modifier.size(emojiSize)
+                                )
+                            }
+
+                            is ContentParser.Part.UserMention -> {
+                                val annotated = buildAnnotatedString {
+                                    withStyle(
+                                        SpanStyle(
+                                            color = MaterialTheme.colorScheme.primary,
+                                            background = MaterialTheme.colorScheme.primaryContainer,
+                                            fontSize = if (isSubtext) 10.sp else androidx.compose.ui.unit.TextUnit.Unspecified
+                                        )
+                                    ) { append("@${part.displayName}") }
+                                }
+                                Text(text = annotated, style = MaterialTheme.typography.bodySmall)
+                            }
+
+                            is ContentParser.Part.RoleMention -> {
+                                val annotated = buildAnnotatedString {
+                                    withStyle(
+                                        SpanStyle(
+                                            color = MaterialTheme.colorScheme.tertiary,
+                                            fontSize = if (isSubtext) 10.sp else androidx.compose.ui.unit.TextUnit.Unspecified
+                                        )
+                                    ) {
+                                        append("@${part.roleName}")
+                                    }
+                                }
+                                Text(text = annotated, style = MaterialTheme.typography.bodySmall)
+                            }
+
+                            is ContentParser.Part.ChannelMention -> {
+                                val annotated = buildAnnotatedString {
+                                    withStyle(
+                                        SpanStyle(
+                                            color = MaterialTheme.colorScheme.secondary,
+                                            fontSize = if (isSubtext) 10.sp else androidx.compose.ui.unit.TextUnit.Unspecified
+                                        )
+                                    ) {
+                                        append("#${part.channelName}")
+                                    }
+                                }
+                                Text(text = annotated, style = MaterialTheme.typography.bodySmall)
+                            }
+
+                            is ContentParser.Part.Link -> {
+                                val annotated = buildAnnotatedString {
+                                    withStyle(
+                                        SpanStyle(
+                                            color = MaterialTheme.colorScheme.primary,
+                                            textDecoration = TextDecoration.Underline,
+                                            fontSize = if (isSubtext) 10.sp else androidx.compose.ui.unit.TextUnit.Unspecified
+                                        )
+                                    ) { append(part.url) }
+                                }
+                                Text(
+                                    text = annotated,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.clickable {
+                                        runCatching {
+                                            val intent = Intent(Intent.ACTION_VIEW, part.url.toUri())
+                                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            context.startActivity(intent)
+                                        }
+                                    }
+                                )
+                            }
                         }
                     }
                 }

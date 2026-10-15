@@ -58,20 +58,11 @@ fun ThreadListScreen(
     ScreenScaffold(scrollState = listState) {
         ScalingLazyColumn(state = listState) {
             item {
-                Text(
-                    if (isForum) channelName else "Threads",
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                ScreenTitle(if (isForum) channelName else "Threads")
             }
             if (!isForum) {
                 item {
-                    Text(
-                        "#$channelName",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    ScreenSubtitle("#$channelName")
                 }
             }
 

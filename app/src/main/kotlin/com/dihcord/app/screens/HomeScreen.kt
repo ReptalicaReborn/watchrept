@@ -81,10 +81,7 @@ fun HomeScreen(
         ScalingLazyColumn(state = listState) {
 
             item {
-                Text(
-                    text = "Dihcord",
-                    style = MaterialTheme.typography.titleMedium
-                )
+                ScreenTitle("Dihcord")
             }
 
             item {

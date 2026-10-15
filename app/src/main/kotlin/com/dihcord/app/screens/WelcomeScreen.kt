@@ -161,21 +161,17 @@ fun WelcomeScreen(onSetupComplete: () -> Unit, onNavigateToQrLogin: () -> Unit) 
             modifier = Modifier.fillMaxSize()
         ) {
             item {
-                Text(
-                    "Dihcord",
-                    style = MaterialTheme.typography.titleMedium,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                ScreenTitle("Dihcord")
             }
             item {
                 Text(
-                    "Enter your Discord token to get started.",
+                    "Sign in to get started",
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp)
+                        .fillMaxWidth(0.8f)
+                        .padding(bottom = 4.dp)
                 )
             }
 

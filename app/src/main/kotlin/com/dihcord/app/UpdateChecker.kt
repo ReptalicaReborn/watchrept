@@ -104,6 +104,8 @@ object UpdateChecker {
                 .build()
 
             val body = http.newCall(request).execute().use { resp ->
+                // 404: the repository has no published release yet, which just means "nothing newer".
+                if (resp.code == 404) return@runCatching run { _state.value = UpdateState.UpToDate }
                 if (!resp.isSuccessful) error("HTTP ${resp.code}")
                 resp.body?.string() ?: error("Empty body")
             }
