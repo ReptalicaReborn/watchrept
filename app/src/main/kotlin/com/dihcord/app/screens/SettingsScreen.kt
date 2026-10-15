@@ -4,6 +4,7 @@ import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.*
@@ -15,6 +16,7 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
 import com.dihcord.app.ApkInstaller
+import com.dihcord.app.AppTheme
 import com.dihcord.app.NotificationService
 import com.dihcord.app.Perf
 import com.dihcord.app.Notifier
@@ -286,6 +288,48 @@ fun SettingsScreen(
                         secondaryLabel = { Text("Chats and servers", style = MaterialTheme.typography.labelSmall) }
                     ) { Text("Unmute all ($mutedCount)") }
                 }
+            }
+
+            item {
+                Text(
+                    "APPEARANCE",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 2.dp)
+                )
+            }
+
+            item {
+                val presets = AppTheme.Preset.values()
+                Button(
+                    onClick = {
+                        AppTheme.setPreset(context, presets[(AppTheme.preset.ordinal + 1) % presets.size])
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.filledTonalButtonColors(),
+                    icon = {
+                        Box(
+                            modifier = Modifier
+                                .size(20.dp)
+                                .background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape)
+                        )
+                    },
+                    secondaryLabel = { Text("Tap to change colour", style = MaterialTheme.typography.labelSmall) }
+                ) { Text("Theme: ${AppTheme.preset.label}") }
+            }
+
+            item {
+                SwitchButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    checked = AppTheme.amoled,
+                    onCheckedChange = { AppTheme.setAmoled(context, it) },
+                    label = { Text("AMOLED black", style = MaterialTheme.typography.bodySmall) },
+                    secondaryLabel = {
+                        Text("Pure black backgrounds, saves battery", style = MaterialTheme.typography.labelSmall)
+                    }
+                )
             }
 
             item {

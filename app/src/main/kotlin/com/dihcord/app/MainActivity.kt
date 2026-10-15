@@ -81,7 +81,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
+            DihcordTheme {
                 val updateState by UpdateChecker.state.collectAsState()
                 var dismissUpdate by remember { mutableStateOf(false) }
 

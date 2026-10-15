@@ -50,6 +50,7 @@ class DihcordApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         Perf.init(this)
+        AppTheme.init(this)
         UpdateChecker.start(this)
         UpdateChecker.checkNow(this)
     }

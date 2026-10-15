@@ -199,6 +199,24 @@ object SetupPreferences {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { putString(KEY_PERF_MODE, mode.name) }
     }
 
+    private const val KEY_THEME_PRESET = "theme_preset"
+    private const val KEY_THEME_AMOLED = "theme_amoled"
+
+    fun getThemePreset(context: Context): AppTheme.Preset =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_THEME_PRESET, null)
+            ?.let { runCatching { AppTheme.Preset.valueOf(it) }.getOrNull() } ?: AppTheme.Preset.DEFAULT
+
+    fun setThemePreset(context: Context, preset: AppTheme.Preset) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { putString(KEY_THEME_PRESET, preset.name) }
+    }
+
+    fun getAmoledTheme(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_THEME_AMOLED, false)
+
+    fun setAmoledTheme(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { putBoolean(KEY_THEME_AMOLED, value) }
+    }
+
     fun isSetupComplete(context: Context): Boolean = getToken(context) != null
     private const val KEY_PINNED_SERVERS = "pinned_servers"
 
