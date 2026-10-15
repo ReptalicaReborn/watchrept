@@ -617,6 +617,12 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     }
 
 
+    suspend fun getStatus(): Result<Pair<String, String>> = rest.getStatus()
+
+    /** Changes the online status / custom status everywhere (account settings) and on this session. */
+    suspend fun setStatus(status: String, customText: String): Result<Unit> =
+        rest.setStatus(status, customText).onSuccess { gateway.updatePresence(status, customText) }
+
     /** Everyone who reacted to a message with [reaction]'s emoji, normal and super reactions together. */
     suspend fun reactionUsers(channelId: String, messageId: String, reaction: Reaction): Result<List<DiscordUser>> {
         val key = reaction.emoji.apiKey

@@ -33,6 +33,14 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val repo = context.discordApp.repository
     var showThemes by remember { mutableStateOf(false) }
+    var showStatuses by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("online") }
+    var savedCustom by remember { mutableStateOf("") }
+    var customText by remember { mutableStateOf("") }
+    var statusError by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        repo?.getStatus()?.onSuccess { (s, c) -> status = s; savedCustom = c; customText = c }
+    }
 
 
     var hideInaccessible by remember {
@@ -137,6 +145,84 @@ fun SettingsScreen(
 
             item {
                 ScreenTitle("Settings")
+            }
+
+            item {
+                SectionHeader("Status")
+            }
+
+            item {
+                Button(
+                    onClick = { showStatuses = !showStatuses },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.filledTonalButtonColors(),
+                    icon = { StatusDot(status) },
+                    secondaryLabel = {
+                        Text(
+                            savedCustom.ifBlank { "No custom status" },
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1
+                        )
+                    }
+                ) { Text(STATUS_LABELS[status] ?: "Online") }
+            }
+
+            if (showStatuses) {
+                STATUS_LABELS.forEach { (key, label) ->
+                    item {
+                        Button(
+                            onClick = {
+                                status = key
+                                showStatuses = false
+                                scope.launch {
+                                    repo?.setStatus(key, savedCustom)
+                                        ?.onFailure { statusError = "Failed: ${it.message}" }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(40.dp),
+                            colors = if (key == status) ButtonDefaults.buttonColors() else ButtonDefaults.outlinedButtonColors(),
+                            icon = { StatusDot(key) }
+                        ) { Text(label, style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        CompactTextField(
+                            value = customText,
+                            onValueChange = { customText = it.take(128) },
+                            placeholder = "Custom status",
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilledIconButton(
+                            onClick = {
+                                val text = customText.trim()
+                                scope.launch {
+                                    repo?.setStatus(status, text)
+                                        ?.onSuccess { savedCustom = text; showStatuses = false }
+                                        ?.onFailure { statusError = "Failed: ${it.message}" }
+                                }
+                            },
+                            modifier = Modifier.size(36.dp)
+                        ) { Text(if (customText.isBlank()) "\u2715" else "\u2713") }
+                    }
+                }
+            }
+
+            if (statusError.isNotEmpty()) {
+                item {
+                    Text(
+                        statusError,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
 
             item {
@@ -536,3 +622,26 @@ private data class ChangelogEntry(val version: String, val name: String, val not
 private val CHANGELOG = listOf(
     ChangelogEntry("1.0", "Rainfield", listOf("Initial release")),
 )
+
+private val STATUS_LABELS = linkedMapOf(
+    "online" to "Online",
+    "idle" to "Idle",
+    "dnd" to "Do Not Disturb",
+    "invisible" to "Invisible",
+)
+
+/** Discord's status colours. */
+@Composable
+private fun StatusDot(status: String) {
+    val color = when (status) {
+        "idle" -> androidx.compose.ui.graphics.Color(0xFFF0B232)
+        "dnd" -> androidx.compose.ui.graphics.Color(0xFFF23F43)
+        "invisible" -> androidx.compose.ui.graphics.Color(0xFF80848E)
+        else -> androidx.compose.ui.graphics.Color(0xFF23A55A)
+    }
+    Box(
+        modifier = Modifier
+            .size(14.dp)
+            .background(color, androidx.compose.foundation.shape.CircleShape)
+    )
+}

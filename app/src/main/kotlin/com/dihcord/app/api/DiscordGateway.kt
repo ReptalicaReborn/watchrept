@@ -95,6 +95,22 @@ class DiscordGateway(private val token: String) {
         ws?.send(payload.toString())
     }
 
+    /** Sets this session's presence (op 3) so the new status shows right away. */
+    fun updatePresence(status: String, customText: String) {
+        val activities = JSONArray()
+        if (customText.isNotBlank()) {
+            activities.put(JSONObject().put("type", 4).put("name", "Custom Status").put("state", customText))
+        }
+        send(
+            3,
+            JSONObject()
+                .put("status", status)
+                .put("since", 0)
+                .put("activities", activities)
+                .put("afk", false)
+        )
+    }
+
     /** Asks for members of [guildId] whose name starts with [query] (answered by GUILD_MEMBERS_CHUNK). */
     fun requestGuildMembers(guildId: String, query: String, limit: Int, nonce: String) {
         send(

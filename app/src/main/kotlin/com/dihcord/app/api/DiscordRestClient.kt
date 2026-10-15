@@ -83,6 +83,22 @@ class DiscordRestClient(private val token: String) {
     private suspend fun delete(path: String): String =
         execute(buildRequest(path).delete().build())
 
+    /** The user's online status ("online", "idle", "dnd", "invisible") and custom status text. */
+    suspend fun getStatus(): Result<Pair<String, String>> = runCatching {
+        val o = JSONObject(get("/users/@me/settings"))
+        val text = o.optJSONObject("custom_status")?.optString("text").orEmpty().takeIf { it != "null" }.orEmpty()
+        o.optString("status", "online") to text
+    }
+
+    /** Saves the online status and custom status (blank text clears it) to the account, for every device. */
+    suspend fun setStatus(status: String, customText: String): Result<Unit> = runCatching {
+        val body = JSONObject()
+            .put("status", status)
+            .put("custom_status", if (customText.isBlank()) JSONObject.NULL else JSONObject().put("text", customText))
+        execute(buildRequest("/users/@me/settings").patch(body.toString().toRequestBody(jsonMime)).build())
+        Unit
+    }
+
     suspend fun getCurrentUser(): Result<DiscordUser> = runCatching {
         DiscordUser.fromJson(JSONObject(get("/users/@me")))
     }
