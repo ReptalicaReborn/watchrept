@@ -18,6 +18,8 @@ import javax.crypto.Cipher
 import javax.crypto.spec.OAEPParameterSpec
 import javax.crypto.spec.PSource
 
+private const val MAX_CAPTCHA_TRIES = 3
+
 private const val DISCORD_UA =
     "Mozilla/5.0 (Wayland; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.2.0.2 Firefox/156.0.1"
 private val SUPER_PROPERTIES: String by lazy {
@@ -46,7 +48,8 @@ sealed class RemoteAuthState {
     data class UserScanned(val userId: String, val username: String, val avatarHash: String) :
         RemoteAuthState()
 
-    object CaptchaRequired : RemoteAuthState()
+    /** Discord wanted a captcha that wasn't solved or wasn't accepted; [detail] says which. */
+    data class CaptchaRequired(val detail: String) : RemoteAuthState()
     object Canceled : RemoteAuthState()
     data class Error(val message: String) : RemoteAuthState()
 }
@@ -215,60 +218,66 @@ class RemoteAuthClient(
         return cipher.doFinal(cipherBytes)
     }
 
-    private suspend fun exchangeTicketForToken(
-        ticket: String,
-        captchaKey: String? = null,
-        captchaRqToken: String? = null
-    ) {
+    private suspend fun exchangeTicketForToken(ticket: String) {
         try {
-            val jsonBody = JSONObject().put("ticket", ticket)
-            if (captchaKey != null) {
-                jsonBody.put("captcha_key", captchaKey)
-            }
-            if (captchaRqToken != null) {
-                jsonBody.put("captcha_rqtoken", captchaRqToken)
-            }
-            val body =
-                jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-            val request = Request.Builder()
-                .url("https://discord.com/api/v9/users/@me/remote-auth/login")
-                .post(body)
-                .header("Content-Type", "application/json")
-                .header("User-Agent", DISCORD_UA)
-                .header("X-Super-Properties", SUPER_PROPERTIES)
-                .header("Origin", "https://discord.com")
-                .header("Referer", "https://discord.com/login")
-                .build()
-            val response = withContext(Dispatchers.IO) { http.newCall(request).execute() }
-            val responseBody = response.body?.string() ?: throw Exception("Empty response")
-            log("Ticket exchange HTTP ${response.code}")
-
-            if (response.code == 400) {
-                val challenge = CaptchaChallenge.parse(responseBody)
-                if (challenge != null) {
-                    if (captchaKey == null) {
-                        log("Captcha required, waiting for it to be solved on the phone…")
-                        val key = CaptchaBroker.solve(challenge)
-                        if (key != null) {
-                            exchangeTicketForToken(ticket, key, challenge.rqtoken)
-                            return
-                        }
-                    }
-                    log("Captcha was not solved.")
-                    setState(RemoteAuthState.CaptchaRequired)
+            var challenge: CaptchaChallenge? = null
+            var key: String? = null
+            var tries = 0
+            while (true) {
+                val (code, responseBody) = postTicket(ticket, challenge, key)
+                log("Ticket exchange HTTP $code")
+                val next = if (code == 400) CaptchaChallenge.parse(responseBody) else null
+                if (next == null) {
+                    if (code !in 200..299) throw Exception("HTTP $code: $responseBody")
+                    val encryptedToken = JSONObject(responseBody).getString("encrypted_token")
+                    val token = decryptBytes(Base64.decode(encryptedToken, Base64.DEFAULT))
+                        .toString(Charsets.UTF_8)
+                    log("Token decrypted! Logging in…")
+                    withContext(Dispatchers.Main) { onTokenReceived(token) }
                     return
                 }
+                if (key != null) log("Discord didn't accept the captcha (${next.errors.joinToString().ifEmpty { "no reason" }})")
+                if (++tries > MAX_CAPTCHA_TRIES) {
+                    setState(RemoteAuthState.CaptchaRequired(
+                        "Discord kept rejecting the captcha" +
+                            next.errors.firstOrNull()?.let { " ($it)" }.orEmpty() + "."
+                    ))
+                    return
+                }
+                log("Captcha required, waiting for it to be solved on the phone…")
+                key = CaptchaBroker.solve(next)
+                if (key == null) {
+                    log("Captcha was not solved.")
+                    setState(RemoteAuthState.CaptchaRequired("The captcha was cancelled or timed out."))
+                    return
+                }
+                challenge = next
             }
-
-            if (!response.isSuccessful) throw Exception("HTTP ${response.code}: $responseBody")
-            val encryptedToken = JSONObject(responseBody).getString("encrypted_token")
-            val token =
-                decryptBytes(Base64.decode(encryptedToken, Base64.DEFAULT)).toString(Charsets.UTF_8)
-            log("Token decrypted! Logging in…")
-            withContext(Dispatchers.Main) { onTokenReceived(token) }
         } catch (e: Exception) {
             log("Token exchange error: ${e.message}")
             setState(RemoteAuthState.Error("Token exchange failed: ${e.message}"))
+        }
+    }
+
+    /** Posts the ticket, with the solved captcha [key] for [challenge] when retrying. Returns code and body. */
+    private suspend fun postTicket(ticket: String, challenge: CaptchaChallenge?, key: String?): Pair<Int, String> {
+        val jsonBody = JSONObject().put("ticket", ticket)
+        if (challenge != null && key != null) {
+            jsonBody.put("captcha_key", key)
+            challenge.rqtoken?.let { jsonBody.put("captcha_rqtoken", it) }
+        }
+        val request = Request.Builder()
+            .url("https://discord.com/api/v9/users/@me/remote-auth/login")
+            .post(jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .header("Content-Type", "application/json")
+            .header("User-Agent", DISCORD_UA)
+            .header("X-Super-Properties", SUPER_PROPERTIES)
+            .header("Origin", "https://discord.com")
+            .header("Referer", "https://discord.com/login")
+            .apply { if (challenge != null && key != null) challenge.answerHeaders(key).forEach { (k, v) -> header(k, v) } }
+            .build()
+        return withContext(Dispatchers.IO) {
+            http.newCall(request).execute().use { it.code to (it.body?.string() ?: "") }
         }
     }
 

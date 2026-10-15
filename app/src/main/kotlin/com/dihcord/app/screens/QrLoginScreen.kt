@@ -39,8 +39,9 @@ fun QrLoginScreen(onSetupComplete: () -> Unit, onBack: () -> Unit) {
     var state by remember { mutableStateOf<RemoteAuthState>(RemoteAuthState.Connecting) }
     var status by remember { mutableStateOf(RemoteAuthStatus()) }
     var client by remember { mutableStateOf<RemoteAuthClient?>(null) }
+    var attempt by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(attempt) {
         val c = RemoteAuthClient(
             onStateChange = { newState -> state = newState },
             onStatusUpdate = { newStatus -> status = newStatus },
@@ -81,7 +82,7 @@ fun QrLoginScreen(onSetupComplete: () -> Unit, onBack: () -> Unit) {
                 is RemoteAuthState.CaptchaRequired -> {
                     item {
                         Text(
-                            "Captcha Required",
+                            "Captcha failed",
                             style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.error,
                             textAlign = TextAlign.Center
@@ -89,7 +90,7 @@ fun QrLoginScreen(onSetupComplete: () -> Unit, onBack: () -> Unit) {
                     }
                     item {
                         Text(
-                            "Discord is requiring a captcha. Try again with a different login method, Or check if a VPN/Poxy is enabled, and that you are on a Home IP. ",
+                            "${s.detail} Scan a new code to try again. If it keeps failing, turn off any VPN or log in once in the Discord app on your phone.",
                             style = MaterialTheme.typography.labelSmall,
                             textAlign = TextAlign.Center,
                             modifier = Modifier
@@ -99,12 +100,25 @@ fun QrLoginScreen(onSetupComplete: () -> Unit, onBack: () -> Unit) {
                     }
                     item {
                         Button(
+                            onClick = {
+                                client?.disconnect()
+                                status = RemoteAuthStatus()
+                                state = RemoteAuthState.Connecting
+                                attempt++
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth(0.7f)
+                                .height(32.dp)
+                        ) { Text("Try again") }
+                    }
+                    item {
+                        Button(
                             onClick = { client?.disconnect(); onBack() },
                             modifier = Modifier
                                 .fillMaxWidth(0.7f)
                                 .height(32.dp),
                             colors = ButtonDefaults.filledTonalButtonColors()
-                        ) { Text("Go Back") }
+                        ) { Text("Go back") }
                     }
                 }
 

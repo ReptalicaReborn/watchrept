@@ -14,6 +14,9 @@ import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
+/** How many captchas in a row the user may be asked to solve for one request. */
+private const val MAX_CAPTCHA_TRIES = 3
+
 class DiscordRestClient(private val token: String) {
 
     private val http = OkHttpClient.Builder()
@@ -39,25 +42,21 @@ class DiscordRestClient(private val token: String) {
 
     /**
      * Runs [request]. If Discord answers with a captcha challenge, asks the user to solve it (see CaptchaBroker)
-     * and retries once with the solution; if they can't, fails with [CaptchaRequiredException].
+     * and retries with the solution. Discord may reject an answer and send a fresh challenge, so the user gets
+     * a few tries; if they cancel, fails with [CaptchaRequiredException].
      */
     private suspend fun execute(request: Request): String {
-        val first = send(request)
-        if (first.code == 400) {
-            val challenge = CaptchaChallenge.parse(first.body)
-            if (challenge != null) {
-                val key = CaptchaBroker.solve(challenge) ?: throw CaptchaRequiredException()
-                val retry = request.newBuilder()
-                    .header("X-Captcha-Key", key)
-                    .apply {
-                        challenge.rqtoken?.let { header("X-Captcha-Rqtoken", it) }
-                        challenge.sessionId?.let { header("X-Captcha-Session-Id", it) }
-                    }
-                    .build()
-                return checked(send(retry))
-            }
+        var response = send(request)
+        repeat(MAX_CAPTCHA_TRIES) {
+            if (response.code != 400) return checked(response)
+            val challenge = CaptchaChallenge.parse(response.body) ?: return checked(response)
+            val key = CaptchaBroker.solve(challenge) ?: throw CaptchaRequiredException()
+            val retry = request.newBuilder()
+                .apply { challenge.answerHeaders(key).forEach { (k, v) -> header(k, v) } }
+                .build()
+            response = send(retry)
         }
-        return checked(first)
+        return checked(response)
     }
 
     private fun checked(response: RawResponse): String {
