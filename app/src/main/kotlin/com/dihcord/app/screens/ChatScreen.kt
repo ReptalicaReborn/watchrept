@@ -214,6 +214,15 @@ fun ChatScreen(
         }
     }
 
+    val history = rememberHistoryPaging(
+        repo = repo,
+        channelId = channelId,
+        listState = listState,
+        headerCount = { 1 + (if (pendingText.isNotBlank()) 1 else 0) },
+        messages = { messages },
+        ready = { !loading && scrolledToUnread.value },
+    )
+
     LaunchedEffect(scrolledToUnread.value) {
         if (scrolledToUnread.value && !loading) {
             delay(1_500)
@@ -727,6 +736,19 @@ fun ChatScreen(
                             "#$channelName",
                             style = MaterialTheme.typography.titleMedium
                         )
+                        if (history.loadingOlder) {
+                            Text(
+                                "Loading older messages…",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else if (history.noMore && messages.isNotEmpty()) {
+                            Text(
+                                "This is the start of #$channelName",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         if (onOpenThreads != null && guildId != null) {
                             Text(
                                 "Threads ›",

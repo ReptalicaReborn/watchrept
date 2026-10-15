@@ -228,10 +228,16 @@ class DiscordRestClient(private val token: String) {
         Channel.listFromJson(JSONArray(get("/users/@me/channels"))).filter { it.isDm }
     }
 
-    suspend fun getMessages(channelId: String, limit: Int = 50): Result<List<DiscordMessage>> =
+    /** Newest first. With [before], the page of messages older than that message id. */
+    suspend fun getMessages(
+        channelId: String,
+        limit: Int = 50,
+        before: String? = null
+    ): Result<List<DiscordMessage>> =
         runCatching {
             val safe = limit.coerceIn(1, 100)
-            DiscordMessage.listFromJson(JSONArray(get("/channels/$channelId/messages?limit=$safe")))
+            val cursor = if (before != null) "&before=$before" else ""
+            DiscordMessage.listFromJson(JSONArray(get("/channels/$channelId/messages?limit=$safe$cursor")))
         }
 
     suspend fun sendMessage(channelId: String, content: String): Result<DiscordMessage> =

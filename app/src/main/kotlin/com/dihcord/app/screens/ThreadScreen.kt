@@ -79,6 +79,14 @@ fun ThreadScreen(
     var sendError by remember { mutableStateOf("") }
     var inputText by remember { mutableStateOf("") }
     var pickedMentions by remember(threadId) { mutableStateOf(mapOf<String, String>()) }
+    val history = rememberHistoryPaging(
+        repo = repo,
+        channelId = threadId,
+        listState = listState,
+        headerCount = { 1 },
+        messages = { threadMessages },
+        ready = { !loading },
+    )
     var mentionSuggestions by remember(threadId) { mutableStateOf<List<MentionCandidate>>(emptyList()) }
     // Mention autocomplete: people for "@partial", channels for "#partial" at the end of the text.
     val mentionQuery = MentionInput.active(inputText)
@@ -400,12 +408,21 @@ fun ThreadScreen(
         ScreenScaffold(scrollState = listState) {
         ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             item(key = "thread_title") {
-                Row(verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Icon(painter = painterResource(id = R.drawable.reply),
-                        contentDescription = null, tint = Color(0xFF5865F2),
-                        modifier = Modifier.size(14.dp))
-                    Text("# $threadName", style = MaterialTheme.typography.titleSmall)
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Icon(painter = painterResource(id = R.drawable.reply),
+                            contentDescription = null, tint = Color(0xFF5865F2),
+                            modifier = Modifier.size(14.dp))
+                        Text("# $threadName", style = MaterialTheme.typography.titleSmall)
+                    }
+                    if (history.loadingOlder) {
+                        Text("Loading older messages…", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else if (history.noMore && threadMessages.isNotEmpty()) {
+                        Text("Start of the thread", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
 

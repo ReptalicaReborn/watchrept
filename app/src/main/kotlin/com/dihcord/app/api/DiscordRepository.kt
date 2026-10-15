@@ -562,6 +562,40 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         }.onFailure { handleApiError(it) }
     }
 
+    private val reachedStart: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val loadingOlder: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** False once the beginning of [channelId]'s history has been loaded. */
+    fun hasMoreHistory(channelId: String): Boolean = channelId !in reachedStart
+
+    /**
+     * Loads the page of messages before the oldest one held for [channelId] and puts them in front.
+     * Returns how many were added, 0 when there is nothing older (or a load is already running), -1 on error.
+     */
+    suspend fun loadOlderMessages(channelId: String): Int {
+        if (channelId in reachedStart || !loadingOlder.add(channelId)) return 0
+        try {
+            val oldest = _messages.value[channelId]?.firstOrNull()?.id ?: return 0
+            val pageSize = com.dihcord.app.Perf.messagePageSize
+            val fetched = rest.getMessages(channelId, limit = pageSize, before = oldest)
+                .getOrElse { handleApiError(it); return -1 }
+            if (fetched.size < pageSize) reachedStart.add(channelId)
+            val older = fetched.reversed()
+            older.forEach { userDisplayNames[it.author.id] = it.author.displayName }
+            var added = 0
+            _messages.update { current ->
+                val existing = current[channelId].orEmpty()
+                val have = existing.mapTo(HashSet()) { it.id }
+                val fresh = older.filter { it.id !in have }
+                added = fresh.size
+                current + (channelId to (fresh + existing))
+            }
+            return added
+        } finally {
+            loadingOlder.remove(channelId)
+        }
+    }
+
     fun getDisplayName(userId: String): String? = userDisplayNames[userId]
     suspend fun sendMessage(channelId: String, content: String): Result<DiscordMessage> {
         val result = rest.sendMessage(channelId, content)
