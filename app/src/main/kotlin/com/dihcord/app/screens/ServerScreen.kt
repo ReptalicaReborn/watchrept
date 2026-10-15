@@ -16,6 +16,8 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -91,6 +93,10 @@ fun ServerScreen(
     var menuGuild by remember { mutableStateOf<Guild?>(null) }
     var menuFolder by remember { mutableStateOf<ServerEntry.Folder?>(null) }
     var customOrder by remember { mutableStateOf(SetupPreferences.getServerOrder(context)) }
+    val reorder = remember { ReorderState() }
+    var rootPos by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var rootSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
     val showNames = remember { SetupPreferences.getShowServerNames(context) }
 
     LaunchedEffect(Unit) {
@@ -130,6 +136,34 @@ fun ServerScreen(
         if (updated != customOrder) {
             SetupPreferences.setServerOrder(context, updated)
             customOrder = updated
+        }
+    }
+
+    fun isPinnedEntry(e: ServerEntry) = e is ServerEntry.Single && e.guild.id in pinnedIds
+
+    /** Drag-and-drop: the dragged entry takes the target's place (not across the pinned/unpinned line). */
+    fun dropEntry(fromKey: String, toKey: String) {
+        val from = entries.firstOrNull { it.orderKey == fromKey } ?: return
+        val to = entries.firstOrNull { it.orderKey == toKey } ?: return
+        if (isPinnedEntry(from) != isPinnedEntry(to)) return
+        val updated = ServerLayout.moveTo(entries.map { it.orderKey }, fromKey, toKey, customOrder)
+        if (updated != customOrder) {
+            SetupPreferences.setServerOrder(context, updated)
+            customOrder = updated
+        }
+    }
+
+    // Scroll by itself while an icon is dragged near the top or bottom edge.
+    LaunchedEffect(reorder.dragKey) {
+        if (reorder.dragKey == null) return@LaunchedEffect
+        val edge = with(density) { 56.dp.toPx() }
+        while (reorder.dragKey != null) {
+            val y = reorder.dragPos.y
+            when {
+                y < rootPos.y + edge -> listState.scrollBy(-14f)
+                y > rootPos.y + rootSize.height - edge -> listState.scrollBy(14f)
+            }
+            kotlinx.coroutines.delay(16)
         }
     }
 
@@ -185,6 +219,14 @@ fun ServerScreen(
         return
     }
 
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned {
+                rootPos = it.positionInWindow()
+                rootSize = it.size
+            }
+    ) {
     ScreenScaffold(scrollState = listState) {
         ScalingLazyColumn(state = listState) {
             item {
@@ -243,6 +285,8 @@ fun ServerScreen(
                                             isMuted = guild.id in mutedIds,
                                             mentionCount = guildMentionCounts[guild.id] ?: 0,
                                             showName = showNames,
+                                            reorder = reorder,
+                                            onDrop = { from, to -> dropEntry(from, to) },
                                             onClick = { if (!isHidden) onNavigateToChannels(guild.id, guild.name) },
                                             onLongClick = { menuGuild = guild }
                                         )
@@ -253,6 +297,8 @@ fun ServerScreen(
                                         imageLoader = imageLoader,
                                         mentionCount = entry.guilds.sumOf { guildMentionCounts[it.id] ?: 0 },
                                         showName = showNames,
+                                        reorder = reorder,
+                                        onDrop = { from, to -> dropEntry(from, to) },
                                         onLongClick = { menuFolder = entry },
                                         onClick = { onOpenFolder(entry.folder.key) }
                                     )
@@ -281,6 +327,36 @@ fun ServerScreen(
             }
         }
     }
+
+    // The icon "lifted" under the finger while dragging.
+    val draggedKey = reorder.dragKey
+    if (draggedKey != null) {
+        val dragged = entries.firstOrNull { it.orderKey == draggedKey }
+        val half = with(density) { 24.dp.toPx() }
+        Box(
+            modifier = Modifier
+                .offset {
+                    androidx.compose.ui.unit.IntOffset(
+                        (reorder.dragPos.x - rootPos.x - half).toInt(),
+                        (reorder.dragPos.y - rootPos.y - half * 1.8f).toInt()
+                    )
+                }
+                .size(48.dp)
+                .alpha(0.92f)
+        ) {
+            when (dragged) {
+                is ServerEntry.Single -> GuildIcon(dragged.guild, imageLoader, size = 48.dp, shape = CircleShape)
+                is ServerEntry.Folder -> Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(DiscordBlurple.copy(alpha = 0.6f))
+                )
+                null -> {}
+            }
+        }
+    }
+    }
 }
 
 private fun folderName(entry: ServerEntry.Folder): String =
@@ -293,21 +369,29 @@ private fun TileFrame(
     mentionCount: Int,
     showName: Boolean = true,
     dimmed: Boolean = false,
+    reorder: ReorderState,
+    itemKey: String,
+    onDrop: (fromKey: String, toKey: String) -> Unit,
     onClick: () -> Unit,
-    onLongClick: (() -> Unit)? = null,
+    onLongClick: () -> Unit,
     overlay: @Composable BoxScope.() -> Unit = {},
     icon: @Composable BoxScope.() -> Unit
 ) {
+    val beingDragged = reorder.dragKey == itemKey
+    val isTarget = reorder.targetKey == itemKey
     Column(
         modifier = Modifier
             .width(56.dp)
-            .alpha(if (dimmed) 0.4f else 1f),
+            .alpha(if (beingDragged) 0.3f else if (dimmed) 0.4f else 1f),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
             modifier = Modifier
                 .size(if (showName) TileSize else TileSizeNoLabel)
-                .combinedClickableCompat(onClick, onLongClick)
+                .then(
+                    if (isTarget) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, CircleShape) else Modifier
+                )
+                .reorderable(itemKey, reorder, onClick, onLongClick, onDrop)
         ) {
             icon()
             overlay()
@@ -343,10 +427,6 @@ private fun TileFrame(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-private fun Modifier.combinedClickableCompat(onClick: () -> Unit, onLongClick: (() -> Unit)?): Modifier =
-    this.combinedClickable(onClick = onClick, onLongClick = onLongClick)
-
 @Composable
 private fun ServerTile(
     guild: Guild,
@@ -356,6 +436,8 @@ private fun ServerTile(
     isMuted: Boolean,
     mentionCount: Int,
     showName: Boolean,
+    reorder: ReorderState,
+    onDrop: (String, String) -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -364,6 +446,9 @@ private fun ServerTile(
         mentionCount = if (isHidden) 0 else mentionCount,
         showName = showName,
         dimmed = isHidden,
+        reorder = reorder,
+        itemKey = guild.id,
+        onDrop = onDrop,
         onClick = onClick,
         onLongClick = onLongClick,
         overlay = {
@@ -395,6 +480,8 @@ private fun FolderTile(
     imageLoader: ImageLoader,
     mentionCount: Int,
     showName: Boolean,
+    reorder: ReorderState,
+    onDrop: (String, String) -> Unit,
     onLongClick: () -> Unit,
     onClick: () -> Unit
 ) {
@@ -403,6 +490,9 @@ private fun FolderTile(
         label = folderName(entry),
         mentionCount = mentionCount,
         showName = showName,
+        reorder = reorder,
+        itemKey = entry.orderKey,
+        onDrop = onDrop,
         onClick = onClick,
         onLongClick = onLongClick
     ) {

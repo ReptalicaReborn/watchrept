@@ -121,4 +121,22 @@ class ServerLayoutTest {
         assertEquals(false, ServerLayout.canMove(entries, 0, -1, pinned)) // nothing above the first
         assertEquals(false, ServerLayout.canMove(entries, 2, 1, pinned))  // nothing below the last
     }
+
+    @Test
+    fun `dragging onto a target takes its place and shifts the rest`() {
+        val displayed = listOf("1", "2", "3", "4")
+        // 1 dropped on 3: 2 and 3 shift up by one.
+        assertEquals(listOf("2", "3", "1", "4", "9"), ServerLayout.moveTo(displayed, "1", "3", stored = listOf("9")))
+        // 4 dropped on 2: 2 and 3 shift down by one.
+        assertEquals(listOf("1", "4", "2", "3"), ServerLayout.moveTo(displayed, "4", "2", stored = emptyList()))
+    }
+
+    @Test
+    fun `dropping on itself or an unknown key changes nothing`() {
+        val displayed = listOf("1", "2")
+        val stored = listOf("x")
+        assertEquals(stored, ServerLayout.moveTo(displayed, "1", "1", stored))
+        assertEquals(stored, ServerLayout.moveTo(displayed, "1", "zzz", stored))
+        assertEquals(stored, ServerLayout.moveTo(displayed, "zzz", "1", stored))
+    }
 }

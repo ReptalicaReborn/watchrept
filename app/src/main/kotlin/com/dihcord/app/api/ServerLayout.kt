@@ -28,6 +28,21 @@ object ServerLayout {
     }
 
     /**
+     * The stored order after dragging [fromKey] onto [toKey]: it takes that spot and the entries in between shift
+     * by one. Unchanged if either isn't on screen or they are the same.
+     */
+    fun moveTo(displayedKeys: List<String>, fromKey: String, toKey: String, stored: List<String>): List<String> {
+        val from = displayedKeys.indexOf(fromKey)
+        val to = displayedKeys.indexOf(toKey)
+        if (from < 0 || to < 0 || from == to) return stored
+        val moved = displayedKeys.toMutableList().apply {
+            removeAt(from)
+            add(to, fromKey)
+        }
+        return moved + stored.filter { it !in moved }
+    }
+
+    /**
      * The stored order after moving [key] by [delta] places within the currently [displayedKeys].
      * Keys not on screen keep their place behind the displayed ones; unchanged if the move isn't possible.
      */
