@@ -45,6 +45,11 @@ import com.dihcord.app.SetupPreferences
 import com.dihcord.app.api.ReactionEmoji
 import java.io.File
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 
 /**
  * Full-screen thread viewer.
@@ -70,9 +75,10 @@ fun ThreadScreen(
 
     val imageLoader = context.imageLoader
 
+    // distinctBy: a duplicated id would crash the keyed list ("Key was already used").
     val threadMessages by remember(threadId) {
-        repo.messages.map { it[threadId].orEmpty() }.distinctUntilChanged()
-    }.collectAsState(initial = repo.messages.value[threadId].orEmpty())
+        repo.messages.map { it[threadId].orEmpty() }.distinctUntilChanged().map { l -> l.distinctBy { it.id } }
+    }.collectAsState(initial = repo.messages.value[threadId].orEmpty().distinctBy { it.id })
     val currentUser by repo.currentUser.collectAsState()
     val myId = currentUser?.id ?: ""
 
@@ -121,7 +127,13 @@ fun ThreadScreen(
     var showPicker by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(0) }
     val roleColorCache = remember { mutableStateMapOf<String, GuildRole?>() }
-    val channelNames = remember(threadMessages.size, loading) { repo.getChannelNames() }
+    // Same map instance until a name actually changes: it is a remember key for every bubble's parsed markdown.
+    val publishedChannelNames by repo.channelNames.collectAsState()
+    var channelNames by remember { mutableStateOf(repo.getChannelNames()) }
+    LaunchedEffect(publishedChannelNames, threadMessages.size, loading) {
+        val fresh = repo.getChannelNames()
+        if (fresh != channelNames) channelNames = fresh
+    }
 
     var uploadError by remember { mutableStateOf("") }
     var showPhotoPicker by remember { mutableStateOf(false) }
@@ -137,35 +149,43 @@ fun ThreadScreen(
     var recordingSecs by remember { mutableStateOf(0) }
     var voiceFile by remember { mutableStateOf<File?>(null) }
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
+    // Bumped when the mic permission is granted, so recording starts right away (startRecording is declared below).
+    var micGrantedTick by remember { mutableStateOf(0) }
     val micPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (!granted) uploadError = "Microphone permission denied"
+        if (granted) micGrantedTick++ else uploadError = "Microphone permission denied"
     }
 
     fun startRecording() {
         val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED
         if (!hasAudio) { micPermLauncher.launch(Manifest.permission.RECORD_AUDIO); return }
+        if (recorder != null) return
+        val f = File(context.cacheDir, "voice_${System.currentTimeMillis()}.ogg")
+        var created: MediaRecorder? = null
         try {
-            val f = File(context.cacheDir, "voice_${System.currentTimeMillis()}.ogg")
-            voiceFile = f
             val mr = if (android.os.Build.VERSION.SDK_INT >= 31) {
                 MediaRecorder(context)
             } else {
                 @Suppress("DEPRECATION")
                 MediaRecorder()
             }
+            created = mr
             mr.setAudioSource(MediaRecorder.AudioSource.MIC)
             mr.setOutputFormat(MediaRecorder.OutputFormat.OGG)
             mr.setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
             mr.setOutputFile(f.absolutePath)
             mr.prepare()
             mr.start()
+            voiceFile = f
             recorder = mr
             isRecording = true
             recordingSecs = 0
         } catch (e: Exception) {
+            runCatching { created?.release() }
+            f.delete()
+            voiceFile = null
             uploadError = "Mic error: ${e.message}"
             isRecording = false
         }
@@ -173,18 +193,22 @@ fun ThreadScreen(
 
     fun stopAndSendRecording() {
         val mr = recorder ?: return
-        val f = voiceFile ?: return
+        val f = voiceFile
         val dur = recordingSecs.toDouble()
-        try {
-            mr.stop()
-            mr.release()
-        } catch (_: Exception) {}
         recorder = null
+        voiceFile = null
         isRecording = false
+        // stop() throws when nothing usable was recorded (e.g. a very short tap); the file is then corrupt.
+        val stopped = try { mr.stop(); true } catch (_: Exception) { false }
+        runCatching { mr.release() }
+        if (!stopped || f == null) {
+            f?.delete()
+            uploadError = "Recording too short"
+            return
+        }
         scope.launch {
             runCatching {
-                val bytes = f.readBytes()
-                f.delete()
+                val bytes = withContext(Dispatchers.IO) { f.readBytes().also { f.delete() } }
                 repo.sendVoiceMessage(threadId, bytes, dur)
                     .onFailure { uploadError = "Voice send failed: ${it.message}" }
             }.onFailure { uploadError = "Error: ${it.message}" }
@@ -193,11 +217,31 @@ fun ThreadScreen(
 
     fun cancelRecording() {
         val mr = recorder ?: return
-        try { mr.stop(); mr.release() } catch (_: Exception) {}
         recorder = null
+        try { mr.stop() } catch (_: Exception) {}
+        runCatching { mr.release() }
         isRecording = false
         voiceFile?.delete()
         voiceFile = null
+    }
+
+    LaunchedEffect(micGrantedTick) {
+        if (micGrantedTick > 0) startRecording()
+    }
+
+    // Never keep the mic recording (or leak the temp file) once the screen is backgrounded or left.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
+                cancelRecording()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            cancelRecording()
+        }
     }
 
     LaunchedEffect(isRecording) {
@@ -211,6 +255,7 @@ fun ThreadScreen(
     }
 
     LaunchedEffect(threadId) {
+        com.dihcord.app.Notifier.clear(context, threadId)
         scope.launch {
             repo.loadMessages(threadId)
             loading = false
@@ -237,7 +282,19 @@ fun ThreadScreen(
         showPicker = false
         reactingToMsg = null
     }
-    BackHandler(enabled = !isRecording && !showPhotoPicker && !showPicker) { onBack() }
+    BackHandler(enabled = reactorsFor != null) {
+        reactorsFor = null
+    }
+    BackHandler(enabled = replyingTo != null) {
+        replyingTo = null
+    }
+    BackHandler(enabled = selectedMsg != null) {
+        selectedMsg = null
+    }
+    BackHandler(
+        enabled = !isRecording && !showPhotoPicker && !showPicker && reactorsFor == null &&
+            replyingTo == null && selectedMsg == null
+    ) { onBack() }
 
     val hasNitro = currentUser?.hasNitro ?: false
     val sendAnimatedAsGif = SetupPreferences.getSendAnimatedAsGif(context)
@@ -258,6 +315,7 @@ fun ThreadScreen(
                     scope.launch {
                         try {
                             repo.toggleReaction(threadId, target.id, reactionEmoji)
+                                .onFailure { sendError = "Couldn't react: ${it.message}" }
                         } catch (e: Exception) {
                             sendError = "Failed: ${e.message}"
                         }
@@ -281,7 +339,10 @@ fun ThreadScreen(
                 if (target != null) {
                     val reactionEmoji = ReactionEmoji(id = null, name = unicode, animated = false)
                     scope.launch {
-                        try { repo.toggleReaction(threadId, target.id, reactionEmoji) }
+                        try {
+                            repo.toggleReaction(threadId, target.id, reactionEmoji)
+                                .onFailure { sendError = "Couldn't react: ${it.message}" }
+                        }
                         catch (e: Exception) { sendError = "Failed: ${e.message}" }
                     }
                     reactingToMsg = null
@@ -325,8 +386,9 @@ fun ThreadScreen(
                             mime.contains("webp") -> "webp"
                             else -> "jpg"
                         }
-                        val bytes = cr.openInputStream(uri)?.readBytes()
-                            ?: throw Exception("Cannot read image")
+                        val bytes = withContext(Dispatchers.IO) {
+                            cr.openInputStream(uri)?.use { it.readBytes() }
+                        } ?: throw Exception("Cannot read image")
                         repo.sendFileAttachment(threadId, bytes, "image.$ext", mime)
                             .onFailure { uploadError = "Upload failed: ${it.message}" }
                     }.onFailure { uploadError = "Error: ${it.message}" }
@@ -473,7 +535,10 @@ fun ThreadScreen(
                         roleColorCache = roleColorCache,
                         myId = myId,
                         onReact = { emoji ->
-                            scope.launch { repo.toggleReaction(threadId, msg.id, emoji) }
+                            scope.launch {
+                                repo.toggleReaction(threadId, msg.id, emoji)
+                                    .onFailure { sendError = "Couldn't react: ${it.message}" }
+                            }
                         },
                         onShowReactors = { reaction -> reactorsFor = msg.id to reaction },
                         onPollVote = { answerId ->
@@ -595,21 +660,35 @@ fun ThreadScreen(
                         }
                         FilledIconButton(
                             onClick = {
-                                val text = MentionInput.toWire(inputText.trim(), pickedMentions)
+                                val raw = inputText
+                                val mentions = pickedMentions
+                                val text = MentionInput.toWire(raw.trim(), mentions)
                                 if (text.isBlank()) return@FilledIconButton
                                 pickedMentions = emptyMap()
                                 inputText = ""
                                 pendingText = ""
+                                val replyTarget = replyingTo
+                                val ping = replyPing
+                                replyingTo = null
+                                replyPing = true
                                 scope.launch {
-                                    val replyTarget = replyingTo
-                                    if (replyTarget != null) {
-                                        repo.sendReply(threadId, text, replyTarget.id, replyPing)
-                                            .onFailure { sendError = "Failed: ${it.message}" }
-                                        replyingTo = null
-                                        replyPing = true
+                                    val result = if (replyTarget != null) {
+                                        repo.sendReply(threadId, text, replyTarget.id, ping)
                                     } else {
                                         repo.sendMessage(threadId, text)
-                                            .onFailure { sendError = "Failed: ${it.message}" }
+                                    }
+                                    result.onFailure {
+                                        sendError = "Failed: ${it.message}"
+                                        // Give the draft back so it can be retried, unless something new was typed.
+                                        if (inputText.isEmpty()) {
+                                            inputText = raw
+                                            pendingText = raw
+                                            pickedMentions = mentions
+                                        }
+                                        if (replyingTo == null && replyTarget != null) {
+                                            replyingTo = replyTarget
+                                            replyPing = ping
+                                        }
                                     }
                                 }
                             },
@@ -725,7 +804,10 @@ fun ThreadScreen(
                 contentAlignment = Alignment.BottomCenter
             ) {
                 FilledIconButton(
-                    onClick = { scope.launch { listState.animateScrollToItem(Int.MAX_VALUE) } },
+                    onClick = {
+                        val last = listState.layoutInfo.totalItemsCount - 1
+                        if (last >= 0) scope.launch { listState.animateScrollToItem(last) }
+                    },
                     modifier = Modifier.size(32.dp)
                 ) {
                     Icon(

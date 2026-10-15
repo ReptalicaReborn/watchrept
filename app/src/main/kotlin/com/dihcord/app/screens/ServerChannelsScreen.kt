@@ -21,6 +21,7 @@ import com.dihcord.app.R
 import com.dihcord.app.SetupPreferences
 import com.dihcord.app.api.Channel
 import com.dihcord.app.api.ChannelType
+import com.dihcord.app.api.compareSnowflakes
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.launch
 
@@ -168,7 +169,7 @@ fun ServerChannels(
                             val rs = if (showMentionBadges) readState[ch.id] else null
                             val mentionCount = rs?.mentionCount ?: 0
                             val hasUnread = rs != null && ch.lastMessageId != null &&
-                                    ch.lastMessageId > rs.lastMessageId
+                                    compareSnowflakes(ch.lastMessageId, rs.lastMessageId) > 0
                             Button(
                                 modifier = Modifier
                                     .fillMaxWidth()

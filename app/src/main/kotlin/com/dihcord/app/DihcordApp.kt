@@ -12,6 +12,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
@@ -41,8 +44,13 @@ class DihcordApp : Application(), ImageLoaderFactory {
             .crossfade(!Perf.lite)
             .build()
 
-    var repository: DiscordRepository? = null
-        private set
+    private val _repositoryFlow = MutableStateFlow<DiscordRepository?>(null)
+
+    /** The current repository; observe this to react to logins/logouts after the UI was built. */
+    val repositoryFlow: StateFlow<DiscordRepository?> = _repositoryFlow.asStateFlow()
+
+    val repository: DiscordRepository?
+        get() = _repositoryFlow.value
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var summaryJob: Job? = null
@@ -66,10 +74,10 @@ class DihcordApp : Application(), ImageLoaderFactory {
     }
 
     fun initRepository(token: String) {
-        repository?.disconnect()
+        repository?.close()
         val repo = DiscordRepository(token, context = this)
         repo.connect()
-        repository = repo
+        _repositoryFlow.value = repo
         summaryJob?.cancel()
         summaryJob = appScope.launch {
             combine(repo.readState, repo.dmChannels) { read, dms ->
@@ -81,19 +89,24 @@ class DihcordApp : Application(), ImageLoaderFactory {
                 )
             }.collect { UnreadSummary.publish(this@DihcordApp, it) }
         }
+        // Logging in again (or a token change) must bring notifications back if the user wants them;
+        // the service re-reads the repository on every start.
+        if (SetupPreferences.getNotificationsEnabled(this)) {
+            NotificationService.start(this)
+        }
     }
 
     fun clearRepository() {
         summaryJob?.cancel()
         UnreadSummary.reset(this)
         NotificationService.stop(this)
-        repository?.disconnect()
-        repository = null
+        repository?.close()
+        _repositoryFlow.value = null
     }
 
     override fun onTerminate() {
         super.onTerminate()
-        repository?.disconnect()
+        repository?.close()
     }
 }
 

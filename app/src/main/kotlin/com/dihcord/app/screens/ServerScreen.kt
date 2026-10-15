@@ -1,5 +1,6 @@
 package com.dihcord.app.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -166,6 +167,12 @@ fun ServerScreen(
             }
             kotlinx.coroutines.delay(16)
         }
+    }
+
+    // Back closes an open menu instead of leaving the screen.
+    BackHandler(enabled = menuGuild != null || menuFolder != null) {
+        menuGuild = null
+        menuFolder = null
     }
 
     val activeMenu = menuGuild

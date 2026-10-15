@@ -3,6 +3,25 @@ package com.dihcord.app.api
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * Orders two Discord snowflake ids numerically. Ids are decimal strings of varying length, so a plain string
+ * comparison is wrong ("9" > "10"); compare by length first, then lexicographically.
+ */
+fun compareSnowflakes(a: String, b: String): Int =
+    if (a.length != b.length) a.length.compareTo(b.length) else a.compareTo(b)
+
+/** optString() returns the literal "null" for a JSON null; this maps null, missing, "" and "null" to Kotlin null. */
+private fun JSONObject.nullableString(key: String): String? =
+    if (isNull(key)) null else optString(key).takeIf { it.isNotEmpty() && it != "null" }
+
+/** has() is true for a JSON null, where getInt() throws; this maps null, missing or non-numeric to Kotlin null. */
+private fun JSONObject.nullableInt(key: String): Int? =
+    if (isNull(key)) null else runCatching { getInt(key) }.getOrNull()
+
+/** Parses every object in [arr], skipping (instead of failing on) malformed entries. */
+private inline fun <T : Any> parseEach(arr: JSONArray, parse: (JSONObject) -> T): List<T> =
+    (0 until arr.length()).mapNotNull { i -> runCatching { parse(arr.getJSONObject(i)) }.getOrNull() }
+
 data class DiscordClan(
     val tag: String,
     val badge: String?,
@@ -506,10 +525,11 @@ data class Channel(
             return Channel(
                 id = o.getString("id"),
                 type = ChannelType.from(o.getInt("type")),
-                guildId = o.optString("guild_id").takeIf { it.isNotEmpty() },
-                name = o.optString("name"),
-                topic = o.optString("topic").takeIf { it.isNotEmpty() },
-                lastMessageId = o.optString("last_message_id").takeIf { it.isNotEmpty() },
+                guildId = o.nullableString("guild_id"),
+                // Non-null field: a null name (DMs) stays "" so displayName falls back to the recipients.
+                name = o.nullableString("name").orEmpty(),
+                topic = o.nullableString("topic"),
+                lastMessageId = o.nullableString("last_message_id"),
                 // org.json's optString() returns the literal string "null" (not Kotlin null)
                 // when the JSON value is a JSON null, which is exactly what Discord sends for
                 // top-level/"uncategorized" channels. That made those channels group under a
@@ -570,9 +590,9 @@ data class Attachment(
             filename = o.getString("filename"),
             url = o.getString("url"),
             proxyUrl = o.getString("proxy_url"),
-            contentType = o.optString("content_type").takeIf { it.isNotEmpty() },
-            width = if (o.has("width")) o.getInt("width") else null,
-            height = if (o.has("height")) o.getInt("height") else null
+            contentType = o.nullableString("content_type"),
+            width = o.nullableInt("width"),
+            height = o.nullableInt("height")
         )
     }
 }
@@ -597,10 +617,10 @@ data class Embed(
     companion object {
         fun fromJson(o: JSONObject) = Embed(
             type = o.optString("type", "rich"),
-            title = o.optString("title").takeIf { it.isNotEmpty() },
-            description = o.optString("description").takeIf { it.isNotEmpty() },
-            url = o.optString("url").takeIf { it.isNotEmpty() },
-            color = if (o.has("color")) o.getInt("color") else null,
+            title = o.nullableString("title"),
+            description = o.nullableString("description"),
+            url = o.nullableString("url"),
+            color = o.nullableInt("color"),
             imageUrl = o.optJSONObject("image")?.optString("url")?.takeIf { it.isNotEmpty() },
             thumbnailUrl = o.optJSONObject("thumbnail")?.optString("url")
                 ?.takeIf { it.isNotEmpty() },
@@ -1016,17 +1036,17 @@ data class DiscordMessage(
 
             val attachArr = o.optJSONArray("attachments")
             val attachments = if (attachArr != null)
-                (0 until attachArr.length()).map { Attachment.fromJson(attachArr.getJSONObject(it)) }
+                parseEach(attachArr) { Attachment.fromJson(it) }
             else emptyList()
 
             val embedArr = o.optJSONArray("embeds")
             val embeds = if (embedArr != null)
-                (0 until embedArr.length()).map { Embed.fromJson(embedArr.getJSONObject(it)) }
+                parseEach(embedArr) { Embed.fromJson(it) }
             else emptyList()
 
             val stickerArr = o.optJSONArray("sticker_items")
             val stickers = if (stickerArr != null)
-                (0 until stickerArr.length()).map { StickerItem.fromJson(stickerArr.getJSONObject(it)) }
+                parseEach(stickerArr) { StickerItem.fromJson(it) }
             else emptyList()
 
             val reactArr = o.optJSONArray("reactions")
@@ -1075,20 +1095,17 @@ data class DiscordMessage(
 
                     val fwdAttachArr = snapMsg.optJSONArray("attachments")
                     if (fwdAttachArr != null) {
-                        fwdAttachments = (0 until fwdAttachArr.length())
-                            .map { Attachment.fromJson(fwdAttachArr.getJSONObject(it)) }
+                        fwdAttachments = parseEach(fwdAttachArr) { Attachment.fromJson(it) }
                     }
 
                     val fwdEmbedArr = snapMsg.optJSONArray("embeds")
                     if (fwdEmbedArr != null) {
-                        fwdEmbeds = (0 until fwdEmbedArr.length())
-                            .map { Embed.fromJson(fwdEmbedArr.getJSONObject(it)) }
+                        fwdEmbeds = parseEach(fwdEmbedArr) { Embed.fromJson(it) }
                     }
 
                     val fwdStickerArr = snapMsg.optJSONArray("sticker_items")
                     if (fwdStickerArr != null) {
-                        fwdStickers = (0 until fwdStickerArr.length())
-                            .map { StickerItem.fromJson(fwdStickerArr.getJSONObject(it)) }
+                        fwdStickers = parseEach(fwdStickerArr) { StickerItem.fromJson(it) }
                     }
 
                     if (fwdContent != null || fwdAuthor != null ||
@@ -1103,7 +1120,7 @@ data class DiscordMessage(
                 author = DiscordUser.fromJson(o.getJSONObject("author")),
                 content = o.optString("content", ""),
                 timestamp = o.getString("timestamp"),
-                editedTimestamp = o.optString("edited_timestamp").takeIf { it.isNotEmpty() },
+                editedTimestamp = o.nullableString("edited_timestamp"),
                 attachments = attachments,
                 embeds = embeds,
                 stickers = stickers,
@@ -1112,7 +1129,7 @@ data class DiscordMessage(
                 mentionedUserIds = mentionedUserIds,
                 mentionedRoleIds = mentionedRoles,
                 mentionEveryone = o.optBoolean("mention_everyone", false),
-                guildId = o.optString("guild_id").takeIf { it.isNotEmpty() },
+                guildId = o.nullableString("guild_id"),
                 type = msgType,
                 referencedMessage = refMsg,
                 forwardedContent = fwdContent,
@@ -1127,8 +1144,8 @@ data class DiscordMessage(
             )
         }
 
-        fun listFromJson(arr: JSONArray): List<DiscordMessage> =
-            (0 until arr.length()).map { fromJson(arr.getJSONObject(it)) }
+        /** One malformed message must not make the whole page fail to load: bad entries are skipped. */
+        fun listFromJson(arr: JSONArray): List<DiscordMessage> = parseEach(arr) { fromJson(it) }
     }
 }
 

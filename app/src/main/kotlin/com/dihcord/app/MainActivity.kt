@@ -1,6 +1,7 @@
 package com.dihcord.app
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -14,6 +15,7 @@ import com.dihcord.app.screens.*
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +43,8 @@ import androidx.wear.compose.material3.Text
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -58,6 +62,8 @@ class MainActivity : ComponentActivity() {
             .replace(Regex("[/?#%]"), " ").ifBlank { channelId }
         pendingChat = ChatTarget(channelId, name, intent.getStringExtra(Notifier.EXTRA_GUILD_ID))
         intent.removeExtra(Notifier.EXTRA_CHANNEL_ID)
+        // The notification was tapped: drop its message history so the next one starts fresh.
+        Notifier.clear(this, channelId)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -70,7 +76,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val token = SetupPreferences.getToken(this)
-        if (token != null) {
+        // The process (and its gateway connection) may outlive the activity, e.g. while the notification
+        // service runs; only build a repository when there isn't one yet.
+        if (token != null && discordApp.repository == null) {
             discordApp.initRepository(token)
         }
 
@@ -82,9 +90,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             DihcordTheme {
 
-                val repo = discordApp.repository
-                val isTokenInvalid by repo?.isTokenInvalid?.collectAsState()
-                    ?: remember { mutableStateOf(false) }
+                // Observed as a flow so a repository created later (e.g. by logging in) is picked up too.
+                val repo by discordApp.repositoryFlow.collectAsState()
+                val tokenInvalidFlow: StateFlow<Boolean> = remember(repo) {
+                    repo?.isTokenInvalid ?: MutableStateFlow(false)
+                }
+                val isTokenInvalid by tokenInvalidFlow.collectAsState()
                 var showInvalidTokenPopup by remember { mutableStateOf(false) }
 
                 androidx.compose.runtime.LaunchedEffect(isTokenInvalid) {
@@ -102,7 +113,7 @@ class MainActivity : ComponentActivity() {
                     androidx.compose.runtime.LaunchedEffect(target) {
                         if (target != null && SetupPreferences.getToken(this@MainActivity) != null) {
                             navController.navigate(
-                                "chatscreen/${target.channelId}/${target.name}/${target.guildId ?: "dm"}"
+                                "chatscreen/${target.channelId}/${Uri.encode(target.name)}/${target.guildId ?: "dm"}"
                             ) { launchSingleTop = true }
                         }
                         pendingChat = null
@@ -120,7 +131,7 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToSettings = { navController.navigate("settings") },
                                 onNavigateToChat = { chId, chName, guildId ->
                                     val guildSeg = guildId ?: "dm"
-                                    navController.navigate("chatscreen/$chId/$chName/$guildSeg")
+                                    navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/$guildSeg")
                                 }
                             )
                         }
@@ -164,28 +175,32 @@ class MainActivity : ComponentActivity() {
                             val guildId = if (guildIdArg == "dm") null else guildIdArg
                             activeChannelId = channelId
 
-                            ChatScreen(
-                                channelId = channelId,
-                                channelName = channelName,
-                                guildId = guildId,
-                                onNavigateToProfile = { userId, user ->
-                                    val encodedName = java.net.URLEncoder.encode(
-                                        user?.displayName ?: userId,
-                                        "UTF-8"
-                                    )
-                                    navController.navigate("userprofile/$userId/$encodedName/${guildIdArg ?: "dm"}")
-                                },
-                                onNavigateToThread = { threadId, threadName ->
-                                    val encodedName =
-                                        java.net.URLEncoder.encode(threadName, "UTF-8")
-                                    navController.navigate("thread/$threadId/$encodedName/${guildIdArg ?: "dm"}")
-                                },
-                                onOpenThreads = {
-                                    val encoded = java.net.URLEncoder.encode(channelName, "UTF-8")
-                                    navController.navigate("threads/$channelId/$encoded/${guildIdArg ?: "dm"}/channel")
-                                },
-                                onBack = { navController.popBackStack() }
-                            )
+                            // A new conversation (e.g. opened from a notification while another chat is
+                            // on screen, which reuses the destination) must not inherit draft/reply state.
+                            key(channelId) {
+                                ChatScreen(
+                                    channelId = channelId,
+                                    channelName = channelName,
+                                    guildId = guildId,
+                                    onNavigateToProfile = { userId, user ->
+                                        val encodedName = java.net.URLEncoder.encode(
+                                            user?.displayName ?: userId,
+                                            "UTF-8"
+                                        )
+                                        navController.navigate("userprofile/$userId/$encodedName/${guildIdArg ?: "dm"}")
+                                    },
+                                    onNavigateToThread = { threadId, threadName ->
+                                        val encodedName =
+                                            java.net.URLEncoder.encode(threadName, "UTF-8")
+                                        navController.navigate("thread/$threadId/$encodedName/${guildIdArg ?: "dm"}")
+                                    },
+                                    onOpenThreads = {
+                                        val encoded = java.net.URLEncoder.encode(channelName, "UTF-8")
+                                        navController.navigate("threads/$channelId/$encoded/${guildIdArg ?: "dm"}/channel")
+                                    },
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
                         }
 
                         composable("thread/{threadId}/{threadName}/{guildId}") { back ->
@@ -230,7 +245,7 @@ class MainActivity : ComponentActivity() {
                                 guildId = guildId,
                                 guildName = guildName,
                                 onNavigateToChatScreen = { chId, chName ->
-                                    navController.navigate("chatscreen/$chId/$chName/$guildId")
+                                    navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/$guildId")
                                 },
                                 onOpenForum = { chId, chName ->
                                     val encoded = java.net.URLEncoder.encode(chName, "UTF-8")
@@ -261,7 +276,7 @@ class MainActivity : ComponentActivity() {
                         composable("DMs") {
                             activeChannelId = null
                             DmsScreen(onNavigateToChatScreen = { chId, chName ->
-                                navController.navigate("chatscreen/$chId/$chName/dm")
+                                navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/dm")
                             })
                         }
 
@@ -269,9 +284,9 @@ class MainActivity : ComponentActivity() {
                             activeChannelId = null
                             ServerScreen(
                                 onNavigateToChannels = { gId, gName ->
-                                    navController.navigate("ServerChannels/$gId/$gName")
+                                    navController.navigate("ServerChannels/$gId/${Uri.encode(gName)}")
                                 },
-                                onOpenFolder = { key -> navController.navigate("servers/folder/$key") }
+                                onOpenFolder = { folder -> navController.navigate("servers/folder/${Uri.encode(folder)}") }
                             )
                         }
 
@@ -280,7 +295,7 @@ class MainActivity : ComponentActivity() {
                             ServerScreen(
                                 folderKey = back.arguments?.getString("folderKey"),
                                 onNavigateToChannels = { gId, gName ->
-                                    navController.navigate("ServerChannels/$gId/$gName")
+                                    navController.navigate("ServerChannels/$gId/${Uri.encode(gName)}")
                                 }
                             )
                         }

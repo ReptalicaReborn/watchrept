@@ -61,15 +61,24 @@ fun HomeScreen(
         val isDm: Boolean
     )
 
+    // Fetch names for mentioned channels we haven't cached yet, once per distinct set
+    // (not from inside remember{}, which re-ran on every readState change).
+    val uncachedMentionIds = remember(readState, channelNames) {
+        readState.entries
+            .filter { it.value.mentionCount > 0 && it.key !in channelNames }
+            .map { it.key }
+            .toSet()
+    }
+    LaunchedEffect(uncachedMentionIds) {
+        uncachedMentionIds.forEach { repo.ensureChannelCached(it) }
+    }
+
     val mentionEntries = remember(readState, dmIds, channelNames, channelGuilds, guilds) {
         readState.entries
             .filter { it.value.mentionCount > 0 }
             .map { (channelId, state) ->
                 val isDm = channelId in dmIds
-                val chName = channelNames[channelId] ?: run {
-                    repo.ensureChannelCached(channelId)
-                    channelId
-                }
+                val chName = channelNames[channelId] ?: channelId
                 val guildId = channelGuilds[channelId]
                 val guildName = guildId?.let { id -> guilds.firstOrNull { it.id == id }?.name }
                 MentionEntry(channelId, chName, guildName, state.mentionCount, isDm)

@@ -75,6 +75,8 @@ import com.dihcord.app.discordApp
 import com.dihcord.app.SetupPreferences
 import com.dihcord.app.R
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.delay
@@ -101,9 +103,10 @@ fun ChatScreen(
 
     if (repo == null) return
     // Observe only this channel: the shared maps change on every message/typing event account-wide.
+    // distinctBy: a duplicated id would crash the keyed list ("Key was already used").
     val messages by remember(channelId) {
-        repo.messages.map { it[channelId].orEmpty() }.distinctUntilChanged()
-    }.collectAsState(initial = repo.messages.value[channelId].orEmpty())
+        repo.messages.map { it[channelId].orEmpty() }.distinctUntilChanged().map { l -> l.distinctBy { it.id } }
+    }.collectAsState(initial = repo.messages.value[channelId].orEmpty().distinctBy { it.id })
     val typingUsers by remember(channelId) {
         repo.typing.map { it[channelId].orEmpty() }.distinctUntilChanged()
     }.collectAsState(initial = repo.typing.value[channelId].orEmpty())
@@ -128,7 +131,13 @@ fun ChatScreen(
     val roleIconCache = remember { mutableStateMapOf<String, GuildRole?>() }
     val guildMemberCache = remember { mutableStateMapOf<String, GuildMember?>() }
     val roleNames = remember(guildId, loading) { mutableStateMapOf<String, String>() }
-    val channelNames = remember(messages.size, loading) { repo.getChannelNames() }
+    // Same map instance until a name actually changes: it is a remember key for every bubble's parsed markdown.
+    val publishedChannelNames by repo.channelNames.collectAsState()
+    var channelNames by remember { mutableStateOf(repo.getChannelNames()) }
+    LaunchedEffect(publishedChannelNames, messages.size, loading) {
+        val fresh = repo.getChannelNames()
+        if (fresh != channelNames) channelNames = fresh
+    }
 
     LaunchedEffect(guildId, loading) {
         if (!loading && guildId != null && repo != null) {
@@ -182,6 +191,7 @@ fun ChatScreen(
 
 
     LaunchedEffect(channelId) {
+        com.dihcord.app.Notifier.clear(context, channelId)
         repo?.selectChannel(channelId, guildId)
         scope.launch {
             repo.loadMessages(channelId)
@@ -197,7 +207,7 @@ fun ChatScreen(
             scrolledToUnread.value = true
             val headerOffset = 1 + (if (pendingText.isNotBlank()) 1 else 0)
             if (initialLastRead != null) {
-                val lastReadIdx = messages.indexOfLast { it.id <= initialLastRead }
+                val lastReadIdx = messages.indexOfLast { compareSnowflakes(it.id, initialLastRead) <= 0 }
                 when {
                     lastReadIdx >= 0 && lastReadIdx + 1 < messages.size -> {
                         listState.scrollToItem(headerOffset + lastReadIdx + 1)
@@ -233,6 +243,15 @@ fun ChatScreen(
         }
     }
 
+    // Leaving the chat counts as having read what was there (like opening it does).
+    val latestMessageId by rememberUpdatedState(messages.lastOrNull()?.id)
+    val ackOnLeave by rememberUpdatedState(!loading && scrolledToUnread.value)
+    DisposableEffect(channelId) {
+        onDispose {
+            if (ackOnLeave) latestMessageId?.let { repo.markChannelRead(channelId, it) }
+        }
+    }
+
     var editingMsg by remember { mutableStateOf<DiscordMessage?>(null) }
     var editText by remember { mutableStateOf("") }
 
@@ -250,10 +269,12 @@ fun ChatScreen(
     var recordingSecs by remember { mutableStateOf(0) }
     var voiceFile by remember { mutableStateOf<File?>(null) }
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
+    // Bumped when the mic permission is granted, so recording starts right away (startRecording is declared below).
+    var micGrantedTick by remember { mutableStateOf(0) }
     val micPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (!granted) uploadError = "Microphone permission denied"
+        if (granted) micGrantedTick++ else uploadError = "Microphone permission denied"
     }
 
     fun startRecording() {
@@ -263,25 +284,31 @@ fun ChatScreen(
         if (!hasAudio) {
             micPermLauncher.launch(Manifest.permission.RECORD_AUDIO); return
         }
+        if (recorder != null) return
+        val f = File(context.cacheDir, "voice_${System.currentTimeMillis()}.ogg")
+        var created: MediaRecorder? = null
         try {
-            val f = File(context.cacheDir, "voice_${System.currentTimeMillis()}.ogg")
-            voiceFile = f
             val mr = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                 MediaRecorder(context)
             } else {
                 @Suppress("DEPRECATION")
                 MediaRecorder()
             }
+            created = mr
             mr.setAudioSource(MediaRecorder.AudioSource.MIC)
             mr.setOutputFormat(MediaRecorder.OutputFormat.OGG)
             mr.setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
             mr.setOutputFile(f.absolutePath)
             mr.prepare()
             mr.start()
+            voiceFile = f
             recorder = mr
             isRecording = true
             recordingSecs = 0
         } catch (e: Exception) {
+            runCatching { created?.release() }
+            f.delete()
+            voiceFile = null
             uploadError = "Mic error: ${e.message}"
             isRecording = false
         }
@@ -289,32 +316,44 @@ fun ChatScreen(
 
     fun stopAndSendRecording() {
         val mr = recorder ?: return
-        val f = voiceFile ?: return
+        val f = voiceFile
         val dur = recordingSecs.toDouble()
-        try {
-            mr.stop()
-            mr.release()
-        } catch (_: Exception) {
-        }
         recorder = null
+        voiceFile = null
         isRecording = false
+        // stop() throws when nothing usable was recorded (e.g. a very short tap); the file is then corrupt.
+        val stopped = try {
+            mr.stop(); true
+        } catch (_: Exception) {
+            false
+        }
+        runCatching { mr.release() }
+        if (!stopped || f == null) {
+            f?.delete()
+            uploadError = "Recording too short"
+            return
+        }
         scope.launch {
             runCatching {
-                val bytes = f.readBytes()
-                f.delete()
+                val bytes = withContext(Dispatchers.IO) { f.readBytes().also { f.delete() } }
                 repo.sendVoiceMessage(channelId, bytes, dur)
                     .onFailure { uploadError = "Voice send failed: ${it.message}" }
             }.onFailure { uploadError = "Error: ${it.message}" }
         }
     }
 
+    LaunchedEffect(micGrantedTick) {
+        if (micGrantedTick > 0) startRecording()
+    }
+
     fun cancelRecording() {
         val mr = recorder ?: return
         recorder = null
         try {
-            mr.stop(); mr.release()
+            mr.stop()
         } catch (_: Exception) {
         }
+        runCatching { mr.release() }
         isRecording = false
         voiceFile?.delete()
         voiceFile = null
@@ -394,8 +433,9 @@ fun ChatScreen(
                             mime.contains("webp") -> "webp"
                             else -> "jpg"
                         }
-                        val bytes = cr.openInputStream(uri)?.readBytes()
-                            ?: throw Exception("Cannot read image")
+                        val bytes = withContext(Dispatchers.IO) {
+                            cr.openInputStream(uri)?.use { it.readBytes() }
+                        } ?: throw Exception("Cannot read image")
                         repo.sendFileAttachment(channelId, bytes, "image.$ext", mime)
                             .onFailure { uploadError = "Upload failed: ${it.message}" }
                     }.onFailure { uploadError = "Error: ${it.message}" }
@@ -481,6 +521,7 @@ fun ChatScreen(
                     scope.launch {
                         try {
                             repo.toggleReaction(channelId, target.id, reactionEmoji)
+                                .onFailure { sendError = "Couldn't react: ${it.message}" }
                         } catch (e: Exception) {
                             sendError = "Failed: ${e.message}"
                         }
@@ -506,6 +547,7 @@ fun ChatScreen(
                     scope.launch {
                         try {
                             repo.toggleReaction(channelId, target.id, reactionEmoji)
+                                .onFailure { sendError = "Couldn't react: ${it.message}" }
                         } catch (e: Exception) {
                             sendError = "Failed: ${e.message}"
                         }
@@ -627,6 +669,14 @@ fun ChatScreen(
     // Newest message the user has actually seen; anything after it counts as "new".
     var seenUpToId by remember(channelId) { mutableStateOf<String?>(null) }
     LaunchedEffect(isAtBottom, lastMsgId) { if (isAtBottom) seenUpToId = lastMsgId }
+
+    // Ack messages read live while the chat is open (debounced), not only what was there when it opened.
+    LaunchedEffect(lastMsgId, isAtBottom) {
+        val id = lastMsgId ?: return@LaunchedEffect
+        if (!isAtBottom || loading || !scrolledToUnread.value) return@LaunchedEffect
+        delay(1_000)
+        repo.markChannelRead(channelId, id)
+    }
     val unseenCount = remember(messages, seenUpToId) {
         val seen = seenUpToId?.toLongOrNull() ?: return@remember 0
         messages.count { (it.id.toLongOrNull() ?: 0L) > seen }
@@ -692,32 +742,36 @@ fun ChatScreen(
         }
     }
 
-    fun sendTyped() {
-        val text = MentionInput.toWire(inputText.trim(), pickedMentions)
-        pickedMentions = emptyMap()
+    fun sendTyped(raw: String = inputText) {
+        val mentions = pickedMentions
+        val text = MentionInput.toWire(raw.trim(), mentions)
         if (text.isBlank() || slowRemaining > 0) return
+        pickedMentions = emptyMap()
         inputText = ""
         pendingText = ""
+        val replyTarget = replyingTo
+        val ping = replyPing
+        replyingTo = null
+        replyPing = true
         scope.launch {
             slowRemaining = slowModeSecs
-            val replyTarget = replyingTo
-            if (replyTarget != null) {
-                repo.sendReply(
-                    channelId,
-                    text,
-                    replyTarget.id,
-                    replyPing
-                )
-                    .onFailure {
-                        sendError = "Failed: ${it.message}"
-                    }
-                replyingTo = null
-                replyPing = true
+            val result = if (replyTarget != null) {
+                repo.sendReply(channelId, text, replyTarget.id, ping)
             } else {
                 repo.sendMessage(channelId, text)
-                    .onFailure {
-                        sendError = "Failed: ${it.message}"
-                    }
+            }
+            result.onFailure {
+                sendError = "Failed: ${it.message}"
+                // Give the draft back so it can be retried, unless something new was typed meanwhile.
+                if (inputText.isEmpty()) {
+                    inputText = raw
+                    pendingText = raw
+                    pickedMentions = mentions
+                }
+                if (replyingTo == null && replyTarget != null) {
+                    replyingTo = replyTarget
+                    replyPing = ping
+                }
             }
             while (true) {
                 delay(1_000)
@@ -791,37 +845,7 @@ fun ChatScreen(
                                     modifier = Modifier
                                         .clickable {
                                             if (slowRemaining > 0) return@clickable
-                                            val text = pendingText
-                                            pendingText = ""
-                                            inputText = ""
-                                            scope.launch {
-                                                slowRemaining = slowModeSecs
-                                                val replyTarget = replyingTo
-                                                if (replyTarget != null) {
-                                                    repo.sendReply(
-                                                        channelId,
-                                                        text,
-                                                        replyTarget.id,
-                                                        replyPing
-                                                    )
-                                                        .onFailure {
-                                                            sendError = "Failed: ${it.message}"
-                                                        }
-                                                    replyingTo = null
-                                                    replyPing = true
-                                                } else {
-                                                    repo.sendMessage(channelId, text)
-                                                        .onFailure {
-                                                            sendError = "Failed: ${it.message}"
-                                                        }
-                                                }
-                                                while (true) {
-                                                    delay(1_000)
-                                                    slowRemaining =
-                                                        repo.slowModeRemainingSeconds(channelId)
-                                                    if (slowRemaining <= 0) break
-                                                }
-                                            }
+                                            sendTyped(pendingText)
                                         }
                                         .padding(horizontal = 6.dp, vertical = 4.dp)
                                         .size(16.dp),
@@ -879,7 +903,10 @@ fun ChatScreen(
                             guildMemberCache = guildMemberCache,
                             myId = myId,
                             onReact = { emoji ->
-                                scope.launch { repo.toggleReaction(channelId, msg.id, emoji) }
+                                scope.launch {
+                                    repo.toggleReaction(channelId, msg.id, emoji)
+                                        .onFailure { sendError = "Couldn't react: ${it.message}" }
+                                }
                             },
                             onShowReactors = { reaction -> reactorsFor = msg.id to reaction },
                             onPollVote = if (canSend) { answerId ->
@@ -2570,26 +2597,79 @@ private fun VideoAttachment(att: Attachment, imageLoader: ImageLoader) {
 
 @Composable
 private fun AudioAttachment(att: Attachment) {
-    val scope = rememberCoroutineScope()
-
     var isPlaying by remember { mutableStateOf(false) }
+    var preparing by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
 
+    fun releasePlayer() {
+        mediaPlayer?.let { mp -> runCatching { mp.release() } }
+        mediaPlayer = null
+        isPlaying = false
+        preparing = false
+    }
+
+    fun fail() {
+        releasePlayer()
+        failed = true
+    }
+
     DisposableEffect(att.url) {
-        onDispose {
-            mediaPlayer?.release()
-            mediaPlayer = null
-        }
+        onDispose { releasePlayer() }
     }
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
             val mp = mediaPlayer
-            if (mp != null && mp.isPlaying) {
-                val dur = mp.duration
-                if (dur > 0) progress = mp.currentPosition.toFloat() / dur.toFloat()
+            if (mp != null) runCatching {
+                if (mp.isPlaying) {
+                    val dur = mp.duration
+                    if (dur > 0) progress = mp.currentPosition.toFloat() / dur.toFloat()
+                }
             }
             delay(300)
+        }
+    }
+
+    fun togglePlayback() {
+        val existing = mediaPlayer
+        when {
+            isPlaying -> {
+                runCatching { existing?.pause() }
+                isPlaying = false
+            }
+
+            existing != null -> {
+                if (runCatching { existing.start() }.isSuccess) isPlaying = true else fail()
+            }
+
+            else -> {
+                // Prepare asynchronously: a synchronous prepare() of a network URL blocks the main thread (ANR).
+                failed = false
+                preparing = true
+                val mp = MediaPlayer()
+                mediaPlayer = mp
+                mp.setOnPreparedListener { p ->
+                    if (mediaPlayer === p) {
+                        preparing = false
+                        if (runCatching { p.start() }.isSuccess) isPlaying = true else fail()
+                    }
+                }
+                mp.setOnCompletionListener {
+                    isPlaying = false
+                    progress = 0f
+                }
+                mp.setOnErrorListener { p, _, _ ->
+                    if (mediaPlayer === p) fail() else runCatching { p.release() }
+                    true
+                }
+                try {
+                    mp.setDataSource(att.url)
+                    mp.prepareAsync()
+                } catch (_: Exception) {
+                    fail()
+                }
+            }
         }
     }
 
@@ -2608,35 +2688,20 @@ private fun AudioAttachment(att: Attachment) {
             Icon(
                 painter = painterResource(id = if (isPlaying) R.drawable.pause else R.drawable.play),
                 contentDescription = if (isPlaying) "Pause" else "Play",
-                tint = MaterialTheme.colorScheme.onSurface,
+                tint = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier
                     .size(24.dp)
-                    .clickable {
-                        scope.launch {
-                            if (isPlaying) {
-                                mediaPlayer?.pause()
-                                isPlaying = false
-                            } else {
-                                val mp = mediaPlayer ?: MediaPlayer().also {
-                                    it.setDataSource(att.url)
-                                    it.prepare()
-                                    it.setOnCompletionListener { _ ->
-                                        isPlaying = false
-                                        progress = 0f
-                                    }
-                                    mediaPlayer = it
-                                }
-                                mp.start()
-                                isPlaying = true
-                            }
-                        }
-                    }
+                    .clickable(enabled = !preparing) { togglePlayback() }
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = att.filename,
+                    text = when {
+                        failed -> "Can't play audio"
+                        preparing -> "Loading…"
+                        else -> att.filename
+                    },
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )
                 LinearProgressIndicator(

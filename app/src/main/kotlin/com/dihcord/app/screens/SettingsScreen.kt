@@ -2,6 +2,7 @@ package com.dihcord.app.screens
 
 import android.Manifest
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -85,6 +86,9 @@ fun SettingsScreen(
     }
 
     var showLogoutConfirm by remember { mutableStateOf(false) }
+
+    // Back closes the confirmation instead of leaving Settings.
+    BackHandler(enabled = showLogoutConfirm) { showLogoutConfirm = false }
 
     if (showLogoutConfirm) {
         ScreenScaffold(scrollState = rememberScalingLazyListState()) {

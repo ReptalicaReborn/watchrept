@@ -24,6 +24,8 @@ import java.security.SecureRandom
 class TokenWebServer(
     private val port: Int = 8080,
     val pin: String = generatePin(),
+    /** Called (on a background thread) when the port can't be bound, so the UI can show it. */
+    private val onStartFailed: (Throwable) -> Unit = {},
     private val onTokenReceived: suspend (String) -> Unit,
 ) {
     @Volatile private var serverSocket: ServerSocket? = null
@@ -63,9 +65,17 @@ class TokenWebServer(
         scope.launch {
             try {
                 // reuseAddress lets the server restart right away even if old connections linger in TIME_WAIT.
-                serverSocket = ServerSocket().apply {
-                    reuseAddress = true
-                    bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), port), 5)
+                try {
+                    serverSocket = ServerSocket().apply {
+                        reuseAddress = true
+                        bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), port), 5)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Couldn't bind port $port", e)
+                    val wasRunning = running
+                    running = false
+                    if (wasRunning) onStartFailed(e)
+                    return@launch
                 }
                 Log.i(TAG, "Listening on port $port")
                 while (running) {

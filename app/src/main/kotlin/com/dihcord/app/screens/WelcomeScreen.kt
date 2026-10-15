@@ -123,7 +123,21 @@ fun WelcomeScreen(onSetupComplete: () -> Unit, onNavigateToQrLogin: () -> Unit) 
 
     fun startWebServer() {
         acquireWifiLock()
-        val srv = TokenWebServer(port = 8080) { token ->
+        lateinit var srv: TokenWebServer
+        srv = TokenWebServer(
+            port = 8080,
+            onStartFailed = { e ->
+                scope.launch {
+                    if (webServer !== srv) return@launch
+                    error = "Couldn't start the web server: ${e.message ?: "port 8080 unavailable"}"
+                    srv.stop()
+                    webServer = null
+                    serverStatus = ""
+                    serverAddresses = emptyList()
+                    releaseWifiLock()
+                }
+            }
+        ) { token ->
             scope.launch {
                 serverStatus = "Validating token…"
                 val check = DiscordRestClient(token).getCurrentUser()
@@ -143,8 +157,9 @@ fun WelcomeScreen(onSetupComplete: () -> Unit, onNavigateToQrLogin: () -> Unit) 
                 }
             }
         }
-        srv.start()
+        error = ""
         webServer = srv
+        srv.start()
         serverAddresses = srv.getLocalAddresses()
         serverStatus = if (serverAddresses.isEmpty()) {
             "Server started \n Connect to Wi-Fi first"

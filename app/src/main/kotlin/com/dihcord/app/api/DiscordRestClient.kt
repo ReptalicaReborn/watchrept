@@ -17,6 +17,9 @@ import java.util.concurrent.TimeUnit
 /** How many captchas in a row the user may be asked to solve for one request. */
 private const val MAX_CAPTCHA_TRIES = 3
 
+/** Longest rate-limit wait (ms) worth sitting through before giving up on a request. */
+private const val MAX_RATE_LIMIT_WAIT_MS = 5_000L
+
 class DiscordRestClient(private val token: String) {
 
     private val http = OkHttpClient.Builder()
@@ -34,10 +37,29 @@ class DiscordRestClient(private val token: String) {
             .header("Authorization", token)
             .header("User-Agent", "Dihcord/1.0 (WearOS)")
 
-    private class RawResponse(val code: Int, val body: String, val ok: Boolean)
+    private class RawResponse(val code: Int, val body: String, val ok: Boolean, val retryAfter: String? = null)
 
     private suspend fun send(request: Request): RawResponse = withContext(Dispatchers.IO) {
-        http.newCall(request).execute().use { RawResponse(it.code, it.body?.string().orEmpty(), it.isSuccessful) }
+        var attempt = 0
+        while (true) {
+            val response = http.newCall(request).execute().use {
+                RawResponse(it.code, it.body?.string().orEmpty(), it.isSuccessful, it.header("Retry-After"))
+            }
+            // Rate limited: wait as long as Discord asks (if that's short) and try again, rather than failing.
+            val waitMs = if (response.code == 429) retryAfterMs(response) else null
+            if (waitMs == null || waitMs > MAX_RATE_LIMIT_WAIT_MS || attempt++ >= 2) return@withContext response
+            kotlinx.coroutines.delay(waitMs)
+        }
+        @Suppress("UNREACHABLE_CODE")
+        error("unreachable")
+    }
+
+    private fun retryAfterMs(response: RawResponse): Long? {
+        val seconds = runCatching { JSONObject(response.body).optDouble("retry_after", Double.NaN) }.getOrNull()
+            ?.takeIf { !it.isNaN() }
+            ?: response.retryAfter?.toDoubleOrNull()
+            ?: return null
+        return (seconds * 1000).toLong().coerceAtLeast(100)
     }
 
     /**

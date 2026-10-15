@@ -1,5 +1,6 @@
 package com.dihcord.app.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -66,6 +67,9 @@ fun DmsScreen(
             .filter { showHidden || !hiddenIds.contains(it.id) }
             .sortedByDescending { it.lastMessageId?.toLongOrNull() ?: 0L }
     }
+
+    // Back closes the hide menu instead of leaving the screen.
+    BackHandler(enabled = menuDm != null) { menuDm = null }
 
     val activeDm = menuDm
     if (activeDm != null) {
@@ -139,7 +143,7 @@ fun DmsScreen(
                         mentionCount = if (showBadges) readState[dm.id]?.mentionCount ?: 0 else 0,
                         hasUnread = showBadges && dm.lastMessageId != null && run {
                             val rs = readState[dm.id] ?: return@run false
-                            dm.lastMessageId > rs.lastMessageId
+                            compareSnowflakes(dm.lastMessageId, rs.lastMessageId) > 0
                         },
                         isHidden = isHidden,
                         onClick = { if (!isHidden) onNavigateToChatScreen(dm.id, dm.displayName) },

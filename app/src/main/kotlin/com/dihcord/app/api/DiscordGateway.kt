@@ -4,6 +4,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -23,16 +25,30 @@ class DiscordGateway(private val token: String) {
     private val _events = MutableSharedFlow<GatewayEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<GatewayEvent> = _events
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var ws: WebSocket? = null
+
+    /** Events are queued here and emitted by one coroutine, so they arrive in the order Discord sent them. */
+    private val outbox = Channel<GatewayEvent>(Channel.UNLIMITED)
+
+    init {
+        scope.launch { for (event in outbox) _events.emit(event) }
+    }
+
+    /** The live socket; null when there is none. Callbacks from older sockets are ignored. */
+    @Volatile private var ws: WebSocket? = null
     private var heartbeatJob: Job? = null
     private val seq = AtomicInteger(-1)
-    private var sessionId: String? = null
-    private var resumeUrl: String? = null
+    @Volatile private var sessionId: String? = null
+    @Volatile private var resumeUrl: String? = null
     @Volatile
     private var connected = false
 
+    /** Whether the last heartbeat was acknowledged; if not by the next one, the connection is dead. */
+    @Volatile private var acked = true
+
     private val http = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
+        // Notices a connection that silently died (network switch, phone out of range) between heartbeats.
+        .pingInterval(30, TimeUnit.SECONDS)
         .build()
 
     private object Op {
@@ -51,9 +67,10 @@ class DiscordGateway(private val token: String) {
     /** False after [pause]: scheduled reconnects (after errors, RECONNECT, INVALID_SESSION) then stay quiet. */
     @Volatile private var wanted = true
 
+    @Synchronized
     fun connect() {
         wanted = true
-        if (connected) return
+        if (ws != null) return // already connected or connecting
         // resume_gateway_url comes without the version/encoding query, so add it like the default URL has.
         val url = (resumeUrl?.trimEnd('/') ?: "wss://gateway.discord.gg") + "/?v=10&encoding=json"
         val request = Request.Builder().url(url).build()
@@ -65,6 +82,13 @@ class DiscordGateway(private val token: String) {
         close(1000)
     }
 
+    /** Disconnects for good and stops this gateway's background work; it can't be used afterwards. */
+    fun shutdown() {
+        disconnect()
+        outbox.close()
+        scope.cancel()
+    }
+
     /**
      * Drops the socket but keeps the session resumable (Discord invalidates it on close code 1000), so [connect]
      * later sends RESUME and Discord replays what was missed while paused.
@@ -74,11 +98,22 @@ class DiscordGateway(private val token: String) {
         close(4000)
     }
 
+    @Synchronized
     private fun close(code: Int) {
         connected = false
         heartbeatJob?.cancel()
         ws?.close(code, "Goodbye")
         ws = null
+    }
+
+    /** Called when [socket] closed or failed on its own: forgets it (if still current) and reconnects if asked. */
+    @Synchronized
+    private fun lost(socket: WebSocket, reconnectInMs: Long?) {
+        if (socket !== ws) return
+        connected = false
+        heartbeatJob?.cancel()
+        ws = null
+        if (reconnectInMs != null) reconnectLater(reconnectInMs)
     }
 
     private fun reconnectLater(ms: Long) {
@@ -158,18 +193,18 @@ class DiscordGateway(private val token: String) {
             .put("token", token)
             .put(
                 "properties", JSONObject()
-                    .put("\$os", "Linux")
-                    .put("\$browser", "Chrome")
-                    .put("\$device", "WearOS")
-                    .put("\$system_locale", "en-US")
+                    .put("os", "Linux")
+                    .put("browser", "Chrome")
+                    .put("device", "WearOS")
+                    .put("system_locale", "en-US")
                     .put(
-                        "\$browser_user_agent",
+                        "browser_user_agent",
                         "Mozilla/5.0 (Wayland; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.2.0.2 Firefox/156.0.1"
                     )
-                    .put("\$browser_version", "151.2.0.2")
-                    .put("\$os_version", "")
-                    .put("\$release_channel", "stable")
-                    .put("\$client_build_number", 621195)
+                    .put("browser_version", "151.2.0.2")
+                    .put("os_version", "")
+                    .put("release_channel", "stable")
+                    .put("client_build_number", 621195)
             )
         send(Op.IDENTIFY, d)
     }
@@ -185,12 +220,13 @@ class DiscordGateway(private val token: String) {
     private inner class Listener : WebSocketListener() {
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            connected = true
+            if (webSocket === ws) connected = true
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            if (webSocket !== ws) return
             val payload = runCatching { JSONObject(text) }.getOrNull() ?: return
-            val op = payload.getInt("op")
+            val op = payload.optInt("op", -1)
             val d = payload.opt("d")
             val s = payload.optInt("s", -1).takeIf { it >= 0 }
             val t = payload.optString("t").takeIf { it.isNotEmpty() }
@@ -199,14 +235,15 @@ class DiscordGateway(private val token: String) {
 
             when (op) {
                 Op.HELLO -> {
-                    val interval = (d as? JSONObject)?.getLong("heartbeat_interval") ?: 41250L
+                    val interval = (d as? JSONObject)?.optLong("heartbeat_interval", 41250L) ?: 41250L
+                    acked = true
                     startHeartbeat(interval)
                     if (sessionId != null) sendResume() else sendIdentify()
                 }
 
                 Op.HEARTBEAT -> sendHeartbeat()
 
-                Op.HEARTBEAT_ACK -> {}
+                Op.HEARTBEAT_ACK -> acked = true
 
                 Op.RECONNECT -> {
                     close(4000) // keep the session so the reconnect can RESUME
@@ -224,36 +261,58 @@ class DiscordGateway(private val token: String) {
 
                 Op.DISPATCH -> {
                     if (t != null) {
-                        handleDispatch(t, d as? JSONObject)
+                        runCatching { handleDispatch(t, d as? JSONObject) }
                     }
                 }
             }
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            connected = false
-            heartbeatJob?.cancel()
             if (response?.code == 401) {
-                scope.launch { _events.emit(GatewayEvent.InvalidToken) }
+                lost(webSocket, reconnectInMs = null)
+                outbox.trySend(GatewayEvent.InvalidToken)
             } else {
-                reconnectLater(5_000)
+                lost(webSocket, reconnectInMs = 5_000)
             }
         }
 
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+            // Finish the close handshake Discord started, so onClosed follows promptly.
+            webSocket.close(code, null)
+        }
+
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            connected = false
-            heartbeatJob?.cancel()
-            if (code == 4004) {
-                scope.launch { _events.emit(GatewayEvent.InvalidToken) }
+            when (code) {
+                4004 -> { // authentication failed
+                    lost(webSocket, reconnectInMs = null)
+                    outbox.trySend(GatewayEvent.InvalidToken)
+                }
+                // Bad shard/version/intents: reconnecting would fail the same way.
+                in 4010..4014 -> lost(webSocket, reconnectInMs = null)
+                else -> {
+                    // 4007 (bad seq) and 4009 (session timed out) need a fresh IDENTIFY instead of RESUME.
+                    if (code == 4007 || code == 4009) { sessionId = null; resumeUrl = null }
+                    lost(webSocket, reconnectInMs = 2_000)
+                }
             }
         }
     }
 
     private fun startHeartbeat(intervalMs: Long) {
         heartbeatJob?.cancel()
+        val socket = ws
         heartbeatJob = scope.launch {
             delay((intervalMs * Math.random()).toLong())
             while (isActive) {
+                if (!acked) {
+                    // No ACK since the last heartbeat: the connection is a zombie. Drop it and RESUME on a new one.
+                    if (socket != null) {
+                        socket.cancel()
+                        lost(socket, reconnectInMs = 1_000)
+                    }
+                    return@launch
+                }
+                acked = false
                 sendHeartbeat()
                 delay(intervalMs)
             }
@@ -327,7 +386,37 @@ class DiscordGateway(private val token: String) {
             }.getOrNull()
 
             "MESSAGE_UPDATE" -> runCatching {
-                GatewayEvent.MessageUpdate(DiscordMessage.fromJson(d))
+                // Updates can be partial (an embed-only update has no author): keep the raw fields to merge.
+                GatewayEvent.MessageUpdate(
+                    id = d.getString("id"),
+                    channelId = d.getString("channel_id"),
+                    message = runCatching { DiscordMessage.fromJson(d) }.getOrNull(),
+                    raw = d
+                )
+            }.getOrNull()
+
+            "MESSAGE_DELETE_BULK" -> runCatching {
+                val ids = d.getJSONArray("ids")
+                GatewayEvent.MessageDeleteBulk(
+                    ids = (0 until ids.length()).map { ids.getString(it) }.toSet(),
+                    channelId = d.getString("channel_id")
+                )
+            }.getOrNull()
+
+            "MESSAGE_REACTION_REMOVE_ALL" -> runCatching {
+                GatewayEvent.ReactionRemoveAll(
+                    messageId = d.getString("message_id"),
+                    channelId = d.getString("channel_id"),
+                    emoji = null
+                )
+            }.getOrNull()
+
+            "MESSAGE_REACTION_REMOVE_EMOJI" -> runCatching {
+                GatewayEvent.ReactionRemoveAll(
+                    messageId = d.getString("message_id"),
+                    channelId = d.getString("channel_id"),
+                    emoji = ReactionEmoji.fromJson(d.getJSONObject("emoji"))
+                )
             }.getOrNull()
 
             "MESSAGE_DELETE" -> runCatching {
@@ -431,9 +520,7 @@ class DiscordGateway(private val token: String) {
             else -> GatewayEvent.Unknown(eventName)
         }
 
-        if (event != null) {
-            scope.launch { _events.emit(event) }
-        }
+        if (event != null && event !is GatewayEvent.Unknown) outbox.trySend(event)
     }
 }
 
@@ -453,7 +540,16 @@ sealed class GatewayEvent {
         val guildId: String? = null
     ) : GatewayEvent()
 
-    data class MessageUpdate(val message: DiscordMessage) : GatewayEvent()
+    /** [message] is null when the update is partial; [raw] says which fields it carries. */
+    data class MessageUpdate(
+        val id: String,
+        val channelId: String,
+        val message: DiscordMessage?,
+        val raw: JSONObject
+    ) : GatewayEvent()
+    data class MessageDeleteBulk(val ids: Set<String>, val channelId: String) : GatewayEvent()
+    /** A moderator cleared every reaction on a message, or only those with [emoji]. */
+    data class ReactionRemoveAll(val messageId: String, val channelId: String, val emoji: ReactionEmoji?) : GatewayEvent()
     data class PollVote(
         val channelId: String,
         val messageId: String,

@@ -2,7 +2,9 @@ package com.dihcord.app.api
 
 import android.content.Context
 import android.content.SharedPreferences
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.async
@@ -37,7 +39,11 @@ data class NotificationInfo(
 
 class DiscordRepository(token: String, private val context: Context? = null) {
 
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // An unexpected error in one background job must not take the whole app down.
+    val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO +
+            CoroutineExceptionHandler { _, e -> android.util.Log.e("DiscordRepository", "Background job failed", e) }
+    )
     val rest = DiscordRestClient(token)
     private val gateway = DiscordGateway(token)
 
@@ -62,7 +68,8 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     private val _guilds = MutableStateFlow<List<Guild>>(loadCachedGuilds())
     val guilds: StateFlow<List<Guild>> = _guilds.asStateFlow()
 
-    private val _dmChannels = MutableStateFlow<List<Channel>>(loadCachedDmChannels())
+    // Filled from the cache in init {} at the end: the caches it also fills aren't initialised yet here.
+    private val _dmChannels = MutableStateFlow<List<Channel>>(emptyList())
     val dmChannels: StateFlow<List<Channel>> = _dmChannels.asStateFlow()
 
     private val _guildFolders = MutableStateFlow<List<GuildFolder>>(emptyList())
@@ -113,19 +120,23 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     // Filled for every server from READY (and lazily over REST), read from the UI: must be thread-safe.
     private val emojiCache = java.util.concurrent.ConcurrentHashMap<String, List<GuildEmoji>>()
     private val stickerCache = java.util.concurrent.ConcurrentHashMap<String, List<StickerItem>>()
-    private val channelNameCache = mutableMapOf<String, String>()
-    private val channelGuildCache = mutableMapOf<String, String>()
-    private val memberRolesCache = object : LinkedHashMap<String, List<String>>(32, 0.75f, true) {
-        override fun removeEldestEntry(eldest: Map.Entry<String, List<String>>?) =
-            size > 100 // Max 100 user role lookups cached
-    }
-    private val guildRolesCache = object : LinkedHashMap<String, List<GuildRole>>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: Map.Entry<String, List<GuildRole>>?) =
-            size > 20 // Max 20 guilds' roles cached
-    }
-    private val guildMemberCache = object : LinkedHashMap<String, GuildMember>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: Map.Entry<String, GuildMember>?) = size > 200
-    }
+    // These are touched from the gateway, background loads and the UI at once, so they must be thread-safe.
+    private val channelNameCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val channelGuildCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val memberRolesCache: MutableMap<String, List<String>> = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, List<String>>(32, 0.75f, true) {
+            override fun removeEldestEntry(eldest: Map.Entry<String, List<String>>?) =
+                size > 100 // Max 100 user role lookups cached
+        })
+    private val guildRolesCache: MutableMap<String, List<GuildRole>> = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, List<GuildRole>>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: Map.Entry<String, List<GuildRole>>?) =
+                size > 20 // Max 20 guilds' roles cached
+        })
+    private val guildMemberCache: MutableMap<String, GuildMember> = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, GuildMember>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: Map.Entry<String, GuildMember>?) = size > 200
+        })
 
     suspend fun getGuildMember(guildId: String, userId: String): GuildMember? {
         val cacheKey = "$guildId:$userId"
@@ -137,8 +148,8 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         return member
     }
 
-    private val typingJobs = mutableMapOf<String, Job>()
-    private val lastSentAt = mutableMapOf<String, Long>()
+    private val typingJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private val lastSentAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     fun slowModeRemainingSeconds(channelId: String): Int {
         val ch = channelCache[channelId] ?: return 0
@@ -153,9 +164,9 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     fun getSlowModeSeconds(channelId: String): Int =
         channelCache[channelId]?.slowModeSeconds ?: 0
 
-    private val userDisplayNames = mutableMapOf<String, String>()
-    private val myRolesByGuild = mutableMapOf<String, List<String>>()
-    private val channelCache = mutableMapOf<String, Channel>()
+    private val userDisplayNames = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val myRolesByGuild = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
+    private val channelCache = java.util.concurrent.ConcurrentHashMap<String, Channel>()
     private val _presences = MutableStateFlow<Map<String, UserPresence>>(emptyMap())
     val presences: StateFlow<Map<String, UserPresence>> = _presences.asStateFlow()
 
@@ -163,7 +174,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     fun getChannelGuilds(): Map<String, String> = channelGuildCache.toMap()
     fun getMyRoles(guildId: String): List<String> = myRolesByGuild[guildId] ?: emptyList()
 
-    private val guildOwnerCache = mutableMapOf<String, String>()
+    private val guildOwnerCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /**
      * What the current user may post in [channelId] (text, files, voice messages), computed the way Discord does (base role
@@ -223,6 +234,12 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     }
 
     fun disconnect() = gateway.disconnect()
+
+    /** Shuts this repository down for good (logout or a new login): disconnects and stops all its background work. */
+    fun close() {
+        gateway.shutdown()
+        scope.cancel()
+    }
 
     @Volatile private var paused = false
 
@@ -392,9 +409,21 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         _channelGuilds.value = channelGuildCache.toMap()
     }
 
+    private val fetchingChannels: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
     fun ensureChannelCached(channelId: String) {
-        if (channelNameCache.containsKey(channelId)) return
+        if (channelNameCache.containsKey(channelId) || !fetchingChannels.add(channelId)) return
         scope.launch {
+            try {
+                fetchChannelIntoCache(channelId)
+            } finally {
+                fetchingChannels.remove(channelId)
+            }
+        }
+    }
+
+    private suspend fun fetchChannelIntoCache(channelId: String) {
+        run {
             rest.getChannel(channelId).onSuccess { ch ->
                 channelCache[ch.id] = ch
                 channelNameCache[ch.id] = ch.displayName
@@ -537,7 +566,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
     fun markChannelRead(channelId: String, messageId: String) {
         val existing = _readState.value[channelId]
-        if (existing != null && messageId <= existing.lastMessageId) return
+        if (existing != null && compareSnowflakes(messageId, existing.lastMessageId) <= 0) return
         _readState.update { current ->
             current + (channelId to ChannelUnreadState(lastMessageId = messageId, mentionCount = 0))
         }
@@ -556,14 +585,17 @@ class DiscordRepository(token: String, private val context: Context? = null) {
             }
         }
 
-        rest.getMessages(channelId, limit = com.dihcord.app.Perf.messagePageSize).onSuccess { fetched ->
+        val pageSize = com.dihcord.app.Perf.messagePageSize
+        rest.getMessages(channelId, limit = pageSize).onSuccess { fetched ->
             val fetchedList = fetched.reversed()
             fetchedList.forEach { userDisplayNames[it.author.id] = it.author.displayName }
+            if (fetched.size < pageSize) reachedStart.add(channelId)
             _messages.update { current ->
                 val existing = current[channelId].orEmpty()
-                val lastFetchedId = fetchedList.lastOrNull()?.id ?: ""
-                val newOnly = existing.filter { it.id > lastFetchedId }
-                current + (channelId to (fetchedList + newOnly))
+                val merged = mergeLatestPage(existing, fetchedList)
+                // The held history no longer connects to the latest page: start over from it and allow paging again.
+                if (merged == null) reachedStart.remove(channelId)
+                current + (channelId to (merged ?: fetchedList))
             }
             loadedChannels.add(channelId)
         }.onFailure { handleApiError(it) }
@@ -739,61 +771,33 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     suspend fun fetchUserProfile(userId: String): Result<DiscordUser> =
         rest.getUserProfile(userId).onFailure { handleApiError(it) }
 
+    /** Adds or removes the user's reaction; the shown state only changes once Discord accepted it. */
     suspend fun toggleReaction(
         channelId: String,
         messageId: String,
         emoji: ReactionEmoji,
         burst: Boolean = false
-    ) {
+    ): Result<Unit> {
+        val msg = _messages.value[channelId]?.firstOrNull { it.id == messageId } ?: return Result.success(Unit)
+        val existing = msg.reactions.firstOrNull { it.emoji.apiKey == emoji.apiKey }
+        val mine = if (burst) existing?.meBurst == true else existing?.me == true
+        val result = if (mine) rest.removeReaction(channelId, messageId, emoji.apiKey, burst = burst)
+        else rest.addReaction(channelId, messageId, emoji.apiKey, burst = burst)
+        result.onSuccess { setMyReaction(channelId, messageId, emoji, burst, reacted = !mine) }
+            .onFailure { handleApiError(it) }
+        return result
+    }
+
+    /**
+     * Marks the user's own reaction as present or not, changing the count only if that's news. Both the REST reply and
+     * the gateway echo (or a reaction made on another device) land here, so neither double-counts.
+     */
+    private fun setMyReaction(channelId: String, messageId: String, emoji: ReactionEmoji, burst: Boolean, reacted: Boolean) {
         val msg = _messages.value[channelId]?.firstOrNull { it.id == messageId } ?: return
         val existing = msg.reactions.firstOrNull { it.emoji.apiKey == emoji.apiKey }
-        if (burst) {
-            val isBurstMe = existing?.meBurst == true
-            if (isBurstMe) {
-                rest.removeReaction(channelId, messageId, emoji.apiKey, burst = true)
-                updateReactionLocally(
-                    channelId,
-                    messageId,
-                    emoji,
-                    delta = -1,
-                    me = false,
-                    burst = true
-                )
-            } else {
-                rest.addReaction(channelId, messageId, emoji.apiKey, burst = true)
-                updateReactionLocally(
-                    channelId,
-                    messageId,
-                    emoji,
-                    delta = +1,
-                    me = true,
-                    burst = true
-                )
-            }
-        } else {
-            val isRegularMe = existing?.me == true
-            if (isRegularMe) {
-                rest.removeReaction(channelId, messageId, emoji.apiKey, burst = false)
-                updateReactionLocally(
-                    channelId,
-                    messageId,
-                    emoji,
-                    delta = -1,
-                    me = false,
-                    burst = false
-                )
-            } else {
-                rest.addReaction(channelId, messageId, emoji.apiKey, burst = false)
-                updateReactionLocally(
-                    channelId,
-                    messageId,
-                    emoji,
-                    delta = +1,
-                    me = true,
-                    burst = false
-                )
-            }
-        }
+        val mine = if (burst) existing?.meBurst == true else existing?.me == true
+        if (mine == reacted) return
+        updateReactionLocally(channelId, messageId, emoji, if (reacted) +1 else -1, reacted, burst)
     }
 
     private fun updateReactionLocally(
@@ -844,6 +848,14 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     private fun observeGatewayEvents() {
         scope.launch {
             gateway.events.collect { event ->
+                // One bad event must not end the collection (live updates would stop for good).
+                runCatching { handleGatewayEvent(event) }
+                    .onFailure { android.util.Log.e("DiscordRepository", "Failed to handle $event", it) }
+            }
+        }
+    }
+
+    private fun handleGatewayEvent(event: GatewayEvent) {
                 when (event) {
                     is GatewayEvent.InvalidToken -> {
                         _isTokenInvalid.value = true
@@ -884,17 +896,18 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                             myRolesByGuild[event.guildId] = event.memberRoleIds
                         }
                         _newMessages.tryEmit(msg)
+                        // Only channels that were opened hold messages; the rest load fresh when opened.
                         _messages.update { current ->
-                            val list = current[msg.channelId]?.toMutableList() ?: mutableListOf()
-                            if (list.none { it.id == msg.id }) list.add(msg)
-                            current + (msg.channelId to list)
+                            val list = current[msg.channelId] ?: return@update current
+                            if (list.any { it.id == msg.id }) return@update current
+                            current + (msg.channelId to (list + msg))
                         }
                         val isDmChannel = _dmChannels.value.any { it.id == msg.channelId }
                         if (isDmChannel) {
                             _dmChannels.update { channels ->
                                 channels.map { ch ->
                                     if (ch.id == msg.channelId &&
-                                        (ch.lastMessageId == null || msg.id > ch.lastMessageId)
+                                        (ch.lastMessageId == null || compareSnowflakes(msg.id, ch.lastMessageId) > 0)
                                     )
                                         ch.copy(lastMessageId = msg.id)
                                     else ch
@@ -927,12 +940,30 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                     }
 
                     is GatewayEvent.MessageUpdate -> {
-                        val updated = event.message
                         _messages.update { current ->
-                            val list = current[updated.channelId]?.map {
-                                if (it.id == updated.id) updated else it
+                            val list = current[event.channelId]?.map {
+                                if (it.id == event.id) mergeUpdate(it, event) else it
                             } ?: return@update current
-                            current + (updated.channelId to list)
+                            current + (event.channelId to list)
+                        }
+                    }
+
+                    is GatewayEvent.MessageDeleteBulk -> {
+                        _messages.update { current ->
+                            val list = current[event.channelId]?.filter { it.id !in event.ids }
+                                ?: return@update current
+                            current + (event.channelId to list)
+                        }
+                    }
+
+                    is GatewayEvent.ReactionRemoveAll -> {
+                        _messages.update { current ->
+                            val list = current[event.channelId]?.map { msg ->
+                                if (msg.id != event.messageId) msg
+                                else msg.copy(reactions = if (event.emoji == null) emptyList()
+                                    else msg.reactions.filter { it.emoji.apiKey != event.emoji.apiKey })
+                            } ?: return@update current
+                            current + (event.channelId to list)
                         }
                     }
 
@@ -959,7 +990,9 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
                     is GatewayEvent.ReactionAdd -> {
                         val isMe = event.userId == currentUserId
-                        if (!isMe) {
+                        if (isMe) {
+                            setMyReaction(event.channelId, event.messageId, event.emoji, event.burst, reacted = true)
+                        } else {
                             updateReactionLocally(
                                 event.channelId,
                                 event.messageId,
@@ -973,7 +1006,9 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
                     is GatewayEvent.ReactionRemove -> {
                         val isMe = event.userId == currentUserId
-                        if (!isMe) {
+                        if (isMe) {
+                            setMyReaction(event.channelId, event.messageId, event.emoji, event.burst, reacted = false)
+                        } else {
                             updateReactionLocally(
                                 event.channelId,
                                 event.messageId,
@@ -1016,7 +1051,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                         if (ch.isDm) {
                             scope.launch { refreshDmChannels() }
                         } else if (ch.guildId != null) {
-                            scope.launch { refreshGuildChannels(ch.guildId) }
+                            refreshGuildChannelsSoon(ch.guildId)
                         }
                     }
 
@@ -1026,7 +1061,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                         channelNameCache[ch.id] = ch.displayName
                         if (ch.guildId != null) {
                             channelGuildCache[ch.id] = ch.guildId
-                            scope.launch { refreshGuildChannels(ch.guildId) }
+                            refreshGuildChannelsSoon(ch.guildId)
                         } else if (ch.isDm) {
                             scope.launch { refreshDmChannels() }
                         }
@@ -1038,7 +1073,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                         channelNameCache.remove(ch.id)
                         channelGuildCache.remove(ch.id)
                         if (ch.guildId != null) {
-                            scope.launch { refreshGuildChannels(ch.guildId) }
+                            refreshGuildChannelsSoon(ch.guildId)
                         } else if (ch.isDm) {
                             scope.launch { refreshDmChannels() }
                         }
@@ -1046,9 +1081,41 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
                     is GatewayEvent.Unknown -> {}
                 }
-            }
+    }
+
+    private val channelRefreshJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    /**
+     * Refreshes [guildId]'s channel list after channel events, once things settle: a server reshuffling channels sends
+     * a burst of events, and refetching on each would hit the rate limit. Servers never opened are skipped.
+     */
+    private fun refreshGuildChannelsSoon(guildId: String) {
+        if (guildId !in _guildChannelsMap.value) return
+        channelRefreshJobs[guildId]?.cancel()
+        channelRefreshJobs[guildId] = scope.launch {
+            delay(1_500)
+            refreshGuildChannels(guildId)
         }
     }
+
+    /** Applies a MESSAGE_UPDATE to [old], keeping what the (possibly partial) payload leaves out. */
+    private fun mergeUpdate(old: DiscordMessage, event: GatewayEvent.MessageUpdate): DiscordMessage {
+        val raw = event.raw
+        val full = event.message
+        if (full != null) {
+            // Updates carry no reactions, and a poll only when it changed: keep the ones we have.
+            return full.copy(
+                reactions = if (raw.has("reactions")) full.reactions else old.reactions,
+                poll = if (raw.has("poll")) full.poll else old.poll,
+            )
+        }
+        // Partial update, typically link previews arriving after the message was sent.
+        val embeds = raw.optJSONArray("embeds")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i -> runCatching { Embed.fromJson(arr.getJSONObject(i)) }.getOrNull() }
+        }
+        return if (embeds != null) old.copy(embeds = embeds) else old
+    }
+
 
     private fun loadCachedGuilds(): List<Guild> = runCatching {
         val json = prefs?.getString("guilds", null) ?: return emptyList()
@@ -1075,4 +1142,25 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         prefs?.edit()?.putString("dm_channels", JSONArray(list.map { it.toJson() }).toString())
             ?.apply()
     }
+
+    init {
+        _dmChannels.value = loadCachedDmChannels()
+    }
+}
+
+/**
+ * Merges the latest page [fetched] (oldest first) into the [held] messages: messages inside the page's range are
+ * replaced by the page (so deletions while away disappear), older and newer ones are kept. Returns null if
+ * [held] doesn't reach the page (more than a page was missed), in which case the caller should start over.
+ */
+internal fun mergeLatestPage(held: List<DiscordMessage>, fetched: List<DiscordMessage>): List<DiscordMessage>? {
+    if (held.isEmpty()) return fetched
+    if (fetched.isEmpty()) return held
+    val first = fetched.first().id
+    val last = fetched.last().id
+    val newestHeld = held.last().id
+    if (compareSnowflakes(newestHeld, first) < 0) return null
+    val older = held.filter { compareSnowflakes(it.id, first) < 0 }
+    val newer = held.filter { compareSnowflakes(it.id, last) > 0 }
+    return (older + fetched + newer).distinctBy { it.id }
 }

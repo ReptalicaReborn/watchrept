@@ -26,8 +26,10 @@ import com.dihcord.app.RemoteAuthClient
 import com.dihcord.app.RemoteAuthState
 import com.dihcord.app.RemoteAuthStatus
 import com.dihcord.app.SetupPreferences
+import com.dihcord.app.api.DiscordApiException
 import com.dihcord.app.api.DiscordRestClient
 import com.dihcord.app.discordApp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -40,24 +42,50 @@ fun QrLoginScreen(onSetupComplete: () -> Unit, onBack: () -> Unit) {
     var status by remember { mutableStateOf(RemoteAuthStatus()) }
     var client by remember { mutableStateOf<RemoteAuthClient?>(null) }
     var attempt by remember { mutableIntStateOf(0) }
+    // A token Discord gave us that couldn't be checked yet (network trouble); "Retry" re-validates it.
+    var unverifiedToken by remember { mutableStateOf<String?>(null) }
+
+    fun validateToken(token: String) {
+        scope.launch {
+            unverifiedToken = null
+            state = RemoteAuthState.Connecting
+            var lastError: Throwable? = null
+            repeat(3) { i ->
+                val check = DiscordRestClient(token).getCurrentUser()
+                if (check.isSuccess) {
+                    SetupPreferences.saveToken(context, token)
+                    context.discordApp.initRepository(token)
+                    onSetupComplete()
+                    return@launch
+                }
+                val e = check.exceptionOrNull()
+                if (e is DiscordApiException && (e.httpCode == 401 || e.httpCode == 403)) {
+                    state = RemoteAuthState.Error("Invalid token received")
+                    return@launch
+                }
+                lastError = e
+                if (i < 2) delay(2_000)
+            }
+            unverifiedToken = token
+            state = RemoteAuthState.Error(
+                "Couldn't verify the login (${lastError?.message ?: "network error"}). Check the connection and retry."
+            )
+        }
+    }
+
+    fun restart() {
+        client?.disconnect()
+        unverifiedToken = null
+        status = RemoteAuthStatus()
+        state = RemoteAuthState.Connecting
+        attempt++
+    }
 
     LaunchedEffect(attempt) {
         val c = RemoteAuthClient(
             onStateChange = { newState -> state = newState },
             onStatusUpdate = { newStatus -> status = newStatus },
-            onTokenReceived = { token ->
-                scope.launch {
-                    state = RemoteAuthState.Connecting
-                    val check = DiscordRestClient(token).getCurrentUser()
-                    if (check.isSuccess) {
-                        SetupPreferences.saveToken(context, token)
-                        context.discordApp.initRepository(token)
-                        onSetupComplete()
-                    } else {
-                        state = RemoteAuthState.Error("Invalid token received")
-                    }
-                }
-            }
+            onTokenReceived = { token -> validateToken(token) }
         )
         client = c
         c.connect()
@@ -100,12 +128,7 @@ fun QrLoginScreen(onSetupComplete: () -> Unit, onBack: () -> Unit) {
                     }
                     item {
                         Button(
-                            onClick = {
-                                client?.disconnect()
-                                status = RemoteAuthStatus()
-                                state = RemoteAuthState.Connecting
-                                attempt++
-                            },
+                            onClick = { restart() },
                             modifier = Modifier
                                 .fillMaxWidth(0.7f)
                                 .height(32.dp)
@@ -267,12 +290,20 @@ fun QrLoginScreen(onSetupComplete: () -> Unit, onBack: () -> Unit) {
                     }
                     item {
                         Button(
-                            onClick = { onBack() },
+                            onClick = { restart() },
+                            modifier = Modifier
+                                .fillMaxWidth(0.7f)
+                                .height(32.dp)
+                        ) { Text("Try again") }
+                    }
+                    item {
+                        Button(
+                            onClick = { client?.disconnect(); onBack() },
                             modifier = Modifier
                                 .fillMaxWidth(0.7f)
                                 .height(32.dp),
                             colors = ButtonDefaults.filledTonalButtonColors()
-                        ) { Text("Go Back") }
+                        ) { Text("Go back") }
                     }
                 }
 
@@ -305,13 +336,23 @@ fun QrLoginScreen(onSetupComplete: () -> Unit, onBack: () -> Unit) {
                                 .padding(horizontal = 8.dp, vertical = 1.dp)
                         )
                     }
+                    val retryToken = unverifiedToken
                     item {
                         Button(
-                            onClick = { onBack() },
+                            onClick = { if (retryToken != null) validateToken(retryToken) else restart() },
                             modifier = Modifier
                                 .fillMaxWidth(0.7f)
                                 .height(32.dp)
-                        ) { Text("Go Back") }
+                        ) { Text(if (retryToken != null) "Retry" else "Try again") }
+                    }
+                    item {
+                        Button(
+                            onClick = { client?.disconnect(); onBack() },
+                            modifier = Modifier
+                                .fillMaxWidth(0.7f)
+                                .height(32.dp),
+                            colors = ButtonDefaults.filledTonalButtonColors()
+                        ) { Text("Go back") }
                     }
                 }
             }

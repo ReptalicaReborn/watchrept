@@ -26,11 +26,17 @@ object Notifier {
     const val EXTRA_CHANNEL_NAME = "channel_name"
     const val EXTRA_GUILD_ID = "guild_id"
     const val EXTRA_MUTE_SERVER = "mute_server"
+    /** Sent to [ReplyReceiver] when the user swipes a message notification away. */
+    const val ACTION_DISMISSED = "com.dihcord.app.NOTIFICATION_DISMISSED"
     private const val MAX_HISTORY = 6
 
     private class Line(val sender: String, val text: String, val time: Long)
 
-    private val history = mutableMapOf<String, ArrayDeque<Line>>()
+    // Touched from the notification service, receivers and the UI thread: every access holds [lock].
+    private val lock = Any()
+    private val history = HashMap<String, ArrayDeque<Line>>()
+    /** The last notification shown per channel, so a failed reply can re-post it. */
+    private val lastInfo = HashMap<String, NotificationInfo>()
 
     fun ensureChannels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
@@ -64,11 +70,44 @@ object Notifier {
 
     fun show(context: Context, info: NotificationInfo) {
         if (!canPostNotifications(context)) return
-        val id = notificationId(info.channelId)
-        val lines = history.getOrPut(info.channelId) { ArrayDeque() }
-        lines.addLast(Line(info.sender, info.text, System.currentTimeMillis()))
-        while (lines.size > MAX_HISTORY) lines.removeFirst()
+        val lines = addLine(info.channelId, Line(info.sender, info.text, System.currentTimeMillis()))
+        synchronized(lock) { lastInfo[info.channelId] = info }
+        post(context, info, lines, alert = true)
+    }
 
+    /**
+     * An inline reply couldn't be sent: re-post the conversation (so it can be retried) with a note saying so,
+     * instead of leaving the user thinking it went through.
+     */
+    fun showReplyFailed(context: Context, channelId: String, text: String) {
+        if (!canPostNotifications(context)) return
+        val info = synchronized(lock) { lastInfo[channelId] }
+        if (info == null) {
+            val notification = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
+                .setSmallIcon(R.drawable.send)
+                .setContentTitle("Reply not sent")
+                .setContentText(text)
+                .setCategory(NotificationCompat.CATEGORY_ERROR)
+                .setAutoCancel(true)
+                .setContentIntent(openAppIntent(context, notificationId(channelId)))
+                .build()
+            NotificationManagerCompat.from(context).notify(notificationId(channelId), notification)
+            return
+        }
+        val lines = addLine(channelId, Line("You", "Not sent: $text", System.currentTimeMillis()))
+        post(context, info, lines, alert = false)
+    }
+
+    /** Appends [line] to the channel's history and returns a snapshot of it. */
+    private fun addLine(channelId: String, line: Line): List<Line> = synchronized(lock) {
+        val lines = history.getOrPut(channelId) { ArrayDeque() }
+        lines.addLast(line)
+        while (lines.size > MAX_HISTORY) lines.removeFirst()
+        lines.toList()
+    }
+
+    private fun post(context: Context, info: NotificationInfo, lines: List<Line>, alert: Boolean) {
+        val id = notificationId(info.channelId)
         val me = Person.Builder().setName("You").build()
         val style = NotificationCompat.MessagingStyle(me).setConversationTitle(info.title)
         if (!info.isDm) style.isGroupConversation = true
@@ -113,8 +152,10 @@ object Notifier {
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setGroup(GROUP)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(false)
+            .setOnlyAlertOnce(!alert)
+            .setSilent(!alert)
             .setContentIntent(openAppIntent(context, id, info))
+            .setDeleteIntent(dismissIntent(context, id, info.channelId))
             .addAction(replyAction)
             .addAction(muteAction)
             .apply { muteServerAction?.let { addAction(it) } }
@@ -122,9 +163,27 @@ object Notifier {
         NotificationManagerCompat.from(context).notify(id, notification)
     }
 
+    /** The chat was opened (or the notification acted on): forget its history and remove it. */
     fun clear(context: Context, channelId: String) {
-        history.remove(channelId)
+        forget(channelId)
         NotificationManagerCompat.from(context).cancel(notificationId(channelId))
+    }
+
+    /** Forgets the channel's message history, e.g. after its notification was swiped away. */
+    fun forget(channelId: String) {
+        synchronized(lock) {
+            history.remove(channelId)
+            lastInfo.remove(channelId)
+        }
+    }
+
+    private fun dismissIntent(context: Context, requestCode: Int, channelId: String): PendingIntent {
+        val intent = Intent(context, ReplyReceiver::class.java)
+            .setAction(ACTION_DISMISSED)
+            .putExtra(EXTRA_CHANNEL_ID, channelId)
+        return PendingIntent.getBroadcast(
+            context, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
     private fun notificationId(channelId: String) = 1000 + (channelId.hashCode() and 0x0FFFFFFF)

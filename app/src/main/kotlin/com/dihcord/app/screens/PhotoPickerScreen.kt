@@ -30,6 +30,11 @@ import androidx.wear.compose.material3.*
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/** Only the newest photos are listed, to keep the query and grid cheap on a watch. */
+private const val MAX_PICKER_IMAGES = 200
 
 data class MediaImage(
     val id: Long,
@@ -50,6 +55,8 @@ fun PhotoPickerScreen(
 
     var images by remember { mutableStateOf<List<MediaImage>>(emptyList()) }
     var permGranted by remember { mutableStateOf(false) }
+    // Distinguishes "still querying MediaStore" from "query finished with no photos".
+    var loaded by remember { mutableStateOf(false) }
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
 
     LaunchedEffect(Unit) {
@@ -70,38 +77,45 @@ fun PhotoPickerScreen(
 
     LaunchedEffect(permGranted) {
         if (!permGranted) return@LaunchedEffect
-        val result = mutableListOf<MediaImage>()
-        val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        loaded = false
+        images = withContext(Dispatchers.IO) {
+            val result = mutableListOf<MediaImage>()
+            val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
 
-        val projection = arrayOf(
-            MediaStore.Images.Media._ID,
-            MediaStore.Images.Media.DISPLAY_NAME,
-            MediaStore.Images.Media.MIME_TYPE,
-            MediaStore.Images.Media.DATE_ADDED
-        )
-        val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
-        context.contentResolver.query(collection, projection, null, null, sortOrder)
-            ?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
-                val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.MIME_TYPE)
-                val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idCol)
-                    val uri =
-                        ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-                    result.add(
-                        MediaImage(
-                            id = id,
-                            uri = uri,
-                            displayName = cursor.getString(nameCol) ?: "image",
-                            mimeType = cursor.getString(mimeCol) ?: "image/jpeg",
-                            dateAdded = cursor.getLong(dateCol)
-                        )
-                    )
-                }
+            val projection = arrayOf(
+                MediaStore.Images.Media._ID,
+                MediaStore.Images.Media.DISPLAY_NAME,
+                MediaStore.Images.Media.MIME_TYPE,
+                MediaStore.Images.Media.DATE_ADDED
+            )
+            // No LIMIT in sortOrder (rejected on Android 11+); stop iterating at the cap instead.
+            val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+            runCatching {
+                context.contentResolver.query(collection, projection, null, null, sortOrder)
+                    ?.use { cursor ->
+                        val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                        val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+                        val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.MIME_TYPE)
+                        val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
+                        while (result.size < MAX_PICKER_IMAGES && cursor.moveToNext()) {
+                            val id = cursor.getLong(idCol)
+                            val uri =
+                                ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+                            result.add(
+                                MediaImage(
+                                    id = id,
+                                    uri = uri,
+                                    displayName = cursor.getString(nameCol) ?: "image",
+                                    mimeType = cursor.getString(mimeCol) ?: "image/jpeg",
+                                    dateAdded = cursor.getLong(dateCol)
+                                )
+                            )
+                        }
+                    }
             }
-        images = result
+            result
+        }
+        loaded = true
     }
 
     val confirmUri = selectedUri
@@ -173,15 +187,18 @@ fun PhotoPickerScreen(
                 modifier = Modifier.fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                item {
-                    LoadingIndicator()
-                }
-                item {
-                    Text(
-                        "No photos found",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                if (!loaded) {
+                    item {
+                        LoadingIndicator()
+                    }
+                } else {
+                    item {
+                        Text(
+                            "No photos found",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 item {
                     Button(

@@ -27,6 +27,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -52,6 +54,15 @@ fun ImageViewer(url: String, contentDescription: String?, imageLoader: ImageLoad
     ) {
         var scale by remember { mutableFloatStateOf(1f) }
         var offset by remember { mutableStateOf(Offset.Zero) }
+        var viewSize by remember { mutableStateOf(IntSize.Zero) }
+
+        /** Keeps the zoomed image covering the screen: it can't be dragged further than its overflow. */
+        fun clampOffset(raw: Offset, s: Float): Offset {
+            if (s <= 1f) return Offset.Zero
+            val maxX = viewSize.width * (s - 1f) / 2f
+            val maxY = viewSize.height * (s - 1f) / 2f
+            return Offset(raw.x.coerceIn(-maxX, maxX), raw.y.coerceIn(-maxY, maxY))
+        }
         val context = LocalContext.current
         val scope = rememberCoroutineScope()
         var saving by remember { mutableStateOf(false) }
@@ -60,6 +71,7 @@ fun ImageViewer(url: String, contentDescription: String?, imageLoader: ImageLoad
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
+                .onSizeChanged { viewSize = it }
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onTap = { onDismiss() },
@@ -69,6 +81,7 @@ fun ImageViewer(url: String, contentDescription: String?, imageLoader: ImageLoad
                                 offset = Offset.Zero
                             } else {
                                 scale = DOUBLE_TAP_ZOOM
+                                offset = clampOffset(offset, scale)
                             }
                         },
                     )
@@ -76,7 +89,8 @@ fun ImageViewer(url: String, contentDescription: String?, imageLoader: ImageLoad
                 .pointerInput(Unit) {
                     detectTransformGestures { _, pan, zoom, _ ->
                         scale = (scale * zoom).coerceIn(1f, MAX_ZOOM)
-                        offset = if (scale > 1f) offset + pan * scale else Offset.Zero
+                        // graphicsLayer translation is applied after scaling, so the finger's pan maps 1:1.
+                        offset = clampOffset(offset + pan, scale)
                     }
                 },
             contentAlignment = Alignment.Center,

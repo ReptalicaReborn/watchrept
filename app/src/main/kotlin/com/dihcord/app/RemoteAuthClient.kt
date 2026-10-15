@@ -2,6 +2,8 @@ package com.dihcord.app
 
 import com.dihcord.app.captcha.CaptchaBroker
 import com.dihcord.app.captcha.CaptchaChallenge
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.*
@@ -14,6 +16,7 @@ import java.security.MessageDigest
 import java.security.interfaces.RSAPrivateKey
 import java.security.spec.MGF1ParameterSpec
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.crypto.Cipher
 import javax.crypto.spec.OAEPParameterSpec
 import javax.crypto.spec.PSource
@@ -64,10 +67,29 @@ class RemoteAuthClient(
     private val onTokenReceived: suspend (String) -> Unit
 ) {
     private val TAG = "RemoteAuthClient"
-    private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    // UI callbacks are posted to the main looper rather than launched in a scope, so the final state and
+    // log lines are delivered even after the socket has been torn down. Only disconnect() silences them.
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Socket work (heartbeat, expiry timer); cancelled when the socket ends.
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var ws: WebSocket? = null
+
+    // The ticket exchange (and any captcha wait) must outlive the socket, which Discord closes right
+    // after pending_login. Only disconnect() cancels it.
+    private val exchangeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @Volatile private var ws: WebSocket? = null
     private var heartbeatJob: Job? = null
+    private var expiryJob: Job? = null
+
+    /** disconnect() was called: drop every further callback. */
+    @Volatile private var disposed = false
+
+    /** pending_login arrived (ticket exchange running or done) or the phone cancelled: socket errors no longer matter. */
+    @Volatile private var loginStarted = false
+    @Volatile private var finished = false
+    private val socketEnded = AtomicBoolean(false)
 
     private var privateKey: RSAPrivateKey? = null
     private var publicKeySpki: ByteArray? = null  // Java encoded() = SPKI DER
@@ -85,13 +107,18 @@ class RemoteAuthClient(
     private var status = RemoteAuthStatus()
 
     private fun setState(s: RemoteAuthState) {
-        mainScope.launch { onStateChange(s) }
+        if (disposed) return
+        mainHandler.post { if (!disposed) onStateChange(s) }
     }
 
     private fun log(line: String) {
         Log.d(TAG, line)
-        status = status.plus(line)
-        mainScope.launch { onStatusUpdate(status) }
+        if (disposed) return
+        val snapshot = synchronized(this) {
+            status = status.plus(line)
+            status
+        }
+        mainHandler.post { if (!disposed) onStatusUpdate(snapshot) }
     }
 
     fun connect() {
@@ -109,24 +136,53 @@ class RemoteAuthClient(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                ioScope.launch { handleMessage(text) }
+                // Handled on OkHttp's reader thread so messages are processed in order and the
+                // pending_login flag is set before a following close is seen.
+                try {
+                    handleMessage(text)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to handle message", e)
+                    log("Error handling message: ${e.message}")
+                    if (!loginStarted && !finished) {
+                        finished = true
+                        setState(RemoteAuthState.Error("Login failed: ${e.message}"))
+                    }
+                    runCatching { webSocket.close(1000, null) }
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 log("Failed (HTTP ${response?.code}): ${t.message}")
-                setState(RemoteAuthState.Error("Connection failed: ${t.message}"))
-                cleanup()
+                onSocketEnded { RemoteAuthState.Error("Connection failed: ${t.message}") }
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                log("Closing: $code ${reason.ifBlank { "(no reason)" }}")
+                runCatching { webSocket.close(1000, null) }
+                onSocketEnded { closedState(code) }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 log("Closed: $code ${reason.ifBlank { "(no reason)" }}")
-                if (code != 1000) setState(RemoteAuthState.Error("Disconnected ($code)"))
-                cleanup()
+                onSocketEnded { closedState(code) }
             }
         })
     }
 
-    private suspend fun handleMessage(text: String) {
+    private fun closedState(code: Int): RemoteAuthState =
+        RemoteAuthState.Error("The QR code expired or the connection was closed ($code). Try again for a new one.")
+
+    /** Runs once per socket: stops socket work and reports [state] unless the login already moved on. */
+    private fun onSocketEnded(state: () -> RemoteAuthState) {
+        if (!socketEnded.compareAndSet(false, true)) return
+        if (!loginStarted && !finished) {
+            finished = true
+            setState(state())
+        }
+        cleanupSocket()
+    }
+
+    private fun handleMessage(text: String) {
         val json = JSONObject(text)
         when (val op = json.getString("op")) {
             "hello" -> {
@@ -138,6 +194,8 @@ class RemoteAuthClient(
                 log("Pubkey: ${b64.take(20)}… (${publicKeySpki!!.size}B SPKI)")
                 send(JSONObject().put("op", "init").put("encoded_public_key", b64))
                 startHeartbeat(intervalMs)
+                val timeoutMs = json.optLong("timeout_ms", 0L)
+                if (timeoutMs > 0) startExpiryTimer(timeoutMs)
                 log("→ init sent, waiting for nonce_proof…")
             }
 
@@ -193,11 +251,15 @@ class RemoteAuthClient(
             }
 
             "pending_login" -> {
+                loginStarted = true
+                expiryJob?.cancel()
                 log("← pending_login, exchanging ticket…")
-                exchangeTicketForToken(json.getString("ticket"))
+                val ticket = json.getString("ticket")
+                exchangeScope.launch { exchangeTicketForToken(ticket) }
             }
 
             "cancel" -> {
+                finished = true
                 log("← cancel"); setState(RemoteAuthState.Canceled)
             }
 
@@ -233,11 +295,13 @@ class RemoteAuthClient(
                     val token = decryptBytes(Base64.decode(encryptedToken, Base64.DEFAULT))
                         .toString(Charsets.UTF_8)
                     log("Token decrypted! Logging in…")
-                    withContext(Dispatchers.Main) { onTokenReceived(token) }
+                    finished = true
+                    if (!disposed) withContext(Dispatchers.Main) { onTokenReceived(token) }
                     return
                 }
                 if (key != null) log("Discord didn't accept the captcha (${next.errors.joinToString().ifEmpty { "no reason" }})")
                 if (++tries > MAX_CAPTCHA_TRIES) {
+                    finished = true
                     setState(RemoteAuthState.CaptchaRequired(
                         "Discord kept rejecting the captcha" +
                             next.errors.firstOrNull()?.let { " ($it)" }.orEmpty() + "."
@@ -248,13 +312,17 @@ class RemoteAuthClient(
                 key = CaptchaBroker.solve(next)
                 if (key == null) {
                     log("Captcha was not solved.")
+                    finished = true
                     setState(RemoteAuthState.CaptchaRequired("The captcha was cancelled or timed out."))
                     return
                 }
                 challenge = next
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             log("Token exchange error: ${e.message}")
+            finished = true
             setState(RemoteAuthState.Error("Token exchange failed: ${e.message}"))
         }
     }
@@ -292,19 +360,35 @@ class RemoteAuthClient(
         }
     }
 
+    /** Discord drops the session after hello's timeout_ms; don't rely on its close frame alone. */
+    private fun startExpiryTimer(timeoutMs: Long) {
+        expiryJob?.cancel()
+        expiryJob = ioScope.launch {
+            delay(timeoutMs + 5_000)
+            if (!loginStarted && !finished) {
+                log("QR code timed out")
+                onSocketEnded { RemoteAuthState.Error("The QR code expired. Try again for a new one.") }
+                runCatching { ws?.close(1000, "timeout") }
+            }
+        }
+    }
+
     private fun send(json: JSONObject) {
         ws?.send(json.toString())
     }
 
     fun disconnect() {
-        ws?.close(1000, "user cancelled")
-        cleanup()
+        disposed = true
+        runCatching { ws?.close(1000, "user cancelled") }
+        cleanupSocket()
+        exchangeScope.cancel()
     }
 
-    private fun cleanup() {
+    /** Stops socket-bound work. Leaves the ticket exchange and UI delivery alone. */
+    private fun cleanupSocket() {
         heartbeatJob?.cancel()
         heartbeatJob = null
-        mainScope.cancel()
+        expiryJob = null
         ioScope.cancel()
     }
 }
