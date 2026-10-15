@@ -1,5 +1,6 @@
 package com.watchrept.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -45,6 +46,26 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     var activeChannelId: String? = null
 
+    /** A conversation to open, set by tapping a notification. */
+    private data class ChatTarget(val channelId: String, val name: String, val guildId: String?)
+
+    private var pendingChat by mutableStateOf<ChatTarget?>(null)
+
+    private fun readChatTarget(intent: Intent?) {
+        val channelId = intent?.getStringExtra(Notifier.EXTRA_CHANNEL_ID) ?: return
+        // Route segments can't contain these characters.
+        val name = (intent.getStringExtra(Notifier.EXTRA_CHANNEL_NAME) ?: channelId)
+            .replace(Regex("[/?#%]"), " ").ifBlank { channelId }
+        pendingChat = ChatTarget(channelId, name, intent.getStringExtra(Notifier.EXTRA_GUILD_ID))
+        intent.removeExtra(Notifier.EXTRA_CHANNEL_ID)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        readChatTarget(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -53,6 +74,7 @@ class MainActivity : ComponentActivity() {
             discordApp.initRepository(token)
         }
 
+        readChatTarget(intent)
         UpdateChecker.checkNow(this)
         if (token != null && SetupPreferences.getNotificationsEnabled(this)) {
             NotificationService.start(this)
@@ -78,6 +100,16 @@ class MainActivity : ComponentActivity() {
 
                 AppScaffold(timeText = { TimeText() }) {
                     val navController = rememberSwipeDismissableNavController()
+
+                    val target = pendingChat
+                    androidx.compose.runtime.LaunchedEffect(target) {
+                        if (target != null && SetupPreferences.getToken(this@MainActivity) != null) {
+                            navController.navigate(
+                                "chatscreen/${target.channelId}/${target.name}/${target.guildId ?: "dm"}"
+                            ) { launchSingleTop = true }
+                        }
+                        pendingChat = null
+                    }
                     SwipeDismissableNavHost(
                         navController = navController,
                         startDestination = if (token != null) "home" else "Welcome"

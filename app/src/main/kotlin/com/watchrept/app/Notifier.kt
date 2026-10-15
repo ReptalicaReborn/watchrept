@@ -23,6 +23,8 @@ object Notifier {
     const val SERVICE_NOTIFICATION_ID = 1
     const val KEY_REPLY = "reply_text"
     const val EXTRA_CHANNEL_ID = "channel_id"
+    const val EXTRA_CHANNEL_NAME = "channel_name"
+    const val EXTRA_GUILD_ID = "guild_id"
     private const val MAX_HISTORY = 6
 
     private class Line(val sender: String, val text: String, val time: Long)
@@ -84,6 +86,12 @@ object Notifier {
             .setAllowGeneratedReplies(true)
             .build()
 
+        val muteIntent = Intent(context, MuteReceiver::class.java).putExtra(EXTRA_CHANNEL_ID, info.channelId)
+        val mutePending = PendingIntent.getBroadcast(
+            context, id, muteIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val muteAction = NotificationCompat.Action.Builder(R.drawable.hide, "Mute", mutePending).build()
+
         val notification = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
             .setSmallIcon(R.drawable.send)
             .setStyle(style)
@@ -93,8 +101,9 @@ object Notifier {
             .setGroup(GROUP)
             .setAutoCancel(true)
             .setOnlyAlertOnce(false)
-            .setContentIntent(openAppIntent(context, id))
+            .setContentIntent(openAppIntent(context, id, info))
             .addAction(replyAction)
+            .addAction(muteAction)
             .build()
         NotificationManagerCompat.from(context).notify(id, notification)
     }
@@ -106,11 +115,17 @@ object Notifier {
 
     private fun notificationId(channelId: String) = 1000 + (channelId.hashCode() and 0x0FFFFFFF)
 
-    private fun openAppIntent(context: Context, requestCode: Int): PendingIntent =
-        PendingIntent.getActivity(
-            context,
-            requestCode,
-            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    /** Opens the app, straight into the conversation when [info] is given. */
+    private fun openAppIntent(context: Context, requestCode: Int, info: NotificationInfo? = null): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        if (info != null) {
+            intent.putExtra(EXTRA_CHANNEL_ID, info.channelId)
+                .putExtra(EXTRA_CHANNEL_NAME, info.channelName)
+                .putExtra(EXTRA_GUILD_ID, info.guildId)
+        }
+        return PendingIntent.getActivity(
+            context, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+    }
 }

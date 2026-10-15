@@ -59,6 +59,10 @@ fun SettingsScreen(
         SetupPreferences.setNotificationsEnabled(context, granted)
         if (granted) NotificationService.start(context)
     }
+    var quietEnabled by remember { mutableStateOf(SetupPreferences.getQuietHoursEnabled(context)) }
+    var quietStart by remember { mutableStateOf(SetupPreferences.getQuietStartHour(context)) }
+    var quietEnd by remember { mutableStateOf(SetupPreferences.getQuietEndHour(context)) }
+    var mutedCount by remember { mutableStateOf(SetupPreferences.getMutedChannels(context).size) }
     var compactMode by remember {
         mutableStateOf(SetupPreferences.getCompactMode(context))
     }
@@ -173,6 +177,60 @@ fun SettingsScreen(
                         )
                     }
                 )
+            }
+
+            item {
+                SwitchButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    checked = quietEnabled,
+                    onCheckedChange = {
+                        quietEnabled = it
+                        SetupPreferences.setQuietHoursEnabled(context, it)
+                    },
+                    label = { Text("Quiet hours", style = MaterialTheme.typography.bodySmall) },
+                    secondaryLabel = {
+                        Text(
+                            "No notifications %02d:00–%02d:00".format(quietStart, quietEnd),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                )
+            }
+
+            if (quietEnabled) {
+                item {
+                    Button(
+                        onClick = {
+                            quietStart = (quietStart + 1) % 24
+                            SetupPreferences.setQuietHours(context, quietStart, quietEnd)
+                        },
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors()
+                    ) { Text("Starts %02d:00 (tap +1h)".format(quietStart)) }
+                }
+                item {
+                    Button(
+                        onClick = {
+                            quietEnd = (quietEnd + 1) % 24
+                            SetupPreferences.setQuietHours(context, quietStart, quietEnd)
+                        },
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors()
+                    ) { Text("Ends %02d:00 (tap +1h)".format(quietEnd)) }
+                }
+            }
+
+            if (mutedCount > 0) {
+                item {
+                    Button(
+                        onClick = {
+                            SetupPreferences.clearMutedChannels(context)
+                            mutedCount = 0
+                        },
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors()
+                    ) { Text("Unmute $mutedCount chat${if (mutedCount == 1) "" else "s"}") }
+                }
             }
 
             item {

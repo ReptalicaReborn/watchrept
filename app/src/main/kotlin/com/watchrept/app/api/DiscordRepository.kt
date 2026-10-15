@@ -26,6 +26,9 @@ data class NotificationInfo(
     val sender: String,
     val text: String,
     val isDm: Boolean,
+    val guildId: String? = null,
+    /** Name used for the chat screen's title. */
+    val channelName: String = "",
 )
 
 class DiscordRepository(token: String, private val context: Context? = null) {
@@ -273,6 +276,12 @@ class DiscordRepository(token: String, private val context: Context? = null) {
             sender = msg.author.displayName,
             text = text,
             isDm = isDm,
+            guildId = if (isDm) null else guildId,
+            channelName = if (isDm) {
+                _dmChannels.value.firstOrNull { it.id == msg.channelId }?.displayName ?: msg.author.displayName
+            } else {
+                channelNameCache[msg.channelId] ?: msg.channelId
+            },
         )
     }
     fun selectChannel(channelId: String, guildId: String?) {

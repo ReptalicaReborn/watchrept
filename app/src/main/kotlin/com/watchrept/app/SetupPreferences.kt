@@ -125,6 +125,51 @@ object SetupPreferences {
             .edit { putBoolean(KEY_NOTIFICATIONS, value) }
     }
 
+    private const val KEY_QUIET_ENABLED = "quiet_hours_enabled"
+    private const val KEY_QUIET_START = "quiet_hours_start"
+    private const val KEY_QUIET_END = "quiet_hours_end"
+    private const val KEY_MUTED_CHANNELS = "muted_channels"
+
+    fun getQuietHoursEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_QUIET_ENABLED, false)
+
+    fun setQuietHoursEnabled(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { putBoolean(KEY_QUIET_ENABLED, value) }
+    }
+
+    fun getQuietStartHour(context: Context): Int =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getInt(KEY_QUIET_START, 22)
+
+    fun getQuietEndHour(context: Context): Int =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getInt(KEY_QUIET_END, 7)
+
+    fun setQuietHours(context: Context, startHour: Int, endHour: Int) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putInt(KEY_QUIET_START, startHour.mod(24))
+            putInt(KEY_QUIET_END, endHour.mod(24))
+        }
+    }
+
+    fun isQuietNow(context: Context): Boolean =
+        getQuietHoursEnabled(context) && QuietHours.isQuiet(
+            hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY),
+            startHour = getQuietStartHour(context),
+            endHour = getQuietEndHour(context),
+        )
+
+    fun getMutedChannels(context: Context): Set<String> =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getStringSet(KEY_MUTED_CHANNELS, emptySet()) ?: emptySet()
+
+    fun muteChannel(context: Context, channelId: String) {
+        val updated = getMutedChannels(context) + channelId
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { putStringSet(KEY_MUTED_CHANNELS, updated) }
+    }
+
+    fun clearMutedChannels(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit { remove(KEY_MUTED_CHANNELS) }
+    }
+
     fun isSetupComplete(context: Context): Boolean = getToken(context) != null
     private const val KEY_PINNED_SERVERS = "pinned_servers"
 

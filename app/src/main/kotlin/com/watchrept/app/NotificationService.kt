@@ -51,6 +51,8 @@ class NotificationService : Service() {
         collector = scope.launch {
             repo.newMessages.collect { msg ->
                 if (AppState.inForeground) return@collect
+                if (SetupPreferences.isQuietNow(this@NotificationService)) return@collect
+                if (msg.channelId in SetupPreferences.getMutedChannels(this@NotificationService)) return@collect
                 repo.notificationFor(msg)?.let { Notifier.show(this@NotificationService, it) }
             }
         }
