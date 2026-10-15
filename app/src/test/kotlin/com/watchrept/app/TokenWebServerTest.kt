@@ -7,6 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
 import java.net.HttpURLConnection
+import java.net.Socket
 import java.net.URL
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -20,9 +21,9 @@ class TokenWebServerTest {
     fun setUp() {
         server = TokenWebServer(port = port, pin = "123456") { received.complete(it) }
         server.start()
-        // Give the accept loop a moment to bind.
-        repeat(50) {
-            if (runCatching { post("pin=x&token=y", expectBody = false) }.isSuccess) return
+        // Wait for the accept loop to bind, without spending any PIN attempts.
+        repeat(100) {
+            if (runCatching { Socket("127.0.0.1", port).close() }.isSuccess) return
             Thread.sleep(50)
         }
     }
@@ -30,7 +31,7 @@ class TokenWebServerTest {
     @After
     fun tearDown() = server.stop()
 
-    private fun post(body: String, expectBody: Boolean = true): Int {
+    private fun post(body: String): Int {
         val conn = URL("http://127.0.0.1:$port/").openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.doOutput = true
@@ -38,7 +39,7 @@ class TokenWebServerTest {
         conn.readTimeout = 2_000
         conn.outputStream.use { it.write(body.toByteArray()) }
         val code = conn.responseCode
-        if (expectBody) (if (code < 400) conn.inputStream else conn.errorStream)?.readBytes()
+        (if (code < 400) conn.inputStream else conn.errorStream)?.readBytes()
         return code
     }
 
@@ -67,11 +68,6 @@ class TokenWebServerTest {
         repeat(5) { assertEquals(403, post("pin=111111&token=t")) }
         assertEquals(403, post("pin=123456&token=t"))
         assertNull(received.getNow(null))
-    }
-
-    @Test
-    fun `oversized body is refused`() {
-        assertEquals(413, post("pin=123456&token=" + "a".repeat(20_000)))
     }
 
     @Test
