@@ -143,7 +143,20 @@ class MainActivity : ComponentActivity() {
                                 }
                             }, onNavigateToQrLogin = {
                                 navController.navigate("qrlogin")
+                            }, onNavigateToEmailLogin = {
+                                navController.navigate("emaillogin")
                             })
+                        }
+
+                        composable("emaillogin") {
+                            EmailLoginScreen(
+                                onSetupComplete = {
+                                    navController.navigate("home") {
+                                        popUpTo(0) { inclusive = true }
+                                    }
+                                },
+                                onBack = { navController.popBackStack() }
+                            )
                         }
 
                         composable("qrlogin") {

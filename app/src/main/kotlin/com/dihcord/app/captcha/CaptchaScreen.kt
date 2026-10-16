@@ -149,7 +149,7 @@ fun CaptchaScreen(pending: CaptchaBroker.Pending) {
     }
 }
 
-private fun wlanAddresses(): List<String> = runCatching {
+internal fun wlanAddresses(): List<String> = runCatching {
     NetworkInterface.getNetworkInterfaces().toList()
         .filter { it.isUp && !it.isLoopback && it.name.startsWith("wlan") }
         .flatMap { it.inetAddresses.toList() }
@@ -158,7 +158,7 @@ private fun wlanAddresses(): List<String> = runCatching {
 }.getOrDefault(emptyList())
 
 /** Asks Wear OS to bring Wi-Fi up (watches normally route through the phone over Bluetooth). */
-private class WifiRequest(context: Context) {
+internal class WifiRequest(context: Context) {
     private val cm = context.getSystemService(ConnectivityManager::class.java)
     private var callback: ConnectivityManager.NetworkCallback? = null
 
@@ -181,7 +181,7 @@ private class WifiRequest(context: Context) {
     }
 }
 
-private fun qrBitmap(content: String, size: Int): Bitmap? = runCatching {
+internal fun qrBitmap(content: String, size: Int): Bitmap? = runCatching {
     val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, size, size, mapOf(EncodeHintType.MARGIN to 1))
     val pixels = IntArray(size * size) { i ->
         if (matrix[i % size, i / size]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
