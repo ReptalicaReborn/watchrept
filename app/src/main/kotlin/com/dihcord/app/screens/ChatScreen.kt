@@ -81,6 +81,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import java.io.File
 
@@ -90,6 +92,8 @@ fun ChatScreen(
     channelId: String,
     channelName: String,
     guildId: String? = null,
+    /** A message to scroll to and highlight on open, or [JUMP_TO_FIRST_MENTION]. */
+    jumpTo: String? = null,
     currentUserId: String = "",
     onNavigateToProfile: ((userId: String, user: DiscordUser?) -> Unit)? = null,
     onNavigateToThread: ((threadId: String, threadName: String) -> Unit)? = null,
@@ -228,6 +232,37 @@ fun ChatScreen(
                 listState.scrollToItem(headerOffset)
             }
         }
+    }
+
+    // Opened from a mention: once the first scroll is done, bring the mentioned message into view, loading older
+    // pages if it's further back (a few pages at most).
+    var jumped by remember(channelId) { mutableStateOf(jumpTo == null) }
+    var jumpTarget by remember(channelId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(channelId, scrolledToUnread.value, loading) {
+        if (jumped || loading || !scrolledToUnread.value) return@LaunchedEffect
+        jumped = true
+        val roles = guildId?.let { repo.getMyRoles(it) }.orEmpty()
+        // Read the repository directly: the collected list only catches up on the next frame.
+        fun held() = repo.messages.value[channelId].orEmpty()
+        fun target(): String? = if (jumpTo == JUMP_TO_FIRST_MENTION) {
+            val me = repo.currentUser.value?.id ?: currentUserId
+            held().firstOrNull { m ->
+                (initialLastRead == null || compareSnowflakes(m.id, initialLastRead) > 0) &&
+                        me.isNotBlank() && m.author.id != me && m.pingFor(me, roles)
+            }?.id
+        } else jumpTo?.takeIf { id -> held().any { it.id == id } }
+
+        var found = target()
+        var pages = 0
+        val wanted = jumpTo?.takeIf { it != JUMP_TO_FIRST_MENTION }
+        while (found == null && wanted != null && pages < 5 && repo.hasMoreHistory(channelId)) {
+            val oldest = held().firstOrNull()?.id ?: break
+            if (compareSnowflakes(oldest, wanted) <= 0) break // already past it: the message is gone
+            if (repo.loadOlderMessages(channelId) <= 0) break
+            pages++
+            found = target()
+        }
+        jumpTarget = found
     }
 
     val history = rememberHistoryPaging(
@@ -754,6 +789,15 @@ fun ChatScreen(
             listState.animateScrollToItem(target)
             delay(1_600)
             if (highlightedId == messageId) highlightedId = null
+        }
+    }
+
+    LaunchedEffect(jumpTarget) {
+        jumpTarget?.let { id ->
+            // Wait until the collected list (which jumpToMessage indexes into) has the message.
+            withTimeoutOrNull(2_000) { snapshotFlow { messages.any { it.id == id } }.first { it } }
+            jumpToMessage(id)
+            jumpTarget = null
         }
     }
 

@@ -564,11 +564,34 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
     private val loadedChannels = mutableSetOf<String>()
 
-    fun markChannelRead(channelId: String, messageId: String) {
-        val existing = _readState.value[channelId]
-        if (existing != null && compareSnowflakes(messageId, existing.lastMessageId) <= 0) return
+    /**
+     * Mentions in [channelId] swiped away on the home screen: drop its pings and mark the channel read up to its
+     * newest message, so the mention count clears here and on Discord.
+     */
+    fun dismissMentions(channelId: String) {
+        _pings.update { list -> list.filterNot { it.message.channelId == channelId } }
         _readState.update { current ->
-            current + (channelId to ChannelUnreadState(lastMessageId = messageId, mentionCount = 0))
+            current[channelId]?.let { current + (channelId to it.copy(mentionCount = 0)) } ?: current
+        }
+        scope.launch {
+            // Held messages can be stale for channels that aren't open, so ask Discord for the newest one.
+            val latest = rest.getMessages(channelId, limit = 1).getOrNull()?.firstOrNull()?.id
+                ?: _messages.value[channelId]?.lastOrNull()?.id
+                ?: return@launch
+            markChannelRead(channelId, latest)
+        }
+    }
+
+    fun markChannelRead(channelId: String, messageId: String) {
+        _pings.update { list ->
+            list.filterNot { it.message.channelId == channelId && compareSnowflakes(it.message.id, messageId) <= 0 }
+        }
+        val existing = _readState.value[channelId]
+        if (existing != null && existing.mentionCount == 0 && compareSnowflakes(messageId, existing.lastMessageId) <= 0) return
+        _readState.update { current ->
+            val newest = existing?.lastMessageId
+                ?.takeIf { compareSnowflakes(it, messageId) > 0 } ?: messageId
+            current + (channelId to ChannelUnreadState(lastMessageId = newest, mentionCount = 0))
         }
         scope.launch { rest.ackChannel(channelId, messageId) }
     }

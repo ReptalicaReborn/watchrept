@@ -1,6 +1,8 @@
 package com.dihcord.app
 
 import android.content.Intent
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -129,9 +131,10 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToServers = { navController.navigate("servers") },
                                 onNavigateToWelcome = { navController.navigate("Welcome") },
                                 onNavigateToSettings = { navController.navigate("settings") },
-                                onNavigateToChat = { chId, chName, guildId ->
+                                onNavigateToChat = { chId, chName, guildId, jumpTo ->
                                     val guildSeg = guildId ?: "dm"
-                                    navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/$guildSeg")
+                                    val jump = jumpTo?.let { "?jump=${Uri.encode(it)}" }.orEmpty()
+                                    navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/$guildSeg$jump")
                                 }
                             )
                         }
@@ -180,7 +183,14 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        composable("chatscreen/{channelId}/{channelName}/{guildId}") { back ->
+                        composable(
+                            "chatscreen/{channelId}/{channelName}/{guildId}?jump={jump}",
+                            arguments = listOf(navArgument("jump") {
+                                type = NavType.StringType
+                                nullable = true
+                                defaultValue = null
+                            })
+                        ) { back ->
                             val channelId =
                                 back.arguments?.getString("channelId") ?: return@composable
                             val channelName = back.arguments?.getString("channelName") ?: channelId
@@ -195,6 +205,7 @@ class MainActivity : ComponentActivity() {
                                     channelId = channelId,
                                     channelName = channelName,
                                     guildId = guildId,
+                                    jumpTo = back.arguments?.getString("jump"),
                                     onNavigateToProfile = { userId, user ->
                                         val encodedName = java.net.URLEncoder.encode(
                                             user?.displayName ?: userId,

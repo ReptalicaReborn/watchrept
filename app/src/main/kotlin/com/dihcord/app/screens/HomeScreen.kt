@@ -16,6 +16,22 @@ import com.dihcord.app.api.Ping
 import com.dihcord.app.discordApp
 import com.dihcord.app.R
 import androidx.compose.ui.res.painterResource
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.semantics.ScrollAxisRange
+import androidx.compose.ui.semantics.horizontalScrollAxisRange
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.IntOffset
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
+
+/** Jump target meaning "the first message after the read marker that mentions me". */
+const val JUMP_TO_FIRST_MENTION = "mention"
 
 
 @Composable
@@ -24,7 +40,7 @@ fun HomeScreen(
     onNavigateToServers: () -> Unit,
     onNavigateToWelcome: () -> Unit,
     onNavigateToSettings: () -> Unit,
-    onNavigateToChat: (channelId: String, channelName: String, guildId: String?) -> Unit
+    onNavigateToChat: (channelId: String, channelName: String, guildId: String?, jumpTo: String?) -> Unit
 ) {
     val context = LocalContext.current
     val listState = rememberScalingLazyListState()
@@ -51,6 +67,11 @@ fun HomeScreen(
     }
 
     val channelNames by repo.channelNames.collectAsState()
+
+    fun dismiss(channelId: String) {
+        repo.dismissMentions(channelId)
+        com.dihcord.app.Notifier.clear(context, channelId)
+    }
     val channelGuilds by repo.channelGuilds.collectAsState()
 
     data class MentionEntry(
@@ -167,31 +188,39 @@ fun HomeScreen(
                     )
                 }
                 // readState-derived cards (visible from startup)
-                items(mentionEntries.size) { index ->
+                // Swipe a card sideways to clear it; tap it to open the chat at the mention.
+                items(mentionEntries.size, key = { "m" + mentionEntries[it].channelId }) { index ->
                     val entry = mentionEntries[index]
-                    MentionCard(
-                        title = if (entry.isDm) entry.channelName else "#${entry.channelName}",
-                        subtitle = if (entry.isDm) "Direct message" else entry.guildName ?: "Server",
-                        count = entry.count,
-                        onClick = {
-                            onNavigateToChat(
-                                entry.channelId,
-                                entry.channelName,
-                                if (entry.isDm) null else channelGuilds[entry.channelId]
-                            )
-                        }
-                    )
+                    SwipeAway(onDismiss = { dismiss(entry.channelId) }) {
+                        MentionCard(
+                            title = if (entry.isDm) entry.channelName else "#${entry.channelName}",
+                            subtitle = if (entry.isDm) "Direct message" else entry.guildName ?: "Server",
+                            count = entry.count,
+                            onClick = {
+                                // The newest live ping there is the exact message; otherwise find the first
+                                // message after the read marker that mentions us.
+                                val ping = pings.firstOrNull { it.message.channelId == entry.channelId }
+                                onNavigateToChat(
+                                    entry.channelId,
+                                    entry.channelName,
+                                    if (entry.isDm) null else channelGuilds[entry.channelId],
+                                    ping?.message?.id ?: JUMP_TO_FIRST_MENTION
+                                )
+                            }
+                        )
+                    }
                 }
                 // live gateway pings not yet in readState (e.g. arrived after last ack)
-                items(pings.size) { index ->
-                    val ping = pings[index]
-                    // Skip if this channel already covered by a readState card above
-                    if (mentionEntries.none { it.channelId == ping.message.channelId }) {
+                val extraPings = pings.filter { p -> mentionEntries.none { it.channelId == p.message.channelId } }
+                items(extraPings.size, key = { "p" + extraPings[it].message.id }) { index ->
+                    val ping = extraPings[index]
+                    SwipeAway(onDismiss = { dismiss(ping.message.channelId) }) {
                         PingCard(ping = ping, onClick = {
                             onNavigateToChat(
                                 ping.message.channelId,
                                 ping.channelName,
-                                ping.message.guildId
+                                ping.message.guildId,
+                                ping.message.id
                             )
                         })
                     }
@@ -221,6 +250,41 @@ fun HomeScreen(
             }
         }
     }
+}
+
+/** Lets a card be flung sideways off screen; past a third of its width it calls [onDismiss]. */
+@Composable
+private fun SwipeAway(onDismiss: () -> Unit, content: @Composable () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val offset = remember { Animatable(0f) }
+    var width by remember { mutableIntStateOf(1) }
+    val dismissNow by rememberUpdatedState(onDismiss)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .onSizeChanged { width = it.width.coerceAtLeast(1) }
+            // Report horizontal scrollability so Wear's swipe-right-to-exit doesn't take the gesture.
+            .semantics {
+                horizontalScrollAxisRange = ScrollAxisRange(value = { 1f }, maxValue = { 2f })
+            }
+            .draggable(
+                orientation = Orientation.Horizontal,
+                state = rememberDraggableState { delta -> scope.launch { offset.snapTo(offset.value + delta) } },
+                onDragStopped = { velocity ->
+                    val flung = kotlin.math.abs(velocity) > 1_500f
+                    if (kotlin.math.abs(offset.value) > width / 3f || flung) {
+                        val dir = if (offset.value != 0f) kotlin.math.sign(offset.value) else kotlin.math.sign(velocity)
+                        offset.animateTo(dir * width * 1.2f, tween(160))
+                        dismissNow()
+                        offset.snapTo(0f)
+                    } else {
+                        offset.animateTo(0f, tween(160))
+                    }
+                }
+            )
+            .offset { IntOffset(offset.value.roundToInt(), 0) }
+            .graphicsLayer { alpha = 1f - (kotlin.math.abs(offset.value) / width).coerceIn(0f, 0.8f) }
+    ) { content() }
 }
 
 @Composable
