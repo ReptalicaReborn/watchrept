@@ -922,9 +922,9 @@ class DiscordRepository(
         return ackLocallyAndRemotely(reads.distinctBy { it.first })
     }
 
-    /** Counts MESSAGE_ACK events; [ackSeenAt] has the count at each channel's latest one. */
+    /** Counts MESSAGE_ACK events; [ackSeenAt] has, per channel, the count and message of its latest one. */
     private val ackEvents = java.util.concurrent.atomic.AtomicLong()
-    private val ackSeenAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val ackSeenAt = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
 
     private suspend fun ackLocallyAndRemotely(reads: List<Pair<String, String>>): Result<Unit> {
         if (reads.isEmpty()) return Result.success(Unit)
@@ -949,8 +949,10 @@ class DiscordRepository(
                 rolledBack.clear()
                 marked.forEach { (channelId, set) ->
                     if (out[channelId] != set) return@forEach // Changed since (read in the chat, a new message).
-                    // Discord said it's read (another device) while we waited, even if to the same message.
-                    if ((ackSeenAt[channelId] ?: 0L) > startedAt) return@forEach
+                    // Discord said it's read (another device) while we waited, at least as far as we marked it,
+                    // even if to the same message: that read stands. A shorter one doesn't cover ours.
+                    val seen = ackSeenAt[channelId]
+                    if (seen != null && seen.first > startedAt && compareSnowflakes(seen.second, set.lastMessageId) >= 0) return@forEach
                     before[channelId]?.let { out[channelId] = it } ?: out.remove(channelId)
                     rolledBack += channelId
                 }
@@ -1391,7 +1393,7 @@ class DiscordRepository(
                     }
 
                     is GatewayEvent.MessageAck -> {
-                        ackSeenAt[event.channelId] = ackEvents.incrementAndGet()
+                        ackSeenAt[event.channelId] = ackEvents.incrementAndGet() to event.messageId
                         _readState.update { current ->
                             val old = current[event.channelId]
                             if (old != null && compareSnowflakes(event.messageId, old.lastMessageId) < 0) current
