@@ -525,18 +525,14 @@ fun SettingsScreen(
                         sendAnimatedAsGif = it
                         SetupPreferences.setSendAnimatedAsGif(context, it)
                     },
-                    label = {
-                        Column {
-                            Text(
-                                "Nitro emoji as image link",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Text(
-                                "Animated & other-server emoji/stickers post as a link; off = locked",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                    // Short label + secondaryLabel like the other rows: a Column in `label` gets clipped.
+                    label = { Text("Nitro emoji as link", style = MaterialTheme.typography.bodySmall) },
+                    secondaryLabel = {
+                        Text(
+                            "Animated & other-server emoji send as a link; off = locked",
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 3
+                        )
                     }
                 )
             }
