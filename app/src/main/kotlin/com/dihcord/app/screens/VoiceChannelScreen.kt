@@ -165,6 +165,7 @@ fun VoiceChannelScreen(
     val voiceStates by repo.voiceStates.collectAsState()
     val me = repo.currentUser.collectAsState().value?.id
     val calls by repo.calls.collectAsState()
+    val profiles by repo.voiceProfiles.collectAsState()
     val dmChannels by repo.dmChannels.collectAsState()
     val isCall = guildId == null
     val recipients = remember(dmChannels, channelId) { dmChannels.firstOrNull { it.id == channelId }?.recipients.orEmpty() }
@@ -180,7 +181,6 @@ fun VoiceChannelScreen(
     val members = remember(voiceStates, channelId) {
         voiceStates.values.filter { it.channelId == channelId }.sortedBy { it.userId != me }
     }
-    val profiles by repo.voiceProfiles.collectAsState()
     LaunchedEffect(members.map { it.userId }) { repo.loadVoiceProfiles(guildId, members.map { it.userId }) }
     var permissionDenied by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
