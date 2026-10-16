@@ -23,6 +23,7 @@ import com.dihcord.app.api.Channel
 import com.dihcord.app.api.ChannelType
 import com.dihcord.app.api.compareSnowflakes
 import com.dihcord.app.discordApp
+import com.dihcord.app.voice.VoiceManager
 import kotlinx.coroutines.launch
 
 @Composable
@@ -33,6 +34,14 @@ private fun ChannelIcon(ch: Channel, allChannels: List<Channel>) {
                 painter = painterResource(id = R.drawable.lock),
                 contentDescription = "Locked",
                 tint = Color.White.copy(alpha = 0.5f),
+                modifier = Modifier.size(16.dp)
+            )
+
+        ch.isVoice ->
+            Icon(
+                painter = painterResource(id = R.drawable.speaker),
+                contentDescription = "Voice",
+                tint = Color.White,
                 modifier = Modifier.size(16.dp)
             )
 
@@ -68,7 +77,8 @@ fun ServerChannels(
     guildId: String,
     guildName: String,
     onNavigateToChatScreen: (channelId: String, channelName: String) -> Unit,
-    onOpenForum: (channelId: String, channelName: String) -> Unit = { _, _ -> }
+    onOpenForum: (channelId: String, channelName: String) -> Unit = { _, _ -> },
+    onOpenVoice: (channelId: String, channelName: String) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val repo = context.discordApp.repository
@@ -84,6 +94,12 @@ fun ServerChannels(
     val showMentionBadges = remember { SetupPreferences.getShowMentionBadges(context) }
     val readState by (repo?.readState ?: return).collectAsState()
     val guildChannelsMap by repo.guildChannelsMap.collectAsState()
+    val voiceStates by repo.voiceStates.collectAsState()
+    val voiceCall by VoiceManager.call.collectAsState()
+    // Who is in each voice channel of this server.
+    val voiceMembers = remember(voiceStates, guildId) {
+        voiceStates.values.filter { it.guildId == guildId && it.channelId != null }.groupBy { it.channelId!! }
+    }
 
     val groups = guildChannelsMap[guildId] ?: remember {
         repo.getCachedChannels(
@@ -141,7 +157,7 @@ fun ServerChannels(
                 }
 
                 groups.isEmpty() -> item {
-                    Text("No text channels.", style = MaterialTheme.typography.bodySmall)
+                    Text("No channels.", style = MaterialTheme.typography.bodySmall)
                 }
 
                 else -> {
@@ -170,14 +186,18 @@ fun ServerChannels(
                             val mentionCount = rs?.mentionCount ?: 0
                             val hasUnread = rs != null && ch.lastMessageId != null &&
                                     compareSnowflakes(ch.lastMessageId, rs.lastMessageId) > 0
+                            Column(modifier = Modifier.fillMaxWidth()) {
                             Button(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(36.dp),
                                 colors = ButtonDefaults.filledTonalButtonColors(),
                                 onClick = {
-                                    if (ch.isForum) onOpenForum(ch.id, ch.name)
-                                    else onNavigateToChatScreen(ch.id, ch.name)
+                                    when {
+                                        ch.isVoice -> onOpenVoice(ch.id, ch.name)
+                                        ch.isForum -> onOpenForum(ch.id, ch.name)
+                                        else -> onNavigateToChatScreen(ch.id, ch.name)
+                                    }
                                 }
                             ) {
                                 Row(
@@ -227,6 +247,21 @@ fun ServerChannels(
                                         )
                                     }
                                 }
+                            }
+                            if (ch.isVoice) {
+                                val inCall = voiceCall?.takeIf { it.channelId == ch.id }
+                                voiceMembers[ch.id].orEmpty().forEach { vs ->
+                                    val speaking = inCall != null && (vs.userId in inCall.speaking ||
+                                            (vs.userId == repo.currentUser.value?.id && inCall.selfSpeaking))
+                                    VoiceMemberLine(
+                                        name = vs.nick ?: repo.getDisplayName(vs.userId) ?: vs.user?.displayName ?: "Someone",
+                                        speaking = speaking,
+                                        muted = vs.muted,
+                                        deafened = vs.deafened,
+                                        modifier = Modifier.padding(start = 20.dp)
+                                    )
+                                }
+                            }
                             }
                         }
                     }

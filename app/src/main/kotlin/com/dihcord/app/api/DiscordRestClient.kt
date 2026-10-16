@@ -240,21 +240,22 @@ class DiscordRestClient(private val token: String) {
 
         val categories = raw.filter { it.isCategory }.sortedBy { it.position }
         // Forum/media channels are listed alongside text channels; opening one shows its posts.
-        val textChannels = raw.filter { it.isText || it.isForum }
+        // Voice channels come after them in each category, like in Discord.
+        val textChannels = raw.filter { it.isText || it.isForum || it.isVoice }
         val byParent = textChannels.groupBy { it.parentId }
         val groups = mutableListOf<CategoryGroup>()
 
         val topLevel = byParent[null].orEmpty()
             .map { it.copy(hasAccess = canView(it)) }
             .filter { !filterInaccessible || it.hasAccess }
-            .sortedBy { it.position }
+            .sortedWith(compareBy({ it.isVoice }, { it.position }))
         if (topLevel.isNotEmpty()) groups.add(CategoryGroup(category = null, channels = topLevel))
 
         for (cat in categories) {
             val children = byParent[cat.id].orEmpty()
                 .map { it.copy(hasAccess = canView(it)) }
                 .filter { !filterInaccessible || it.hasAccess }
-                .sortedBy { it.position }
+                .sortedWith(compareBy({ it.isVoice }, { it.position }))
             if (children.isNotEmpty()) groups.add(
                 CategoryGroup(
                     category = cat,

@@ -472,6 +472,7 @@ data class Channel(
     val isDm: Boolean get() = type == ChannelType.DM || type == ChannelType.GROUP_DM
     val isText: Boolean get() = type == ChannelType.GUILD_TEXT || type == ChannelType.GUILD_NEWS
     val isCategory: Boolean get() = type == ChannelType.GUILD_CATEGORY
+    val isVoice: Boolean get() = type == ChannelType.GUILD_VOICE
     /** Forum and media channels hold posts (threads) instead of messages. */
     val isForum: Boolean get() = type == ChannelType.GUILD_FORUM || type == ChannelType.GUILD_MEDIA
 

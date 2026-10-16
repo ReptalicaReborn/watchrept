@@ -48,6 +48,13 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import com.dihcord.app.screens.VoiceChannelScreen
+import com.dihcord.app.voice.VoiceCall
+import com.dihcord.app.voice.VoiceCallService
+import com.dihcord.app.voice.VoiceManager
+
+private fun voiceRoute(call: VoiceCall) =
+    "voice/${call.guildId ?: "dm"}/${call.channelId}/${Uri.encode(call.channelName.replace(Regex("[/?#%]"), " "))}"
 
 class MainActivity : ComponentActivity() {
     var activeChannelId: String? = null
@@ -57,7 +64,14 @@ class MainActivity : ComponentActivity() {
 
     private var pendingChat by mutableStateOf<ChatTarget?>(null)
 
+    /** Set by tapping the voice call notification. */
+    private var pendingVoice by mutableStateOf(false)
+
     private fun readChatTarget(intent: Intent?) {
+        if (intent?.getBooleanExtra(VoiceCallService.EXTRA_OPEN_VOICE, false) == true) {
+            intent.removeExtra(VoiceCallService.EXTRA_OPEN_VOICE)
+            pendingVoice = true
+        }
         val channelId = intent?.getStringExtra(Notifier.EXTRA_CHANNEL_ID) ?: return
         // Route segments can't contain these characters.
         val name = (intent.getStringExtra(Notifier.EXTRA_CHANNEL_NAME) ?: channelId)
@@ -120,6 +134,12 @@ class MainActivity : ComponentActivity() {
                         }
                         pendingChat = null
                     }
+                    val openVoice = pendingVoice
+                    androidx.compose.runtime.LaunchedEffect(openVoice) {
+                        val call = VoiceManager.call.value
+                        if (openVoice && call != null) navController.navigate(voiceRoute(call)) { launchSingleTop = true }
+                        pendingVoice = false
+                    }
                     SwipeDismissableNavHost(
                         navController = navController,
                         startDestination = if (token != null) "home" else "Welcome"
@@ -135,7 +155,8 @@ class MainActivity : ComponentActivity() {
                                     val guildSeg = guildId ?: "dm"
                                     val jump = jumpTo?.let { "?jump=${Uri.encode(it)}" }.orEmpty()
                                     navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/$guildSeg$jump")
-                                }
+                                },
+                                onOpenVoice = { call -> navController.navigate(voiceRoute(call)) { launchSingleTop = true } }
                             )
                         }
 
@@ -277,8 +298,19 @@ class MainActivity : ComponentActivity() {
                                 onOpenForum = { chId, chName ->
                                     val encoded = java.net.URLEncoder.encode(chName, "UTF-8")
                                     navController.navigate("threads/$chId/$encoded/$guildId/forum")
+                                },
+                                onOpenVoice = { chId, chName ->
+                                    navController.navigate("voice/$guildId/$chId/${Uri.encode(chName)}") { launchSingleTop = true }
                                 }
                             )
+                        }
+
+                        composable("voice/{guildId}/{channelId}/{channelName}") { back ->
+                            val chId = back.arguments?.getString("channelId") ?: return@composable
+                            val gId = back.arguments?.getString("guildId")?.takeIf { it != "dm" }
+                            val chName = back.arguments?.getString("channelName") ?: chId
+                            activeChannelId = null
+                            VoiceChannelScreen(guildId = gId, channelId = chId, channelName = chName)
                         }
 
                         // Threads of a text channel, or posts of a forum channel ("forum"/"channel").

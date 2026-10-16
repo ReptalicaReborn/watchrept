@@ -571,16 +571,16 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                 channelGuildCache[ch.id] = guildId
             }
 
-            val textChannels = allChannels.filter { it.isText }
+            val textChannels = allChannels.filter { it.isText || it.isForum || it.isVoice }
             val categories = allChannels.filter { it.isCategory }.sortedBy { it.position }
             val byParent = textChannels.groupBy { it.parentId }
             val groups = mutableListOf<CategoryGroup>()
             val topLevel = byParent[null].orEmpty()
-                .filter { !filterInaccessible || it.hasAccess }.sortedBy { it.position }
+                .filter { !filterInaccessible || it.hasAccess }.sortedWith(compareBy({ it.isVoice }, { it.position }))
             if (topLevel.isNotEmpty()) groups.add(CategoryGroup(null, topLevel))
             for (cat in categories) {
                 val children = byParent[cat.id].orEmpty()
-                    .filter { !filterInaccessible || it.hasAccess }.sortedBy { it.position }
+                    .filter { !filterInaccessible || it.hasAccess }.sortedWith(compareBy({ it.isVoice }, { it.position }))
                 if (children.isNotEmpty()) groups.add(CategoryGroup(cat, children))
             }
             groups.ifEmpty { null }

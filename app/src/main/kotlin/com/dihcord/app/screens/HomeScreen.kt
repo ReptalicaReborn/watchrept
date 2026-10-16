@@ -40,8 +40,10 @@ fun HomeScreen(
     onNavigateToServers: () -> Unit,
     onNavigateToWelcome: () -> Unit,
     onNavigateToSettings: () -> Unit,
-    onNavigateToChat: (channelId: String, channelName: String, guildId: String?, jumpTo: String?) -> Unit
+    onNavigateToChat: (channelId: String, channelName: String, guildId: String?, jumpTo: String?) -> Unit,
+    onOpenVoice: (call: com.dihcord.app.voice.VoiceCall) -> Unit = {}
 ) {
+    val voiceCall by com.dihcord.app.voice.VoiceManager.call.collectAsState()
     val context = LocalContext.current
     val listState = rememberScalingLazyListState()
 
@@ -114,6 +116,32 @@ fun HomeScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     ScreenTitle("Dihcord")
                     PrideBar(Modifier.padding(bottom = 4.dp))
+                }
+            }
+
+            voiceCall?.takeIf { com.dihcord.app.voice.VoiceManager.isInCall }?.let { call ->
+                item {
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { onOpenVoice(call) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = androidx.compose.ui.graphics.Color(0xFF23A55A),
+                            contentColor = androidx.compose.ui.graphics.Color.White
+                        ),
+                        icon = { Icon(painterResource(R.drawable.speaker), null, Modifier.size(18.dp)) },
+                        label = { Text(call.channelName, maxLines = 1) },
+                        secondaryLabel = {
+                            Text(
+                                when {
+                                    call.status == com.dihcord.app.voice.VoiceCall.Status.CONNECTING -> "Connecting…"
+                                    call.deafened -> "Deafened"
+                                    call.muted -> "Muted"
+                                    else -> "Voice connected"
+                                },
+                                maxLines = 1
+                            )
+                        }
+                    )
                 }
             }
 
