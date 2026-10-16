@@ -825,8 +825,36 @@ object ContentParser {
         return spans.filter { it.text.isNotEmpty() }
     }
 
+    /**
+     * Emoji link sent by Vencord's FakeNitro (and similar plugins) in place of a real custom emoji:
+     * `[name](https://cdn.discordapp.com/emojis/<id>.webp?size=48&name=name)`, optionally with `<>` around the URL.
+     */
+    private val FAKE_EMOJI_LINK =
+        "\\[[^\\]\\n]{0,100}\\]\\(<?https?://(?:cdn|media)\\.discordapp\\.(?:com|net)/emojis/\\d+\\.\\w+[^\\s)>]*>?\\)"
+    private val EMOJI_URL_RE =
+        Regex("https?://(?:cdn|media)\\.discordapp\\.(?:com|net)/emojis/(\\d+)\\.(\\w+)(\\?[^\\s)>]*)?")
+
+    /** A custom emoji for a Discord emoji CDN link, or null if [token] isn't one. */
+    internal fun emojiFromLink(token: String): Part.CustomEmoji? {
+        val m = EMOJI_URL_RE.find(token) ?: return null
+        val id = m.groupValues[1]
+        val query = m.groupValues[3]
+        val animated = m.groupValues[2] == "gif" || query.contains("animated=true")
+        val label = token.takeIf { it.startsWith("[") }?.substringAfter("[")?.substringBefore("]")
+            ?.trim(':')?.takeIf { it.isNotBlank() }
+        val name = label
+            ?: Regex("[?&]name=([^&]+)").find(query)?.groupValues?.get(1)
+            ?: "emoji"
+        return Part.CustomEmoji(
+            name,
+            "https://cdn.discordapp.com/emojis/$id.${if (animated) "gif" else "webp"}?size=64",
+            animated
+        )
+    }
+
     private val TOKEN_RE = Regex(
-        "<a?:\\w+:\\d+>" +
+        FAKE_EMOJI_LINK +
+                "|<a?:\\w+:\\d+>" +
                 "|<@!?\\d+>" +
                 "|<@&\\d+>" +
                 "|<#\\d+>" +
@@ -879,7 +907,8 @@ object ContentParser {
                     parts += Part.ChannelMention(id, channelNames[id] ?: "#unknown")
                 }
 
-                token.startsWith("http") -> parts += Part.Link(token)
+                token.startsWith("[") -> parts += emojiFromLink(token) ?: Part.PlainText(token)
+                token.startsWith("http") -> parts += emojiFromLink(token) ?: Part.Link(token)
                 else -> parts += Part.PlainText(token)
             }
             last = match.range.last + 1

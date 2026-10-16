@@ -1950,8 +1950,9 @@ internal fun MessageBubble(
                 }
                 msg.embeds
                     .filter { embed ->
-                        !(embed.type == "link" && //lets clean this up a litle more
-                                embed.url?.contains("cdn.discordapp.com/emojis/") == true)
+                        // Emoji links (including FakeNitro ones) are already drawn inline as emojis.
+                        embed.url?.contains("discordapp.com/emojis/") != true &&
+                                embed.url?.contains("discordapp.net/emojis/") != true
                     }
                     .forEach { embed ->
                         EmbedCard(embed, imageLoader)
