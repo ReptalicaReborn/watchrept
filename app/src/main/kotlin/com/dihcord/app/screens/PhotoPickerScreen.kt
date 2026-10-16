@@ -1,7 +1,10 @@
 package com.dihcord.app.screens
 
-import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
-import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
+import androidx.wear.compose.material3.lazy.rememberTransformationSpec
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.background
 import android.Manifest
 import android.content.ContentUris
 import android.content.pm.PackageManager
@@ -138,136 +141,89 @@ fun PhotoPickerScreen(
             Manifest.permission.READ_MEDIA_IMAGES
         else
             Manifest.permission.READ_EXTERNAL_STORAGE
-
-        val listState = rememberScalingLazyListState()
-        ScreenScaffold(scrollState = listState) {
-            ScalingLazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                item {
-                    Text(
-                        "Photo Access",
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                }
-                item { Spacer(Modifier.height(8.dp)) }
-                item {
-                    Text(
-                        "Allow Dihcord to access your photos",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                item { Spacer(Modifier.height(12.dp)) }
-                item {
-                    Button(
-                        onClick = { permLauncher.launch(perm) },
-                        modifier = Modifier.fillMaxWidth(0.8f)
-                    ) { Text("Allow") }
-                }
-                item {
-                    Button(
-                        onClick = onDismiss,
-                        modifier = Modifier.fillMaxWidth(0.8f),
-                        colors = ButtonDefaults.outlinedButtonColors()
-                    ) { Text("Cancel") }
-                }
-            }
-        }
+        PhotoMessageContent(
+            iconRes = com.dihcord.app.R.drawable.image,
+            title = "Allow photo access",
+            hint = "So you can send photos from the watch.",
+            primary = "Allow" to { permLauncher.launch(perm) },
+            onClose = onDismiss
+        )
         return
     }
 
     if (images.isEmpty()) {
-        val listState = rememberScalingLazyListState()
-        ScreenScaffold(scrollState = listState) {
-            ScalingLazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                if (!loaded) {
-                    item {
-                        LoadingIndicator()
-                    }
-                } else {
-                    item {
-                        Text(
-                            "No photos found",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                item {
-                    Button(
-                        onClick = onDismiss,
-                        colors = ButtonDefaults.outlinedButtonColors()
-                    ) { Text("Back") }
-                }
-            }
+        if (!loaded) {
+            PhotoMessageContent(null, "Loading photos…", null, null, onDismiss)
+        } else {
+            PhotoMessageContent(com.dihcord.app.R.drawable.image, "No photos on this watch", "Photos you take or sync show up here.", null, onDismiss)
         }
         return
     }
 
-    val gridState = rememberLazyGridState()
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 20.dp, bottom = 4.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    "Select Photo",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
+    PhotoGridContent(images, imageLoader, onPick = { selectedUri = it.uri }, onClose = onDismiss)
+}
 
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
-                state = gridState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 4.dp),
-                contentPadding = PaddingValues(bottom = 32.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                items(images, key = { it.id }) { img ->
-                    AsyncImage(
-                        model = ImageRequest.Builder(context)
-                            .data(img.uri)
-                            .size(120)
-                            .crossfade(true)
-                            .build(),
-                        imageLoader = imageLoader,
-                        contentDescription = img.displayName,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .aspectRatio(1f)
-                            .clip(RoundedCornerShape(4.dp))
-                            .clickable { selectedUri = img.uri }
-                    )
-                }
+/** A message with an icon, and an optional button, on the new list; the close button at the bottom. */
+@Composable
+internal fun PhotoMessageContent(
+    iconRes: Int?,
+    title: String,
+    hint: String?,
+    primary: Pair<String, () -> Unit>?,
+    onClose: () -> Unit,
+) {
+    val state = rememberTransformingLazyColumnState()
+    ScreenScaffold(
+        scrollState = state,
+        edgeButton = {
+            EdgeButton(onClick = primary?.second ?: onClose, colors = if (primary != null) ButtonDefaults.buttonColors() else ButtonDefaults.filledTonalButtonColors()) {
+                Text(primary?.first ?: "Back")
             }
         }
+    ) { padding ->
+        TransformingLazyColumn(state = state, contentPadding = padding) {
+            item {
+                if (iconRes == null) LoadingIndicator() else EmptyState(iconRes, title, hint)
+            }
+            if (iconRes == null) item {
+                Text(title, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
 
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(bottom = 8.dp),
-            contentAlignment = Alignment.BottomCenter
-        ) {
-            FilledTonalIconButton(onClick = onDismiss, modifier = Modifier.size(40.dp)) {
-                Icon(
-                    painter = androidx.compose.ui.res.painterResource(com.dihcord.app.R.drawable.close),
-                    contentDescription = "Close",
-                    modifier = Modifier.size(18.dp)
-                )
+/** The newest photos in rows of three that shrink at the round edge; tap one to preview it. */
+@Composable
+internal fun PhotoGridContent(images: List<MediaImage>, imageLoader: ImageLoader, onPick: (MediaImage) -> Unit, onClose: () -> Unit) {
+    val context = LocalContext.current
+    val state = rememberTransformingLazyColumnState()
+    val spec = rememberTransformationSpec()
+    ScreenScaffold(
+        scrollState = state,
+        edgeButton = { EdgeButton(onClick = onClose, colors = ButtonDefaults.filledTonalButtonColors()) { Text("Close") } }
+    ) { padding ->
+        TransformingLazyColumn(state = state, contentPadding = padding) {
+            item { ScreenTitle("Choose a photo") }
+            val rows = images.chunked(3)
+            items(rows.size, key = { rows[it].first().id }) { r ->
+                Row(
+                    Modifier.fillMaxWidth().edgeMorph(this, spec).padding(vertical = 1.dp),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterHorizontally)
+                ) {
+                    rows[r].forEach { img ->
+                        AsyncImage(
+                            model = ImageRequest.Builder(context).data(img.uri).size(120).crossfade(true).build(),
+                            imageLoader = imageLoader,
+                            contentDescription = img.displayName,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(52.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainer)
+                                .clickable { onPick(img) }
+                        )
+                    }
+                }
             }
         }
     }
@@ -283,55 +239,23 @@ private fun ImageConfirmScreen(
 ) {
     BackHandler { onCancel() }
     val context = LocalContext.current
-    val listState = rememberScalingLazyListState()
-
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            item {
-                Text(
-                    "Send this photo?",
-                    style = MaterialTheme.typography.titleSmall
-                )
-            }
+    val state = rememberTransformingLazyColumnState()
+    ScreenScaffold(
+        scrollState = state,
+        edgeButton = { EdgeButton(onClick = { onConfirm(uri, mimeType) }) { Text("Send") } }
+    ) { padding ->
+        TransformingLazyColumn(state = state, contentPadding = padding) {
+            item { ScreenTitle("Send this photo?") }
             item {
                 AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(uri)
-                        .crossfade(true)
-                        .build(),
+                    model = ImageRequest.Builder(context).data(uri).crossfade(true).build(),
                     imageLoader = imageLoader,
                     contentDescription = null,
                     contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .size(120.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                    modifier = Modifier.size(120.dp).clip(RoundedCornerShape(12.dp))
                 )
             }
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(0.9f),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = { onConfirm(uri, mimeType) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) { Text("Send") }
-                    Button(
-                        onClick = onCancel,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(36.dp),
-                        colors = ButtonDefaults.outlinedButtonColors()
-                    ) { Text("Back") }
-                }
-            }
+            item { Text("Swipe right to pick another", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center) }
         }
     }
 }

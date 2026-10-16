@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.wear.compose.material3.lazy.transformedHeight
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -446,3 +447,14 @@ fun ConfirmScreen(
         }
     }
 }
+
+/**
+ * For rows that aren't cards (emoji grids, photo rows) in a TransformingLazyColumn: they shrink and
+ * fade at the round edges the same way cards do.
+ */
+fun Modifier.edgeMorph(
+    scope: androidx.wear.compose.foundation.lazy.TransformingLazyColumnItemScope,
+    spec: androidx.wear.compose.material3.lazy.TransformationSpec,
+): Modifier = this
+    .transformedHeight(scope, spec)
+    .then(with(scope) { Modifier.graphicsLayer { with(spec) { applyContainerTransformation(scrollProgress) } } })

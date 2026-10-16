@@ -111,7 +111,7 @@ fun DmsScreen(
                     val text = messagePreview(msg, myId, channelNames)
                     if (!oneToOne && msg.author.id != myId) msg.author.displayName.substringBefore(' ') + ": " + text else text
                 },
-                fallback = presence?.customStatusText ?: when {
+                fallback = presence?.activityLabel ?: presence?.customStatusText ?: when {
                     !oneToOne -> "${dm.recipients.size + 1} members"
                     else -> status?.label()
                 },

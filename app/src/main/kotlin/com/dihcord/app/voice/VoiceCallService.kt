@@ -81,7 +81,7 @@ class VoiceCallService : Service() {
             this, code, Intent(this, VoiceCallService::class.java).setAction(action),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.mic)
             .setContentTitle(call?.channelName?.let { "In voice: $it" } ?: "Voice call")
             .setContentText(if (call?.muted == true) "Muted" else "Tap to open")
@@ -90,7 +90,21 @@ class VoiceCallService : Service() {
             .setContentIntent(open)
             .addAction(0, if (call?.muted == true) "Unmute" else "Mute", action(ACTION_MUTE, 1))
             .addAction(0, "Leave", action(ACTION_LEAVE, 2))
-            .build()
+        // An ongoing activity puts the call on the watch face and in the recents, one tap back to it.
+        runCatching {
+            androidx.wear.ongoing.OngoingActivity.Builder(applicationContext, NOTIFICATION_ID, builder)
+                .setStaticIcon(R.drawable.mic)
+                .setTouchIntent(open)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setStatus(
+                    androidx.wear.ongoing.Status.Builder()
+                        .addTemplate(call?.channelName?.let { "In $it" + if (call.muted) " · muted" else "" } ?: "Voice call")
+                        .build()
+                )
+                .build()
+                .apply(applicationContext)
+        }
+        return builder.build()
     }
 
     companion object {

@@ -24,8 +24,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
-import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
+import androidx.wear.compose.material3.lazy.rememberTransformationSpec
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
 import androidx.wear.compose.material3.MaterialTheme
@@ -47,7 +48,8 @@ private enum class GifTab(val label: String) { FAVORITES("Favourites"), TRENDING
 fun GifPickerScreen(onGifPicked: (Gif) -> Unit) {
     val context = LocalContext.current
     val rest = context.discordApp.repository?.rest
-    val listState = rememberScalingLazyListState()
+    val listState = rememberTransformingLazyColumnState()
+    val spec = rememberTransformationSpec()
     val imageLoader = context.imageLoader
 
     var tab by remember { mutableStateOf(GifTab.FAVORITES) }
@@ -73,8 +75,8 @@ fun GifPickerScreen(onGifPicked: (Gif) -> Unit) {
         }
     }
 
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState) {
+    ScreenScaffold(scrollState = listState) { padding ->
+        TransformingLazyColumn(state = listState, contentPadding = padding) {
             item { ScreenTitle("GIFs") }
             item {
                 CompactTextField(
@@ -108,7 +110,7 @@ fun GifPickerScreen(onGifPicked: (Gif) -> Unit) {
                     val rows = list.chunked(2)
                     items(rows.size) { i ->
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().edgeMorph(this, spec),
                             horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally)
                         ) {
                             rows[i].forEach { gif -> GifCell(gif, imageLoader) { onGifPicked(gif) } }

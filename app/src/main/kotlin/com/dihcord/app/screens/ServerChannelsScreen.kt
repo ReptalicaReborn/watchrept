@@ -30,9 +30,10 @@ import com.dihcord.app.api.ChannelType
 import com.dihcord.app.api.compareSnowflakes
 import com.dihcord.app.discordApp
 import com.dihcord.app.voice.VoiceManager
+import kotlinx.coroutines.launch
 
 /** What kind of channel a row is, which picks its icon and what tapping it opens. */
-enum class ChannelKind { TEXT, NEWS, RULES, FORUM, VOICE }
+enum class ChannelKind { TEXT, NEWS, RULES, FORUM, VOICE, STAGE }
 
 /** One channel in the list, as plain data. */
 data class ChannelRow(
@@ -44,6 +45,7 @@ data class ChannelRow(
     val unread: Boolean,
     /** People in a voice channel. */
     val voice: List<VoiceTile> = emptyList(),
+    val muted: Boolean = false,
 )
 
 /** A category and its channels; [id]/[name] are null for channels outside any category. */
@@ -92,7 +94,15 @@ fun ServerChannels(
         loading = false
     }
 
-    val sections = remember(groups, readState, voiceMembers, voiceCall, voiceProfiles, hideInaccessible, myId) {
+    var events by remember(guildId) { mutableStateOf<List<com.dihcord.app.api.ScheduledEvent>>(emptyList()) }
+    var interested by remember { mutableStateOf(com.dihcord.app.FeaturePreferences.interestedEvents(context)) }
+    LaunchedEffect(guildId) { repo.scheduledEvents(guildId).onSuccess { events = it.sortedBy { e -> e.startMillis ?: Long.MAX_VALUE } } }
+    var menuRow by remember { mutableStateOf<ChannelRow?>(null) }
+    var muteMenu by remember { mutableStateOf(false) }
+    var mutedUntil by remember { mutableStateOf(com.dihcord.app.FeaturePreferences.mutedUntil(context)) }
+    val scope = rememberCoroutineScope()
+
+    val sections = remember(groups, readState, voiceMembers, voiceCall, voiceProfiles, hideInaccessible, myId, mutedUntil) {
         val all = groups.flatMap { it.channels }
         val rulesId = all.firstOrNull { it.name.contains("rule", ignoreCase = true) }?.id
         groups.map { group ->
@@ -110,8 +120,10 @@ fun ServerChannels(
                             kind = ch.kind(rulesId),
                             locked = !ch.hasAccess,
                             mentionCount = rs?.mentionCount ?: 0,
-                            unread = rs != null && ch.lastMessageId != null &&
-                                    compareSnowflakes(ch.lastMessageId, rs.lastMessageId) > 0,
+                            unread = rs != null && (repo.unread.lastMessageId(ch.id) ?: ch.lastMessageId)?.let { last ->
+                                compareSnowflakes(last, rs.lastMessageId) > 0
+                            } == true,
+                            muted = ch.id in mutedUntil || ch.id in SetupPreferences.getMutedChannels(context),
                             voice = if (!ch.isVoice) emptyList() else voiceMembers[ch.id].orEmpty().map { vs ->
                                 VoiceTile(
                                     userId = vs.userId,
@@ -129,14 +141,65 @@ fun ServerChannels(
         }.filter { it.rows.isNotEmpty() }
     }
 
+    androidx.activity.compose.BackHandler(enabled = menuRow != null) { if (muteMenu) muteMenu = false else menuRow = null }
+    val active = menuRow
+    if (active != null && muteMenu) {
+        fun mute(ms: Long?) {
+            com.dihcord.app.FeaturePreferences.muteChat(context, active.id, ms)
+            mutedUntil = com.dihcord.app.FeaturePreferences.mutedUntil(context)
+            muteMenu = false; menuRow = null
+        }
+        ActionMenu(
+            title = "Mute #${active.name}",
+            actions = listOfNotNull(
+                MenuAction(R.drawable.mute, "1 hour") { mute(3_600_000L) },
+                MenuAction(R.drawable.mute, "8 hours") { mute(8 * 3_600_000L) },
+                MenuAction(R.drawable.mute, "24 hours") { mute(24 * 3_600_000L) },
+                MenuAction(R.drawable.mute, "Always") { mute(null) },
+                if (active.muted) MenuAction(R.drawable.bell, "Unmute") { mute(0L) } else null,
+            ),
+            onDismiss = { muteMenu = false }
+        )
+        return
+    }
+    if (active != null) {
+        ActionMenu(
+            title = "#${active.name}",
+            actions = listOfNotNull(
+                if (active.unread || active.mentionCount > 0) MenuAction(R.drawable.check, "Mark read") {
+                    menuRow = null
+                    val last = repo.unread.lastMessageId(active.id) ?: readState[active.id]?.lastMessageId
+                    if (last != null) repo.markChannelRead(active.id, last)
+                } else null,
+                MenuAction(if (active.muted) R.drawable.bell else R.drawable.mute, if (active.muted) "Muted" else "Mute") { muteMenu = true },
+            ),
+            onDismiss = { menuRow = null }
+        )
+        return
+    }
+
     ServerChannelsContent(
         guildName = guildName,
         sections = sections,
         loading = loading,
         error = error.takeIf { it.isNotEmpty() },
+        events = events,
+        interested = interested,
+        onToggleInterest = { e ->
+            val now = e.id !in interested
+            com.dihcord.app.FeaturePreferences.setInterested(context, e.id, now)
+            interested = com.dihcord.app.FeaturePreferences.interestedEvents(context)
+            scope.launch {
+                repo.setEventInterest(guildId, e.id, now).onFailure {
+                    com.dihcord.app.FeaturePreferences.setInterested(context, e.id, !now)
+                    interested = com.dihcord.app.FeaturePreferences.interestedEvents(context)
+                }
+            }
+        },
+        onLongPress = { row -> if (row.kind != ChannelKind.VOICE && row.kind != ChannelKind.STAGE) menuRow = row },
         onOpen = { row ->
             when (row.kind) {
-                ChannelKind.VOICE -> onOpenVoice(row.id, row.name)
+                ChannelKind.VOICE, ChannelKind.STAGE -> onOpenVoice(row.id, row.name)
                 ChannelKind.FORUM -> onOpenForum(row.id, row.name)
                 else -> onNavigateToChatScreen(row.id, row.name)
             }
@@ -145,6 +208,7 @@ fun ServerChannels(
 }
 
 private fun Channel.kind(rulesId: String?): ChannelKind = when {
+    isStage -> ChannelKind.STAGE
     isVoice -> ChannelKind.VOICE
     isForum -> ChannelKind.FORUM
     type == ChannelType.GUILD_NEWS -> ChannelKind.NEWS
@@ -163,6 +227,10 @@ internal fun ServerChannelsContent(
     loading: Boolean,
     error: String?,
     onOpen: (ChannelRow) -> Unit,
+    events: List<com.dihcord.app.api.ScheduledEvent> = emptyList(),
+    interested: Set<String> = emptySet(),
+    onToggleInterest: (com.dihcord.app.api.ScheduledEvent) -> Unit = {},
+    onLongPress: (ChannelRow) -> Unit = {},
 ) {
     val state = rememberTransformingLazyColumnState()
     val spec = rememberTransformationSpec()
@@ -170,6 +238,13 @@ internal fun ServerChannelsContent(
     ScreenScaffold(scrollState = state) { padding ->
         TransformingLazyColumn(state = state, contentPadding = padding) {
             item { ScreenTitle(guildName) }
+            if (events.isNotEmpty()) {
+                item { SectionHeader("Events") }
+                items(events.size, key = { "e" + events[it].id }) { i ->
+                    val e = events[i]
+                    EventCard(e, e.id in interested, Modifier.transformedHeight(this, spec)) { onToggleInterest(e) }
+                }
+            }
             when {
                 loading && sections.isEmpty() -> items(4) { ChannelSkeletonRow(Modifier.transformedHeight(this, spec)) }
                 error != null -> item { EmptyState(R.drawable.lock, "Couldn't load channels", error) }
@@ -192,7 +267,8 @@ internal fun ServerChannelsContent(
                                 row = row,
                                 modifier = Modifier.transformedHeight(this, spec),
                                 transformation = SurfaceTransformation(spec),
-                                onClick = { onOpen(row) }
+                                onClick = { onOpen(row) },
+                                onLongClick = { onLongPress(row) }
                             )
                         }
                     }
@@ -237,9 +313,10 @@ private fun ChannelButton(
     row: ChannelRow,
     modifier: Modifier,
     transformation: SurfaceTransformation,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {},
 ) {
-    val bright = row.unread || row.mentionCount > 0
+    val bright = (row.unread || row.mentionCount > 0) && !row.muted
     val textColor = when {
         row.locked -> Color.White.copy(alpha = 0.4f)
         bright -> Color.White
@@ -247,6 +324,8 @@ private fun ChannelButton(
     }
     Button(
         onClick = onClick,
+        onLongClick = onLongClick,
+        onLongClickLabel = "Channel options",
         modifier = modifier.fillMaxWidth(),
         transformation = transformation,
         colors = ButtonDefaults.filledTonalButtonColors(),
@@ -255,6 +334,7 @@ private fun ChannelButton(
             val icon = when {
                 row.locked -> R.drawable.lock
                 row.kind == ChannelKind.VOICE -> R.drawable.speaker
+                row.kind == ChannelKind.STAGE -> R.drawable.mic
                 row.kind == ChannelKind.NEWS -> R.drawable.announce
                 row.kind == ChannelKind.RULES -> R.drawable.rules
                 row.kind == ChannelKind.FORUM -> R.drawable.chat
@@ -263,6 +343,7 @@ private fun ChannelButton(
             val description = when {
                 row.locked -> "Locked"
                 row.kind == ChannelKind.VOICE -> "Voice"
+                row.kind == ChannelKind.STAGE -> "Stage"
                 row.kind == ChannelKind.NEWS -> "Announcement"
                 row.kind == ChannelKind.RULES -> "Rules"
                 row.kind == ChannelKind.FORUM -> "Forum"
@@ -281,8 +362,9 @@ private fun ChannelButton(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+                if (row.muted) Icon(painterResource(R.drawable.mute), "Muted", Modifier.padding(start = 4.dp).size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (row.mentionCount > 0) CountBadge(row.mentionCount, Modifier.padding(start = 4.dp))
-                else if (row.unread) UnreadDot(Modifier.padding(start = 4.dp), color = Color.White)
+                else if (row.unread && !row.muted) UnreadDot(Modifier.padding(start = 4.dp), color = Color.White)
             }
         },
         secondaryLabel = if (row.voice.isEmpty()) null else {

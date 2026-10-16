@@ -17,9 +17,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.OutlinedTextField
-import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
-import androidx.wear.compose.foundation.lazy.ScalingLazyListScope
-import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
+import androidx.wear.compose.foundation.lazy.TransformingLazyColumnScope
+import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
+import androidx.wear.compose.material3.lazy.TransformationSpec
+import androidx.wear.compose.material3.lazy.rememberTransformationSpec
 import androidx.wear.compose.material3.*
 import coil.compose.AsyncImage
 import coil.imageLoader
@@ -69,7 +71,8 @@ fun EmojiStickerScreen(
 ) {
     val context = LocalContext.current
     val repo = context.discordApp.repository
-    val listState = rememberScalingLazyListState()
+    val listState = rememberTransformingLazyColumnState()
+    val spec = rememberTransformationSpec()
     val imageLoader = context.imageLoader
     // The picker opens on [tab]; the switch at the top flips between emoji and stickers.
     var current by remember { mutableStateOf(if (reactMode) 0 else tab) }
@@ -104,8 +107,8 @@ fun EmojiStickerScreen(
 
     val q = query.trim().lowercase()
 
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState) {
+    ScreenScaffold(scrollState = listState) { padding ->
+        TransformingLazyColumn(state = listState, contentPadding = padding) {
             item {
                 if (reactMode) ScreenTitle("React")
                 else PickerTabs(listOf("Emoji", "Stickers"), current) { current = it }
@@ -131,14 +134,14 @@ fun EmojiStickerScreen(
                             .filter { (s, _) -> s.name.lowercase().contains(q) }
                             .take(MAX_SEARCH_RESULTS)
                         if (hits.isEmpty()) item { EmptyNote("No stickers match.") }
-                        gridRows(hits, perRow = 3) { (s, gid) ->
+                        gridRows(hits, perRow = 3, spec = spec) { (s, gid) ->
                             StickerCell(s, stickerUse(s, gid), imageLoader, onStickerPicked)
                         }
                     }
                     sets.isEmpty() -> item { EmptyNote("No stickers.") }
                     else -> sets.forEach { set ->
                         item(key = "sh" + set.guildId) { SectionHeader(set.guildName) }
-                        gridRows(set.items, perRow = 3) { s ->
+                        gridRows(set.items, perRow = 3, spec = spec) { s ->
                             StickerCell(s, stickerUse(s, set.guildId), imageLoader, onStickerPicked)
                         }
                     }
@@ -146,12 +149,12 @@ fun EmojiStickerScreen(
             } else {
                 if (q.isEmpty() && recent.isNotEmpty()) {
                     item(key = "recent") { SectionHeader("Recent") }
-                    gridRows(recent, perRow = 5) { emoji -> UnicodeCell(emoji, pickUnicode) }
+                    gridRows(recent, perRow = 5, spec = spec) { emoji -> UnicodeCell(emoji, pickUnicode) }
                     item(key = "all") { SectionHeader("All") }
                 }
                 val unicode = COMMON_UNICODE_EMOJI.filter { (_, words) -> q.isEmpty() || words.contains(q) }
                 if (unicode.isNotEmpty()) {
-                    gridRows(unicode, perRow = 5) { (emoji, _) -> UnicodeCell(emoji, pickUnicode) }
+                    gridRows(unicode, perRow = 5, spec = spec) { (emoji, _) -> UnicodeCell(emoji, pickUnicode) }
                 }
 
                 val sets = emojiSets
@@ -162,14 +165,14 @@ fun EmojiStickerScreen(
                             .filter { (e, _) -> e.name.lowercase().contains(q) }
                             .take(MAX_SEARCH_RESULTS)
                         if (hits.isEmpty() && unicode.isEmpty()) item { EmptyNote("No emojis match.") }
-                        gridRows(hits, perRow = 5) { (e, gid) ->
+                        gridRows(hits, perRow = 5, spec = spec) { (e, gid) ->
                             EmojiCell(e, emojiUse(e, gid), imageLoader, onEmojiPicked)
                         }
                     }
                     sets.isEmpty() -> item { EmptyNote("No custom emojis.") }
                     else -> sets.forEach { set ->
                         item(key = "eh" + set.guildId) { SectionHeader(set.guildName) }
-                        gridRows(set.items, perRow = 5) { e ->
+                        gridRows(set.items, perRow = 5, spec = spec) { e ->
                             EmojiCell(e, emojiUse(e, set.guildId), imageLoader, onEmojiPicked)
                         }
                     }
@@ -180,11 +183,12 @@ fun EmojiStickerScreen(
 }
 
 /** Lays [items] out in centred rows of [perRow]. */
-private fun <T> ScalingLazyListScope.gridRows(items: List<T>, perRow: Int, cell: @Composable (T) -> Unit) {
+private fun <T> TransformingLazyColumnScope.gridRows(items: List<T>, perRow: Int, spec: TransformationSpec, cell: @Composable (T) -> Unit) {
     val rows = items.chunked(perRow)
     items(rows.size) { rowIdx ->
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            // Rows shrink at the round edge like cards do.
+            modifier = Modifier.fillMaxWidth().edgeMorph(this, spec),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally)
         ) {

@@ -245,6 +245,7 @@ class MainActivity : ComponentActivity() {
 
                         composable("settings") {
                             SettingsScreen(
+                                onOpenSaved = { navController.navigate("saved") },
                                 onLogOut = {
                                     navController.navigate("Welcome") {
                                         popUpTo(0) { inclusive = true }

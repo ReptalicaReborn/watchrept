@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.sp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.res.painterResource
 import com.dihcord.app.R
 import coil.ImageLoader
@@ -56,6 +57,35 @@ fun UserProfileScreen(
     var guildMember by remember { mutableStateOf<GuildMember?>(null) }
     val presences by (repo?.presences ?: return).collectAsState()
     val presence = presences[userId]
+    val relationships by repo.relationships.collectAsState()
+    val relationship = relationships[userId]
+    var confirmBlock by remember { mutableStateOf(false) }
+    var relBusy by remember { mutableStateOf(false) }
+
+    fun relationAction(block: suspend () -> Result<Unit>) {
+        if (relBusy) return
+        relBusy = true
+        dmScope.launch {
+            block().onFailure { error = friendlyError(it) }
+            relBusy = false
+        }
+    }
+
+    if (confirmBlock) {
+        BackHandler { confirmBlock = false }
+        ConfirmScreen(
+            iconRes = R.drawable.block,
+            title = "Block ${user?.displayName ?: "them"}?",
+            text = "Their messages are hidden and they can't DM you.",
+            confirmLabel = "Block",
+            onConfirm = {
+                confirmBlock = false
+                user?.let { u -> relationAction { repo.blockUser(u) } }
+            },
+            onCancel = { confirmBlock = false }
+        )
+        return
+    }
 
     BackHandler(onBack = onBack)
 
@@ -289,6 +319,20 @@ fun UserProfileScreen(
                 }
             }
 
+            presence?.activityLabel?.let { activity ->
+                item {
+                    Text(
+                        activity,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = DiscordColors.Online,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
             val badges = user?.badges ?: emptyList()
             if (badges.isNotEmpty()) {
                 item {
@@ -375,6 +419,41 @@ fun UserProfileScreen(
                             imageLoader = imageLoader,
                             context = context
                         )
+                    }
+                }
+            }
+
+            if (repo.currentUser.value?.id != userId && user != null) {
+                item {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
+                    ) {
+                        val u = user!!
+                        when {
+                            relationship?.isIncoming == true -> {
+                                CompactButton(
+                                    onClick = { relationAction { repo.acceptFriend(u) } }, enabled = !relBusy,
+                                    label = { Text("Accept") },
+                                    colors = ButtonDefaults.buttonColors(containerColor = DiscordColors.Online, contentColor = Color.White)
+                                )
+                                CompactButton(onClick = { relationAction { repo.removeRelationship(u.id) } }, enabled = !relBusy, label = { Text("Decline") }, colors = ButtonDefaults.filledTonalButtonColors())
+                            }
+                            relationship?.isBlocked == true -> CompactButton(
+                                onClick = { relationAction { repo.removeRelationship(u.id) } }, enabled = !relBusy,
+                                label = { Text("Unblock") }, colors = ButtonDefaults.filledTonalButtonColors()
+                            )
+                            else -> CompactButton(
+                                onClick = { confirmBlock = true }, enabled = !relBusy,
+                                icon = { Icon(painterResource(R.drawable.block), null, Modifier.size(14.dp)) },
+                                label = { Text("Block") },
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                                    iconColor = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            )
+                        }
                     }
                 }
             }

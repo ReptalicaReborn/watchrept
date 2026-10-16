@@ -13,7 +13,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
 import androidx.compose.ui.res.painterResource
@@ -29,10 +28,15 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(
-    onLogOut: () -> Unit = {}
+    onLogOut: () -> Unit = {},
+    onOpenSaved: () -> Unit = {},
 ) {
     val context = LocalContext.current
-    val listState = rememberScalingLazyListState()
+    val listState = androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState()
+    val spec = androidx.wear.compose.material3.lazy.rememberTransformationSpec()
+    var quickReplies by remember { mutableStateOf(com.dihcord.app.FeaturePreferences.quickRepliesOn(context)) }
+    var linksOnPhone by remember { mutableStateOf(com.dihcord.app.FeaturePreferences.linksOnPhone(context)) }
+    var liteWithSaver by remember { mutableStateOf(com.dihcord.app.FeaturePreferences.liteWithBatterySaver(context)) }
     val scope = rememberCoroutineScope()
     val repo = context.discordApp.repository
     var showThemes by remember { mutableStateOf(false) }
@@ -112,8 +116,8 @@ fun SettingsScreen(
         return
     }
 
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+    ScreenScaffold(scrollState = listState) { padding ->
+        androidx.wear.compose.foundation.lazy.TransformingLazyColumn(state = listState, contentPadding = padding, modifier = Modifier.fillMaxSize()) {
 
             item {
                 ScreenTitle("Settings")
@@ -125,6 +129,7 @@ fun SettingsScreen(
 
             item {
                 Button(
+                    transformation = SurfaceTransformation(spec),
                     onClick = { showStatuses = !showStatuses },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.filledTonalButtonColors(),
@@ -143,6 +148,7 @@ fun SettingsScreen(
                 STATUS_LABELS.forEach { (key, label) ->
                     item {
                         Button(
+                            transformation = SurfaceTransformation(spec),
                             onClick = {
                                 status = key
                                 showStatuses = false
@@ -203,6 +209,7 @@ fun SettingsScreen(
 
             item {
                 Button(
+                    transformation = SurfaceTransformation(spec),
                     onClick = {
                         perfMode = Perf.Mode.values()[(perfMode.ordinal + 1) % Perf.Mode.values().size]
                         SetupPreferences.setPerfMode(context, perfMode)
@@ -257,6 +264,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier.fillMaxWidth(),
                     checked = notificationsEnabled,
                     onCheckedChange = { enabled ->
@@ -289,6 +297,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier.fillMaxWidth(),
                     checked = quietEnabled,
                     onCheckedChange = {
@@ -308,6 +317,7 @@ fun SettingsScreen(
             if (quietEnabled) {
                 item {
                     Button(
+                        transformation = SurfaceTransformation(spec),
                         onClick = {
                             quietStart = (quietStart + 1) % 24
                             SetupPreferences.setQuietHours(context, quietStart, quietEnd)
@@ -319,6 +329,7 @@ fun SettingsScreen(
                 }
                 item {
                     Button(
+                        transformation = SurfaceTransformation(spec),
                         onClick = {
                             quietEnd = (quietEnd + 1) % 24
                             SetupPreferences.setQuietHours(context, quietStart, quietEnd)
@@ -333,6 +344,7 @@ fun SettingsScreen(
             if (mutedCount > 0) {
                 item {
                     Button(
+                        transformation = SurfaceTransformation(spec),
                         onClick = {
                             SetupPreferences.clearMutedChannels(context)
                             SetupPreferences.clearMutedServers(context)
@@ -351,6 +363,7 @@ fun SettingsScreen(
 
             item {
                 Button(
+                    transformation = SurfaceTransformation(spec),
                     onClick = { showThemes = !showThemes },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.filledTonalButtonColors(),
@@ -406,6 +419,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier.fillMaxWidth(),
                     checked = AppTheme.amoled,
                     onCheckedChange = { AppTheme.setAmoled(context, it) },
@@ -422,6 +436,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(40.dp),
@@ -441,6 +456,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier
                         .fillMaxWidth(),
                     checked = spoilerRevealOnTap,
@@ -457,6 +473,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(40.dp),
@@ -475,6 +492,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier
                         .fillMaxWidth(),
                     checked = sendAnimatedAsGif,
@@ -496,6 +514,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(40.dp),
@@ -513,12 +532,70 @@ fun SettingsScreen(
                 )
             }
 
+            item { SectionHeader("Extras") }
+
+            item {
+                SwitchButton(
+                    transformation = SurfaceTransformation(spec),
+                    checked = quickReplies,
+                    onCheckedChange = {
+                        quickReplies = it
+                        com.dihcord.app.FeaturePreferences.setQuickRepliesOn(context, it)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Quick replies", style = MaterialTheme.typography.bodySmall) },
+                    secondaryLabel = { Text("One-tap \"ok\", \"on my way\"…", style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+
+            item {
+                SwitchButton(
+                    transformation = SurfaceTransformation(spec),
+                    checked = linksOnPhone,
+                    onCheckedChange = {
+                        linksOnPhone = it
+                        com.dihcord.app.FeaturePreferences.setLinksOnPhone(context, it)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Open links on phone", style = MaterialTheme.typography.bodySmall) },
+                    secondaryLabel = { Text(if (linksOnPhone) "Web links open on your phone" else "Web links open on the watch", style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+
+            item {
+                SwitchButton(
+                    transformation = SurfaceTransformation(spec),
+                    checked = liteWithSaver,
+                    onCheckedChange = {
+                        liteWithSaver = it
+                        com.dihcord.app.FeaturePreferences.setLiteWithBatterySaver(context, it)
+                        Perf.refresh(context)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Lite with battery saver", style = MaterialTheme.typography.bodySmall) },
+                    secondaryLabel = { Text("When lite mode is Auto", style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+
+            item {
+                Button(
+                    transformation = SurfaceTransformation(spec),
+                    onClick = onOpenSaved,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.filledTonalButtonColors(),
+                    icon = { Icon(painterResource(R.drawable.bookmark), null, Modifier.size(18.dp)) },
+                    label = { Text("Saved messages") },
+                    secondaryLabel = { Text("${com.dihcord.app.FeaturePreferences.saved(context).size} saved", style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+
             item {
                 SectionHeader("Account")
             }
 
             item {
                 Button(
+                    transformation = SurfaceTransformation(spec),
                     onClick = { showLogoutConfirm = true },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.filledTonalButtonColors(
