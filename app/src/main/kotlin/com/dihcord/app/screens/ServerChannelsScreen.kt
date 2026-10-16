@@ -96,9 +96,13 @@ fun ServerChannels(
     val guildChannelsMap by repo.guildChannelsMap.collectAsState()
     val voiceStates by repo.voiceStates.collectAsState()
     val voiceCall by VoiceManager.call.collectAsState()
+    val voiceProfiles by repo.voiceProfiles.collectAsState()
     // Who is in each voice channel of this server.
     val voiceMembers = remember(voiceStates, guildId) {
         voiceStates.values.filter { it.guildId == guildId && it.channelId != null }.groupBy { it.channelId!! }
+    }
+    LaunchedEffect(voiceMembers.keys, voiceMembers.values.sumOf { it.size }) {
+        repo.loadVoiceProfiles(guildId, voiceMembers.values.flatten().map { it.userId })
     }
 
     val groups = guildChannelsMap[guildId] ?: remember {
@@ -254,7 +258,9 @@ fun ServerChannels(
                                     val speaking = inCall != null && (vs.userId in inCall.speaking ||
                                             (vs.userId == repo.currentUser.value?.id && inCall.selfSpeaking))
                                     VoiceMemberLine(
-                                        name = vs.nick ?: repo.getDisplayName(vs.userId) ?: vs.user?.displayName ?: "Someone",
+                                        name = vs.nick ?: voiceProfiles[vs.userId]?.name ?: repo.getDisplayName(vs.userId)
+                                            ?: vs.user?.displayName ?: "Someone",
+                                        avatarUrl = voiceProfiles[vs.userId]?.avatarUrl ?: vs.user?.avatarUrl(128),
                                         speaking = speaking,
                                         muted = vs.muted,
                                         deafened = vs.deafened,

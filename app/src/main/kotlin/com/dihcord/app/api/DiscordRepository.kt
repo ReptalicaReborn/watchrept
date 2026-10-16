@@ -183,6 +183,32 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
     private fun voiceKey(state: VoiceState) = "${state.guildId ?: "dm"}|${state.userId}"
 
+    /** Names and avatars of people seen in voice, by user id. */
+    private val _voiceProfiles = MutableStateFlow<Map<String, VoiceProfile>>(emptyMap())
+    val voiceProfiles: StateFlow<Map<String, VoiceProfile>> = _voiceProfiles.asStateFlow()
+    private val requestedProfiles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Makes sure [voiceProfiles] covers [userIds]: voice states from READY carry no member data, so ask the gateway
+     * for those members (servers) or use the DM's recipients (calls).
+     */
+    fun loadVoiceProfiles(guildId: String?, userIds: Collection<String>) {
+        val known = _voiceProfiles.value
+        val missing = userIds.filter { it !in known }
+        if (missing.isEmpty()) return
+        val local = missing.mapNotNull { id ->
+            val user = _currentUser.value?.takeIf { it.id == id }
+                ?: _dmChannels.value.asSequence().flatMap { it.recipients }.firstOrNull { it.id == id }
+            user?.let { id to VoiceProfile(userDisplayNames[id] ?: it.displayName, it.avatarUrl(128)) }
+        }.toMap()
+        if (local.isNotEmpty()) _voiceProfiles.update { it + local }
+        if (guildId == null) return
+        val ask = missing.filter { it !in local && requestedProfiles.add("$guildId|$it") }
+        if (ask.isNotEmpty()) {
+            ask.chunked(100).forEach { gateway.requestGuildMembersByIds(guildId, it, "voice${System.nanoTime()}") }
+        }
+    }
+
     /** DM/group calls in progress, by channel id: who is being rung. */
     private val _calls = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
     val calls: StateFlow<Map<String, Set<String>>> = _calls.asStateFlow()
@@ -932,7 +958,10 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
                     is GatewayEvent.VoiceStateUpdate -> {
                         val vs = event.state
-                        vs.user?.let { userDisplayNames[it.id] = vs.nick ?: it.displayName }
+                        vs.user?.let { u ->
+                            userDisplayNames[u.id] = vs.nick ?: u.displayName
+                            _voiceProfiles.update { it + (u.id to VoiceProfile(vs.nick ?: u.displayName, u.avatarUrl(128))) }
+                        }
                         _voiceStates.update { current ->
                             if (vs.channelId == null) current - voiceKey(vs) else current + (voiceKey(vs) to vs)
                         }
@@ -957,6 +986,11 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
                     is GatewayEvent.MembersChunk -> {
                         event.members.forEach { userDisplayNames[it.id] = it.displayName }
+                        if (event.nonce?.startsWith("voice") == true) {
+                            _voiceProfiles.update { profiles ->
+                                profiles + event.members.associate { it.id to VoiceProfile(it.displayName, it.imageUrl) }
+                            }
+                        }
                         memberChunks.tryEmit(event)
                     }
 
@@ -1260,3 +1294,6 @@ internal fun mergeLatestPage(held: List<DiscordMessage>, fetched: List<DiscordMe
     val newer = held.filter { compareSnowflakes(it.id, last) > 0 }
     return (older + fetched + newer).distinctBy { it.id }
 }
+
+/** How someone in voice is shown: name and avatar. */
+data class VoiceProfile(val name: String, val avatarUrl: String?)

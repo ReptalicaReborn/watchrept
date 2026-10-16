@@ -17,6 +17,15 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.draw.clip
+import androidx.compose.animation.animateColorAsState
+import coil.compose.AsyncImage
+import coil.imageLoader
+import com.dihcord.app.api.ServerLayout
 import androidx.core.content.ContextCompat
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
@@ -31,28 +40,88 @@ import com.dihcord.app.voice.VoiceManager
 private val SpeakingGreen = Color(0xFF23A55A)
 private val HangUpRed = Color(0xFFDA373C)
 
-/** One person in a voice channel: a speaking dot, their name, and mute/deafen marks. */
+/** A round avatar (or initial) with a green ring while [speaking], and a mute/deafen badge. */
+@Composable
+fun VoiceAvatar(
+    name: String,
+    avatarUrl: String?,
+    size: Dp,
+    speaking: Boolean,
+    muted: Boolean,
+    deafened: Boolean,
+) {
+    val ring by animateColorAsState(if (speaking) SpeakingGreen else Color.Transparent, label = "speaking")
+    val ringWidth = if (size >= 32.dp) 3.dp else 2.dp
+    Box(Modifier.size(size)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .border(ringWidth, ring, CircleShape)
+                .padding(ringWidth + 1.dp)
+                .clip(CircleShape)
+                .background(avatarColor(name)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                name.firstOrNull()?.uppercase() ?: "?",
+                color = Color.White,
+                fontSize = (size.value * 0.36f).sp,
+                fontWeight = FontWeight.Bold
+            )
+            if (avatarUrl != null) {
+                AsyncImage(
+                    model = avatarUrl,
+                    imageLoader = LocalContext.current.imageLoader,
+                    contentDescription = name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+        if (deafened || muted) {
+            val badge = size * 0.36f
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(badge)
+                    .background(Color.Black, CircleShape)
+                    .padding(1.dp)
+                    .background(HangUpRed, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painterResource(if (deafened) R.drawable.headset_off else R.drawable.mic_off),
+                    if (deafened) "Deafened" else "Muted",
+                    Modifier.size(badge * 0.62f),
+                    tint = Color.White
+                )
+            }
+        }
+    }
+}
+
+/** A stable colour per name for avatar-less users. */
+private fun avatarColor(name: String): Color {
+    val palette = listOf(0xFF5865F2, 0xFF3BA55C, 0xFFFAA61A, 0xFFED4245, 0xFFEB459E, 0xFF747F8D)
+    return Color(palette[(name.hashCode() and 0x7FFFFFFF) % palette.size])
+}
+
+/** One person under a voice channel in the channel list: small avatar, name. */
 @Composable
 fun VoiceMemberLine(
     name: String,
+    avatarUrl: String?,
     speaking: Boolean,
     muted: Boolean,
     deafened: Boolean,
     modifier: Modifier = Modifier
 ) {
     Row(
-        modifier = modifier.fillMaxWidth().padding(vertical = 1.dp),
+        modifier = modifier.fillMaxWidth().padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp)
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .then(
-                    if (speaking) Modifier.background(SpeakingGreen, CircleShape)
-                    else Modifier.border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
-                )
-        )
+        VoiceAvatar(name, avatarUrl, 22.dp, speaking, muted, deafened)
         Text(
             name,
             style = MaterialTheme.typography.bodySmall,
@@ -61,11 +130,23 @@ fun VoiceMemberLine(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
-        if (deafened) {
-            Icon(painterResource(R.drawable.headset_off), "Deafened", Modifier.size(12.dp), tint = Color.White.copy(alpha = 0.6f))
-        } else if (muted) {
-            Icon(painterResource(R.drawable.mic_off), "Muted", Modifier.size(12.dp), tint = Color.White.copy(alpha = 0.6f))
-        }
+    }
+}
+
+/** A member tile on the call screen: avatar with name below, like the server icons. */
+@Composable
+private fun VoiceMemberTile(name: String, avatarUrl: String?, speaking: Boolean, muted: Boolean, deafened: Boolean) {
+    Column(Modifier.width(56.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        VoiceAvatar(name, avatarUrl, 48.dp, speaking, muted, deafened)
+        Text(
+            name,
+            fontSize = 9.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            color = if (speaking) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 2.dp)
+        )
     }
 }
 
@@ -90,7 +171,7 @@ fun VoiceChannelScreen(
     val ringing = calls[channelId].orEmpty()
     val incoming = isCall && me != null && me in ringing
     fun nameOf(userId: String, nick: String? = null): String =
-        nick ?: repo.getDisplayName(userId) ?: recipients.firstOrNull { it.id == userId }?.displayName
+        nick ?: profiles[userId]?.name ?: repo.getDisplayName(userId) ?: recipients.firstOrNull { it.id == userId }?.displayName
         ?: repo.currentUser.value?.takeIf { it.id == userId }?.displayName ?: "Someone"
 
     val here = call?.takeIf { it.channelId == channelId }
@@ -99,6 +180,8 @@ fun VoiceChannelScreen(
     val members = remember(voiceStates, channelId) {
         voiceStates.values.filter { it.channelId == channelId }.sortedBy { it.userId != me }
     }
+    val profiles by repo.voiceProfiles.collectAsState()
+    LaunchedEffect(members.map { it.userId }) { repo.loadVoiceProfiles(guildId, members.map { it.userId }) }
     var permissionDenied by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -157,16 +240,24 @@ fun VoiceChannelScreen(
                 }
             }
 
-            items(members.size) { i ->
-                val vs = members[i]
-                val speaking = here != null &&
-                        (vs.userId in here.speaking || (vs.userId == me && here.selfSpeaking))
-                VoiceMemberLine(
-                    name = nameOf(vs.userId, vs.nick ?: vs.user?.displayName),
-                    speaking = speaking,
-                    muted = vs.muted,
-                    deafened = vs.deafened
-                )
+            val rows = ServerLayout.honeycombRows(members)
+            items(rows.size) { r ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
+                ) {
+                    rows[r].forEach { vs ->
+                        val speaking = here != null &&
+                                (vs.userId in here.speaking || (vs.userId == me && here.selfSpeaking))
+                        VoiceMemberTile(
+                            name = nameOf(vs.userId, vs.nick),
+                            avatarUrl = profiles[vs.userId]?.avatarUrl ?: vs.user?.avatarUrl(128),
+                            speaking = speaking,
+                            muted = vs.muted,
+                            deafened = vs.deafened
+                        )
+                    }
+                }
             }
 
             item {

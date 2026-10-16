@@ -162,6 +162,18 @@ class DiscordGateway(private val token: String) {
         )
     }
 
+    /** Asks for specific members of [guildId] by id (answered by GUILD_MEMBERS_CHUNK). */
+    fun requestGuildMembersByIds(guildId: String, userIds: List<String>, nonce: String) {
+        send(
+            8,
+            JSONObject()
+                .put("guild_id", JSONArray().put(guildId))
+                .put("user_ids", JSONArray(userIds))
+                .put("presences", false)
+                .put("nonce", nonce)
+        )
+    }
+
     /** Joins ([channelId] set) or leaves (null) voice, or changes our mute/deafen flags (op 4). */
     fun updateVoiceState(guildId: String?, channelId: String?, selfMute: Boolean, selfDeaf: Boolean) {
         send(
@@ -486,7 +498,13 @@ class DiscordGateway(private val token: String) {
                     val u = m.optJSONObject("user") ?: return@mapNotNull null
                     val user = DiscordUser.fromJson(u)
                     val nick = if (m.isNull("nick")) null else m.optString("nick").takeIf { it.isNotEmpty() }
-                    MentionCandidate(user.id, nick ?: user.displayName, user.username)
+                    // A server-specific avatar wins over the account one.
+                    val guildAvatar = if (m.isNull("avatar")) null else m.optString("avatar").takeIf { it.isNotEmpty() }
+                    val chunkGuild = d.optString("guild_id")
+                    val avatar = if (guildAvatar != null && chunkGuild.isNotEmpty())
+                        "https://cdn.discordapp.com/guilds/$chunkGuild/users/${user.id}/avatars/$guildAvatar.png?size=128"
+                    else user.avatarUrl(128)
+                    MentionCandidate(user.id, nick ?: user.displayName, user.username, imageUrl = avatar)
                 }
                 GatewayEvent.MembersChunk(d.optString("nonce").takeIf { it.isNotEmpty() }, members)
             }.getOrNull()
