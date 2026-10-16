@@ -122,4 +122,12 @@ object FeaturePreferences {
 
     /** Everything here is per account: forget it on log-out. */
     fun clear(context: Context) = prefs(context).edit { clear() }
+
+    /** What belongs to the signed-in account (not the watch's own settings), for any sign-out. */
+    fun clearAccountData(context: Context) = prefs(context).edit {
+        remove(KEY_MUTE_UNTIL)
+        remove(KEY_ALERT_LEVELS)
+        remove(KEY_SAVED)
+        remove(KEY_INTERESTED)
+    }
 }

@@ -150,8 +150,9 @@ class DihcordApp : Application(), ImageLoaderFactory {
         UnreadSummary.reset(this)
         RecentDmsSummary.reset(this)
         NotificationService.stop(this)
-        // Saved chats belong to the account that's leaving.
+        // Saved chats, bookmarks, mutes and alert levels belong to the account that's leaving.
         repository?.clearOfflineCache()
+        FeaturePreferences.clearAccountData(this)
         repository?.close()
         _repositoryFlow.value = null
     }

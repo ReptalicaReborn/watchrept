@@ -174,4 +174,48 @@ class FeatureModelsTest {
         t.onSettings("g", NotifySettings(true, 0, 3, emptyMap()), readAll)
         assertTrue(t.unreadGuilds.value.isEmpty())
     }
+
+    @Test fun hugeTimestampsDoNotCrash() {
+        assertEquals("a time", DiscordTimestamp.format(9_999_999_999_999L * 1_000_000, 'f', zone = utc, locale = us))
+        assertEquals("a time", DiscordTimestamp.format(Long.MAX_VALUE / 10, 'R'))
+        // The tag itself only takes up to 13 digits.
+        assertNull(DiscordTimestamp.REGEX.find("<t:92233720368547758070>"))
+    }
+
+    @Test fun memberListSyncClearsItsRange() {
+        fun member(id: String) = MemberListItem.Member(DiscordUser(id, id, "0", null, null), null, emptyList(), OnlineStatus.ONLINE, emptyList())
+        var rows = MemberListOp.apply(emptyList(), listOf(MemberListOp.Sync(0, listOf(member("a"), member("b"), member("c")))))
+        rows = MemberListOp.apply(rows, listOf(MemberListOp.Sync(0, listOf(member("d")), end = 99)))
+        assertEquals(listOf("d"), rows.filterNotNull().map { (it as MemberListItem.Member).user.id })
+    }
+
+    @Test fun memberListsDoNotMix() {
+        fun member(id: String) = MemberListItem.Member(DiscordUser(id, id, "0", null, null), null, emptyList(), OnlineStatus.ONLINE, emptyList())
+        val store = MemberListStore()
+        store.apply(GatewayEvent.MemberListUpdate("g", "everyone", 3, 3, listOf(MemberListOp.Sync(0, listOf(member("a"), member("b"), member("c"))))))
+        store.apply(GatewayEvent.MemberListUpdate("g", "staff", 1, 1, listOf(MemberListOp.Update(0, member("s")))))
+        assertEquals(listOf("s"), store.lists.value["g"]!!.rows.filterNotNull().map { (it as MemberListItem.Member).user.id })
+        store.reset("g")
+        assertNull(store.lists.value["g"])
+    }
+
+    @Test fun deletedChannelIsNotUnread() {
+        val t = UnreadTracker()
+        val read = mapOf("a" to ChannelUnreadState("10"))
+        t.onReady("me", listOf(ReadyGuild("g", null, listOf(channel("a", "20")), listOf(everyone), emptyList())), emptyMap(), read)
+        assertEquals(setOf("g"), t.unreadGuilds.value)
+        t.onChannelDelete("g", "a", read)
+        assertTrue(t.unreadGuilds.value.isEmpty())
+        // A refresh that still lists other channels doesn't bring it back.
+        t.onChannels("g", listOf(channel("b", null)), read)
+        assertTrue(t.unreadGuilds.value.isEmpty())
+    }
+
+    @Test fun voiceChatCountsAsUnread() {
+        val t = UnreadTracker()
+        val read = mapOf("v" to ChannelUnreadState("10"))
+        val voice = channel("v", "20").copy(type = ChannelType.GUILD_VOICE)
+        t.onReady("me", listOf(ReadyGuild("g", null, listOf(voice), listOf(everyone), emptyList())), emptyMap(), read)
+        assertEquals(setOf("g"), t.unreadGuilds.value)
+    }
 }

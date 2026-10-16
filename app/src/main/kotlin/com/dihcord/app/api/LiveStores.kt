@@ -68,6 +68,14 @@ class UnreadTracker {
         recomputeGuild(guildId, readState)
     }
 
+    /** A channel was deleted: it can't be unread any more. */
+    fun onChannelDelete(guildId: String, channelId: String, readState: Map<String, ChannelUnreadState>) {
+        guilds[guildId]?.let { guilds[guildId] = it.copy(channels = it.channels - channelId) }
+        lastIds.remove(channelId)
+        channelGuild.remove(channelId)
+        recomputeGuild(guildId, readState)
+    }
+
     fun onRoles(guildId: String, myRoleIds: List<String>, readState: Map<String, ChannelUnreadState>) {
         guilds[guildId]?.let { guilds[guildId] = it.copy(myRoleIds = myRoleIds) }
         recompute(readState)
@@ -134,7 +142,7 @@ class UnreadTracker {
 }
 
 /** A server's sidebar member list, as Discord streams it (GUILD_MEMBER_LIST_UPDATE). */
-data class MemberList(val memberCount: Int, val onlineCount: Int, val rows: List<MemberListItem?>)
+data class MemberList(val memberCount: Int, val onlineCount: Int, val rows: List<MemberListItem?>, val listId: String = "")
 
 class MemberListStore {
     private val _lists = MutableStateFlow<Map<String, MemberList>>(emptyMap())
@@ -143,11 +151,15 @@ class MemberListStore {
 
     fun apply(event: GatewayEvent.MemberListUpdate) {
         _lists.update { all ->
-            val old = all[event.guildId]
+            // Each channel's list (who can see it) is its own; never mix one into another.
+            val old = all[event.guildId]?.takeIf { it.listId == event.listId }
             val rows = MemberListOp.apply(old?.rows.orEmpty(), event.ops)
-            all + (event.guildId to MemberList(event.memberCount, event.onlineCount, rows.take(MAX_ROWS)))
+            all + (event.guildId to MemberList(event.memberCount, event.onlineCount, rows.take(MAX_ROWS), event.listId))
         }
     }
+
+    /** Drops [guildId]'s list, so the next one shown is the one just asked for. */
+    fun reset(guildId: String) = _lists.update { it - guildId }
 
     fun clear() { _lists.value = emptyMap() }
 

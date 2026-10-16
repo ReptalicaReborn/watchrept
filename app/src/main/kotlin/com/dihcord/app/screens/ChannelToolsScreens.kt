@@ -420,6 +420,8 @@ internal fun CommandSuggestions(commands: List<ApplicationCommand>, query: Strin
 @Composable
 internal fun CommandFormScreen(command: ApplicationCommand, running: Boolean, error: Throwable?, onRun: (Map<String, Any>) -> Unit) {
     val values = remember(command.id) { mutableStateMapOf<String, Any>() }
+    // What's typed in number fields, kept as typed: "-" or "2." aren't numbers yet but are on the way to one.
+    val typed = remember(command.id) { mutableStateMapOf<String, String>() }
     val options = command.options.filter { it.supported }
     val missing = options.any { it.required && values[it.name].let { v -> v == null || (v is String && v.isBlank()) } }
     val state = rememberTransformingLazyColumnState()
@@ -461,13 +463,14 @@ internal fun CommandFormScreen(command: ApplicationCommand, running: Boolean, er
                                 label = { Text(if (values[o.name] == true) "Yes" else "No") }
                             )
                             else -> CompactTextField(
-                                value = values[o.name]?.toString() ?: "",
+                                value = if (o.type == 4 || o.type == 10) typed[o.name].orEmpty() else values[o.name]?.toString() ?: "",
                                 onValueChange = { text ->
-                                    when (o.type) {
-                                        4 -> text.toLongOrNull()?.let { values[o.name] = it } ?: if (text.isEmpty()) values.remove(o.name) else Unit
-                                        10 -> text.toDoubleOrNull()?.let { values[o.name] = it } ?: if (text.isEmpty()) values.remove(o.name) else Unit
-                                        else -> values[o.name] = text
-                                    }
+                                    if (o.type == 4 || o.type == 10) {
+                                        typed[o.name] = text
+                                        // Only a finished number counts; until then the option is left out (or missing).
+                                        val n: Any? = if (o.type == 4) text.trim().toLongOrNull() else text.trim().toDoubleOrNull()?.takeIf { it.isFinite() }
+                                        if (n != null) values[o.name] = n else values.remove(o.name)
+                                    } else values[o.name] = text
                                 },
                                 modifier = Modifier.fillMaxWidth().heightIn(min = 36.dp, max = 60.dp),
                                 placeholder = if (o.type == 3) "Text" else "Number",

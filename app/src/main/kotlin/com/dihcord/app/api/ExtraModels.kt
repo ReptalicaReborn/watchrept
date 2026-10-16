@@ -26,7 +26,15 @@ object DiscordTimestamp {
         nowMillis: Long = System.currentTimeMillis(),
         zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
         locale: java.util.Locale = java.util.Locale.getDefault(),
-    ): String {
+    ): String = try {
+        formatOrThrow(epochSeconds, style, nowMillis, zone, locale)
+    } catch (e: java.time.DateTimeException) {
+        "a time" // A number past the calendar's range, from a message anyone could send.
+    } catch (e: ArithmeticException) {
+        "a time"
+    }
+
+    private fun formatOrThrow(epochSeconds: Long, style: Char?, nowMillis: Long, zone: java.time.ZoneId, locale: java.util.Locale): String {
         val at = java.time.Instant.ofEpochSecond(epochSeconds).atZone(zone)
         fun pattern(p: String) = at.format(java.time.format.DateTimeFormatter.ofPattern(p, locale))
         return when (style) {
@@ -35,7 +43,7 @@ object DiscordTimestamp {
             'd' -> pattern("M/d/yyyy")
             'D' -> pattern("MMMM d, yyyy")
             'F' -> pattern("EEEE, MMMM d, yyyy h:mm a")
-            'R' -> relative(epochSeconds * 1000, nowMillis)
+            'R' -> relative(Math.multiplyExact(epochSeconds, 1000L), nowMillis)
             else -> pattern("MMMM d, yyyy h:mm a") // 'f', the default
         }
     }
@@ -229,7 +237,8 @@ sealed class MemberListItem {
  * touch one row, INVALIDATE drops a range.
  */
 sealed class MemberListOp {
-    data class Sync(val start: Int, val items: List<MemberListItem>) : MemberListOp()
+    /** [end] is the last position the range covers; rows in it that [items] don't fill are gone. */
+    data class Sync(val start: Int, val items: List<MemberListItem>, val end: Int = start + items.size - 1) : MemberListOp()
     data class Insert(val index: Int, val item: MemberListItem) : MemberListOp()
     data class Update(val index: Int, val item: MemberListItem) : MemberListOp()
     data class Delete(val index: Int) : MemberListOp()
@@ -238,10 +247,11 @@ sealed class MemberListOp {
     companion object {
         fun listFromJson(arr: JSONArray?): List<MemberListOp> = arr.mapObjects { o ->
             when (o.optString("op")) {
-                "SYNC" -> Sync(
-                    o.optJSONArray("range")?.optInt(0) ?: 0,
-                    o.optJSONArray("items").mapObjects { MemberListItem.fromJson(it) }
-                )
+                "SYNC" -> {
+                    val start = o.optJSONArray("range")?.optInt(0) ?: 0
+                    val items = o.optJSONArray("items").mapObjects { MemberListItem.fromJson(it) }
+                    Sync(start, items, o.optJSONArray("range")?.optInt(1) ?: (start + items.size - 1))
+                }
                 "INSERT" -> o.optJSONObject("item")?.let { MemberListItem.fromJson(it) }?.let { Insert(o.optInt("index"), it) }
                 "UPDATE" -> o.optJSONObject("item")?.let { MemberListItem.fromJson(it) }?.let { Update(o.optInt("index"), it) }
                 "DELETE" -> Delete(o.optInt("index"))
@@ -257,6 +267,7 @@ sealed class MemberListOp {
             for (op in ops) when (op) {
                 is Sync -> {
                     ensure(op.start + op.items.size)
+                    for (i in op.start..minOf(op.end, out.size - 1)) if (i >= 0) out[i] = null
                     op.items.forEachIndexed { i, item -> out[op.start + i] = item }
                 }
                 is Insert -> if (op.index <= out.size) out.add(op.index, op.item) else { ensure(op.index); out.add(op.item) }

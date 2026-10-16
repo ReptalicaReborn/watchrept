@@ -88,6 +88,9 @@ import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import java.io.File
 
+/** How many older pages a jump to a message (pins, search, saved) may load to find it. */
+private const val MAX_JUMP_PAGES = 10
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ChatScreen(
@@ -286,12 +289,16 @@ fun ChatScreen(
         var found = target()
         var pages = 0
         val wanted = jumpTo?.takeIf { it != JUMP_TO_FIRST_MENTION }
-        while (found == null && wanted != null && pages < 5 && repo.hasMoreHistory(channelId)) {
+        while (found == null && wanted != null && pages < MAX_JUMP_PAGES && repo.hasMoreHistory(channelId)) {
             val oldest = held().firstOrNull()?.id ?: break
             if (compareSnowflakes(oldest, wanted) <= 0) break // already past it: the message is gone
             if (repo.loadOlderMessages(channelId) <= 0) break
             pages++
             found = target()
+        }
+        if (found == null && wanted != null) {
+            // Pins, search and saved messages show the text already; say why the chat didn't move.
+            android.widget.Toast.makeText(context, "That message is too far back, or was deleted", android.widget.Toast.LENGTH_SHORT).show()
         }
         jumpTarget = found
     }

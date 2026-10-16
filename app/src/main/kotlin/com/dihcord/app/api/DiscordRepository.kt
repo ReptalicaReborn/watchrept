@@ -801,12 +801,20 @@ class DiscordRepository(
         rest.getMessagesRaw(channelId, limit = pageSize).mapCatching { raw ->
             DiscordMessage.listFromJson(JSONArray(raw)).also { messageCache.save(channelId, raw) }
         }.onSuccess { fetched ->
+            val wasCached = channelId in _fromCache.value
             _fromCache.update { it - channelId }
             val fetchedList = fetched.reversed()
             fetchedList.forEach { userDisplayNames[it.author.id] = it.author.displayName }
             if (fetched.size < pageSize) reachedStart.add(channelId)
             _messages.update { current ->
-                val existing = current[channelId].orEmpty()
+                val held = current[channelId].orEmpty()
+                // The live page is the truth: a saved copy (or an emptied channel) may hold messages since deleted.
+                // Only messages that arrived live after the page are kept.
+                val existing = when {
+                    fetchedList.isEmpty() -> emptyList()
+                    wasCached -> held.filter { compareSnowflakes(it.id, fetchedList.last().id) > 0 }
+                    else -> held
+                }
                 val merged = mergeLatestPage(existing, fetchedList)
                 // The held history no longer connects to the latest page: start over from it and allow paging again.
                 if (merged == null) reachedStart.remove(channelId)
@@ -903,14 +911,30 @@ class DiscordRepository(
     private suspend fun ackLocallyAndRemotely(reads: List<Pair<String, String>>): Result<Unit> {
         if (reads.isEmpty()) return Result.success(Unit)
         val ids = reads.map { it.first }.toSet()
+        val pingsBefore = _pings.value.filter { it.message.channelId in ids }
+        val before = _readState.value
+        var marked: Map<String, ChannelUnreadState> = emptyMap()
         _pings.update { list -> list.filterNot { it.message.channelId in ids } }
         _readState.update { current ->
-            current + reads.associate { (channelId, messageId) ->
+            marked = reads.associate { (channelId, messageId) ->
                 val newest = current[channelId]?.lastMessageId?.takeIf { compareSnowflakes(it, messageId) > 0 } ?: messageId
                 channelId to ChannelUnreadState(newest, 0)
             }
+            current + marked
         }
-        return rest.ackBulk(reads).onFailure { handleApiError(it) }
+        return rest.ackBulk(reads).onFailure { error ->
+            // Discord didn't take it: show them unread again, so trying again sends them again.
+            _readState.update { current ->
+                val out = current.toMutableMap()
+                marked.forEach { (channelId, set) ->
+                    if (out[channelId] != set) return@forEach // Changed since (read in the chat, a new message).
+                    before[channelId]?.let { out[channelId] = it } ?: out.remove(channelId)
+                }
+                out
+            }
+            _pings.update { list -> (list + pingsBefore).distinctBy { it.message.id } }
+            handleApiError(error)
+        }
     }
 
     // ---- Pins, search ----
@@ -950,7 +974,10 @@ class DiscordRepository(
     }
 
     /** Asks Discord to stream [guildId]'s member list (as seen from [channelId]) into [memberLists]. */
-    fun subscribeMemberList(guildId: String, channelId: String) = gateway.subscribeMemberList(guildId, channelId)
+    fun subscribeMemberList(guildId: String, channelId: String) {
+        memberListStore.reset(guildId)
+        gateway.subscribeMemberList(guildId, channelId)
+    }
 
     // ---- Sending ----
 
@@ -1541,6 +1568,7 @@ class DiscordRepository(
                         channelNameCache.remove(ch.id)
                         channelGuildCache.remove(ch.id)
                         if (ch.guildId != null) {
+                            unread.onChannelDelete(ch.guildId, ch.id, _readState.value)
                             refreshGuildChannelsSoon(ch.guildId)
                         } else if (ch.isDm) {
                             scope.launch { refreshDmChannels() }
@@ -1577,11 +1605,17 @@ class DiscordRepository(
                 poll = if (raw.has("poll")) full.poll else old.poll,
             )
         }
-        // Partial update, typically link previews arriving after the message was sent.
-        val embeds = raw.optJSONArray("embeds")?.let { arr ->
-            (0 until arr.length()).mapNotNull { i -> runCatching { Embed.fromJson(arr.getJSONObject(i)) }.getOrNull() }
+        // Partial update: link previews arriving after the message was sent, a bot changing its buttons, a pin.
+        var merged = old
+        raw.optJSONArray("embeds")?.let { arr ->
+            merged = merged.copy(embeds = (0 until arr.length()).mapNotNull { i -> runCatching { Embed.fromJson(arr.getJSONObject(i)) }.getOrNull() })
         }
-        return if (embeds != null) old.copy(embeds = embeds) else old
+        if (raw.has("components")) {
+            runCatching { MessageComponent.listFromJson(raw.optJSONArray("components")) }.getOrNull()?.let { merged = merged.copy(components = it) }
+        }
+        if (raw.has("pinned")) merged = merged.copy(pinned = raw.optBoolean("pinned"))
+        if (raw.has("flags")) merged = merged.copy(flags = raw.optInt("flags"))
+        return merged
     }
 
 

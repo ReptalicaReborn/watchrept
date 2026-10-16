@@ -175,7 +175,7 @@ private val UserMentionRegex = Regex("<@!?(\\d+)>")
 private val ChannelMentionRegex = Regex("<#(\\d+)>")
 private val RoleMentionRegex = Regex("<@&(\\d+)>")
 private val CustomEmojiRegex = Regex("<a?:(\\w+):\\d+>")
-private val TimestampRegex = Regex("<t:(\\d+)(:\\w)?>")
+private val TimestampRegex = com.dihcord.app.api.DiscordTimestamp.REGEX
 private val LinkRegex = Regex("\\[([^\\]]+)]\\((https?://[^)]+)\\)")
 private val SpoilerRegex = Regex("\\|\\|.+?\\|\\|", RegexOption.DOT_MATCHES_ALL)
 private val MarkdownMarks = Regex("(\\*\\*|__|~~|\\|\\||`+)")
@@ -195,7 +195,7 @@ fun messagePreview(msg: DiscordMessage, myId: String?, channelNames: Map<String,
         .replace(RoleMentionRegex, "@role")
         .replace(CustomEmojiRegex) { ":${it.groupValues[1]}:" }
         .replace(TimestampRegex) { m ->
-            m.groupValues[1].toLongOrNull()?.let { com.dihcord.app.api.DiscordTimestamp.format(it, m.groupValues[2].removePrefix(":").firstOrNull()) } ?: "a time"
+            m.groupValues[1].toLongOrNull()?.let { com.dihcord.app.api.DiscordTimestamp.format(it, m.groupValues[2].firstOrNull()) } ?: "a time"
         }
         .replace(LinkRegex) { it.groupValues[1] }
         .replace(MarkdownMarks, "")
