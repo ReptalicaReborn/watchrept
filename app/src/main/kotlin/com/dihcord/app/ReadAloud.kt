@@ -44,6 +44,7 @@ object ReadAloud {
     }
 
     fun stop() {
+        pending = null // So an engine still starting up doesn't read it afterwards.
         tts?.stop()
         _speaking.value = null
     }

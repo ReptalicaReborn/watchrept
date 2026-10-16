@@ -154,9 +154,11 @@ object VoiceManager {
             // Soundboard sounds played in this channel are heard here too (not while deafened).
             launch {
                 repository.soundboardPlays.collect { e ->
-                    val c = _call.value ?: return@collect
-                    if (e.channelId == c.channelId && !c.deafened && e.userId != myId) {
-                        SoundboardPlayer.play("https://cdn.discordapp.com/soundboard-sounds/${e.soundId}", e.volume)
+                    if (e.userId == myId) return@collect
+                    // Checked again inside the player's turn: deafen or leave may land in between.
+                    SoundboardPlayer.play("https://cdn.discordapp.com/soundboard-sounds/${e.soundId}", e.volume) {
+                        val c = _call.value
+                        c != null && c.status != VoiceCall.Status.ENDED && e.channelId == c.channelId && !c.deafened
                     }
                 }
             }
@@ -260,13 +262,13 @@ object VoiceManager {
 
     /** Hangs up (if in a call) and clears everything. */
     fun leave() {
-        SoundboardPlayer.stop()
         val call = _call.value
         if (call != null && call.status != VoiceCall.Status.ENDED) {
             repo?.updateVoiceState(call.guildId, null, selfMute = false, selfDeaf = false)
         }
         teardown()
         _call.value = null
+        SoundboardPlayer.stop() // After the call is gone, so no sound can start after it.
     }
 
     /** Forgets a call that ended (after the user saw why). */
@@ -276,11 +278,11 @@ object VoiceManager {
 
     private fun end(reason: String) {
         Log.i(TAG, "call ended: $reason")
-        SoundboardPlayer.stop()
         val call = _call.value
         if (call != null) repo?.updateVoiceState(call.guildId, null, selfMute = false, selfDeaf = false)
         teardown()
         _call.update { it?.copy(status = VoiceCall.Status.ENDED, error = reason, speaking = emptySet(), selfSpeaking = false) }
+        SoundboardPlayer.stop()
     }
 
     private fun teardown() {

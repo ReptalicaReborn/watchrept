@@ -110,6 +110,7 @@ class DihcordApp : Application(), ImageLoaderFactory {
             }.collect { UnreadSummary.publish(this@DihcordApp, it) }
         }
         recentDmsJob?.cancel()
+        val tileGeneration = RecentDmsSummary.generation
         recentDmsJob = appScope.launch {
             // The Recent DMs tile reads this snapshot, so it draws without the app or a connection.
             combine(repo.readState, repo.dmChannels, SetupPreferences.hiddenDmsChanges) { read, dms, _ ->
@@ -127,7 +128,7 @@ class DihcordApp : Application(), ImageLoaderFactory {
                                 com.dihcord.app.api.compareSnowflakes(dm.lastMessageId, rs.lastMessageId) > 0
                         )
                     }
-            }.collect { RecentDmsSummary.publish(this@DihcordApp, it) }
+            }.collect { RecentDmsSummary.publish(this@DihcordApp, it, tileGeneration) }
         }
         // Logging in again (or a token change) must bring notifications back if the user wants them;
         // the service re-reads the repository on every start.
@@ -149,6 +150,7 @@ class DihcordApp : Application(), ImageLoaderFactory {
         com.dihcord.app.voice.VoiceManager.leave()
         UnreadSummary.reset(this)
         RecentDmsSummary.reset(this)
+        ReadAloud.stop() // A private message being read out loud ends with the account.
         NotificationService.stop(this)
         // Saved chats, bookmarks, mutes and alert levels belong to the account that's leaving.
         repository?.clearOfflineCache()

@@ -34,14 +34,33 @@ object RecentDmsSummary {
         }
     }.getOrDefault(emptyList())
 
-    fun publish(context: Context, entries: List<Entry>) {
+    /**
+     * Goes up on every [reset] (sign-out). A publisher passes the value it started with, so one still running
+     * for the account that left can't write its DMs back after the reset.
+     */
+    @Volatile var generation = 0
+        private set
+
+    fun publish(context: Context, entries: List<Entry>, forGeneration: Int) {
+        synchronized(this) {
+            if (forGeneration != generation) return
+            write(context, entries)
+        }
+    }
+
+    fun reset(context: Context) {
+        synchronized(this) {
+            generation++
+            write(context, emptyList())
+        }
+    }
+
+    private fun write(context: Context, entries: List<Entry>) {
         if (entries == read(context)) return
         val arr = JSONArray(entries.map { JSONObject().put("id", it.channelId).put("name", it.name).put("m", it.mentions).put("u", it.unread) })
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("list", arr.toString()).apply()
         runCatching { TileService.getUpdater(context).requestUpdate(RecentDmsTileService::class.java) }
     }
-
-    fun reset(context: Context) = publish(context, emptyList())
 }
 
 private fun <T> immediate(value: T): ListenableFuture<T> =
