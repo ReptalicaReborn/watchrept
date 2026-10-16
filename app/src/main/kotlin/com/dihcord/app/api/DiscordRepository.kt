@@ -451,6 +451,9 @@ class DiscordRepository(
     suspend fun notificationFor(msg: DiscordMessage, notifyAll: Boolean = false): NotificationInfo? {
         val myId = currentUserId ?: return null
         if (msg.author.id == myId) return null
+        // Like Discord: nothing from people you blocked, and "@silent" messages never buzz.
+        if (relationshipStore.isBlocked(msg.author.id)) return null
+        if (msg.flags and SUPPRESS_NOTIFICATIONS_FLAG != 0) return null
         val isDm = _dmChannels.value.any { it.id == msg.channelId }
         val guildId = msg.guildId ?: channelGuildCache[msg.channelId]
         val mentioned = if (isDm || notifyAll) true else {
@@ -886,7 +889,7 @@ class DiscordRepository(
     /** Marks every unread channel of [guildId] read (mentions too), here and on Discord. */
     suspend fun markGuildRead(guildId: String): Result<Unit> {
         val rs = _readState.value
-        val reads = unread.unreadChannels(guildId, rs, includeMuted = true).toMutableList()
+        val reads = (unread.unreadChannels(guildId, rs, includeMuted = true) + unread.unreadThreads(guildId, rs)).toMutableList()
         rs.forEach { (channelId, state) ->
             if (state.mentionCount > 0 && channelGuildCache[channelId] == guildId && reads.none { it.first == channelId }) {
                 (unread.lastMessageId(channelId) ?: state.lastMessageId).let { reads += channelId to it }
@@ -899,7 +902,7 @@ class DiscordRepository(
     suspend fun markAllRead(): Result<Unit> {
         val rs = _readState.value
         val reads = mutableListOf<Pair<String, String>>()
-        _guilds.value.forEach { g -> reads += unread.unreadChannels(g.id, rs, includeMuted = true) }
+        _guilds.value.forEach { g -> reads += unread.unreadChannels(g.id, rs, includeMuted = true) + unread.unreadThreads(g.id, rs) }
         _dmChannels.value.forEach { dm ->
             val last = dm.lastMessageId ?: return@forEach
             val state = rs[dm.id]
@@ -1392,7 +1395,7 @@ class DiscordRepository(
                     is GatewayEvent.MessageCreate -> {
                         val msg = event.message
                         if (msg.author.id == currentUserId) typingDone(msg.channelId)
-                        unread.onMessage(msg.channelId, msg.id, _readState.value)
+                        unread.onMessage(msg.channelId, msg.id, _readState.value, msg.guildId)
                         userDisplayNames[msg.author.id] = msg.author.displayName
                         val myId = currentUserId
                         if (myId != null && msg.author.id == myId &&
@@ -1727,6 +1730,9 @@ class DiscordRepository(
  * replaced by the page (so deletions while away disappear), older and newer ones are kept. Returns null if
  * [held] doesn't reach the page (more than a page was missed), in which case the caller should start over.
  */
+/** Message flag for "@silent": shown, but no push or watch notification. */
+private const val SUPPRESS_NOTIFICATIONS_FLAG = 1 shl 12
+
 internal fun mergeLatestPage(held: List<DiscordMessage>, fetched: List<DiscordMessage>): List<DiscordMessage>? {
     if (held.isEmpty()) return fetched
     if (fetched.isEmpty()) return held

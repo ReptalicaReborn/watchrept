@@ -23,6 +23,8 @@ class UnreadTracker {
     private val lastIds = java.util.concurrent.ConcurrentHashMap<String, String>()
     /** Which server each channel belongs to, so a message only re-checks its own server. */
     private val channelGuild = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /** Threads by id -> server. They don't light the server dot, but "mark read" must reach them. */
+    private val threadGuild = java.util.concurrent.ConcurrentHashMap<String, String>()
     @Volatile private var myId: String? = null
     @Volatile private var settings: Map<String, NotifySettings> = emptyMap()
 
@@ -49,6 +51,10 @@ class UnreadTracker {
             channelGuild[ch.id] = g.id
             ch.lastMessageId?.let { lastIds[ch.id] = it }
         }
+        g.threads.forEach { t ->
+            threadGuild[t.id] = g.id
+            t.lastMessageId?.let { lastIds[t.id] = it }
+        }
     }
 
     fun onSettings(guildId: String, value: NotifySettings, readState: Map<String, ChannelUnreadState>) {
@@ -56,10 +62,11 @@ class UnreadTracker {
         recompute(readState)
     }
 
-    /** A message arrived: its channel's newest message moves on. */
-    fun onMessage(channelId: String, messageId: String, readState: Map<String, ChannelUnreadState>) {
+    /** A message arrived: its channel's newest message moves on. A server message in a channel we don't know is a thread. */
+    fun onMessage(channelId: String, messageId: String, readState: Map<String, ChannelUnreadState>, guildId: String? = null) {
         val known = lastIds[channelId]
         if (known == null || compareSnowflakes(messageId, known) > 0) lastIds[channelId] = messageId
+        if (guildId != null && !channelGuild.containsKey(channelId)) threadGuild[channelId] = guildId
         channelGuild[channelId]?.let { recomputeGuild(it, readState) }
     }
 
@@ -81,6 +88,7 @@ class UnreadTracker {
         guilds[guildId]?.let { guilds[guildId] = it.copy(channels = it.channels - channelId) }
         lastIds.remove(channelId)
         channelGuild.remove(channelId)
+        threadGuild.remove(channelId)
         recomputeGuild(guildId, readState)
     }
 
@@ -91,6 +99,7 @@ class UnreadTracker {
 
     fun forgetGuild(guildId: String, readState: Map<String, ChannelUnreadState>) {
         guilds.remove(guildId)
+        threadGuild.values.removeAll { it == guildId }
         recompute(readState)
     }
 
@@ -137,6 +146,15 @@ class UnreadTracker {
         }
         return out
     }
+
+    /** (thread id, newest message id) for each thread of [guildId] with messages past our read marker. */
+    fun unreadThreads(guildId: String, readState: Map<String, ChannelUnreadState>): List<Pair<String, String>> =
+        threadGuild.entries.mapNotNull { (threadId, g) ->
+            if (g != guildId) return@mapNotNull null
+            val last = lastIds[threadId] ?: return@mapNotNull null
+            val read = readState[threadId] ?: return@mapNotNull null
+            if (compareSnowflakes(last, read.lastMessageId) > 0) threadId to last else null
+        }
 
     /** [channelId]'s category, from the server data READY (or a join) gave us. */
     fun parentOf(channelId: String): String? = channelGuild[channelId]?.let { guilds[it]?.channels?.get(channelId)?.parentId }
@@ -202,13 +220,19 @@ class RelationshipStore {
  * connection. Only the most recent channels are kept; everything is wiped on log-out.
  */
 class MessageCache(private val dir: java.io.File?) {
+    /** Set by [clear] (sign-out): a page still on its way must not write the old account back to disk. */
+    @Volatile private var closed = false
+
     fun save(channelId: String, rawPage: String) {
         val d = dir ?: return
-        runCatching {
-            d.mkdirs()
-            java.io.File(d, "$channelId.json").writeText(rawPage)
-            val files = d.listFiles().orEmpty().sortedByDescending { it.lastModified() }
-            files.drop(MAX_CHANNELS).forEach { it.delete() }
+        synchronized(LOCK) {
+            if (closed) return
+            runCatching {
+                d.mkdirs()
+                java.io.File(d, "$channelId.json").writeText(rawPage)
+                val files = d.listFiles().orEmpty().sortedByDescending { it.lastModified() }
+                files.drop(MAX_CHANNELS).forEach { it.delete() }
+            }
         }
     }
 
@@ -219,10 +243,15 @@ class MessageCache(private val dir: java.io.File?) {
         return runCatching { DiscordMessage.listFromJson(org.json.JSONArray(f.readText())).reversed() }.getOrNull()
     }
 
-    fun clear() { dir?.deleteRecursively() }
+    fun clear() = synchronized(LOCK) {
+        closed = true
+        dir?.deleteRecursively()
+    }
 
     companion object {
         const val MAX_CHANNELS = 30
+        /** One lock for every instance: sign-out clears with its own instance while the repository's may save. */
+        private val LOCK = Any()
         fun dirFor(context: android.content.Context) = java.io.File(context.filesDir, "message_cache")
     }
 }

@@ -479,6 +479,7 @@ data class Channel(
     val isDm: Boolean get() = type == ChannelType.DM || type == ChannelType.GROUP_DM
     val isText: Boolean get() = type == ChannelType.GUILD_TEXT || type == ChannelType.GUILD_NEWS
     val isCategory: Boolean get() = type == ChannelType.GUILD_CATEGORY
+    val isThread: Boolean get() = type == ChannelType.ANNOUNCEMENT_THREAD || type == ChannelType.PUBLIC_THREAD || type == ChannelType.PRIVATE_THREAD
     /** Voice and stage channels: both are joined over the voice connection. */
     val isVoice: Boolean get() = type == ChannelType.GUILD_VOICE || type == ChannelType.GUILD_STAGE_VOICE
     val isStage: Boolean get() = type == ChannelType.GUILD_STAGE_VOICE

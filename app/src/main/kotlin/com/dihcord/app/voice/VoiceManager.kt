@@ -253,6 +253,7 @@ object VoiceManager {
         _call.value = call.copy(muted = muted, deafened = deafened)
         engine?.muted = muted
         engine?.deafened = deafened
+        if (deafened) SoundboardPlayer.stop() // Deafened means hearing nothing, a sound already playing too.
         repo?.updateVoiceState(call.guildId, call.channelId, muted, deafened)
         appContext?.let { VoiceCallService.refresh(it) }
     }

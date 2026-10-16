@@ -796,6 +796,8 @@ data class ReadyGuild(
     val channels: List<Channel>,
     val roles: List<GuildRole>,
     val myRoleIds: List<String>?,
+    /** Active threads READY knows of; only used to mark them read. */
+    val threads: List<Channel> = emptyList(),
 )
 
 /**
@@ -847,6 +849,11 @@ internal object ReadyParsing {
                 channels = channels,
                 roles = roles,
                 myRoleIds = rolesIn(merged?.optJSONArray(i)) ?: rolesIn(g.optJSONArray("members")),
+                threads = g.optJSONArray("threads")?.let { th ->
+                    (0 until th.length()).mapNotNull { j ->
+                        th.optJSONObject(j)?.let { o -> runCatching { Channel.fromJson(o.put("guild_id", id)) }.getOrNull() }
+                    }
+                }.orEmpty(),
             )
         }
     }

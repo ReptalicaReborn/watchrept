@@ -227,4 +227,16 @@ class FeatureModelsTest {
         assertEquals(setOf("g"), t.unreadGuilds.value)
         assertEquals("cat", t.parentOf("a"))
     }
+
+    @Test fun threadsAreMarkedReadButDoNotLightTheDot() {
+        val t = UnreadTracker()
+        val read = mapOf("th" to ChannelUnreadState("10"), "live" to ChannelUnreadState("5"))
+        val thread = channel("th", "20").copy(type = ChannelType.PUBLIC_THREAD)
+        t.onReady("me", listOf(ReadyGuild("g", null, emptyList(), listOf(everyone), emptyList(), threads = listOf(thread))), emptyMap(), read)
+        assertTrue(t.unreadGuilds.value.isEmpty())
+        assertEquals(listOf("th" to "20"), t.unreadThreads("g", read))
+        // A thread READY didn't list shows up once a message arrives in it.
+        t.onMessage("live", "9", read, guildId = "g")
+        assertEquals(setOf("th", "live"), t.unreadThreads("g", read).map { it.first }.toSet())
+    }
 }
