@@ -943,7 +943,8 @@ class DiscordRepository(
         }
         return rest.ackBulk(reads).onFailure { error ->
             // Discord didn't take it: show them unread again, so trying again sends them again.
-            val rolledBack = HashSet<String>()
+            // Channel -> how far another device read meanwhile (null: nowhere); pings up to there stay cleared.
+            val rolledBack = HashMap<String, String?>()
             _readState.update { current ->
                 val out = current.toMutableMap()
                 rolledBack.clear()
@@ -962,12 +963,15 @@ class DiscordRepository(
                         old != null -> out[channelId] = old
                         else -> out.remove(channelId)
                     }
-                    rolledBack += channelId
+                    rolledBack[channelId] = partial
                 }
                 out
             }
             // Pings come back only where the unread state did; a channel read elsewhere meanwhile stays clear.
-            val restore = pingsBefore.filter { it.message.channelId in rolledBack }
+            val restore = pingsBefore.filter { p ->
+                val ch = p.message.channelId
+                ch in rolledBack && rolledBack[ch].let { floor -> floor == null || compareSnowflakes(p.message.id, floor) > 0 }
+            }
             _pings.update { list -> (list + restore).distinctBy { it.message.id } }
             handleApiError(error)
         }
