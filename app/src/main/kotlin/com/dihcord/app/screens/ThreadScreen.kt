@@ -40,6 +40,7 @@ import android.media.MediaRecorder
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
 import androidx.core.content.ContextCompat
 import com.dihcord.app.SetupPreferences
 import com.dihcord.app.api.ReactionEmoji
@@ -126,6 +127,7 @@ fun ThreadScreen(
     var replyPing by remember { mutableStateOf(true) }
     var reactingToMsg by remember { mutableStateOf<DiscordMessage?>(null) }
     var showPicker by remember { mutableStateOf(false) }
+    var showGifPicker by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(0) }
     val roleColorCache = remember { mutableStateMapOf<String, GuildRole?>() }
     // Same map instance until a name actually changes: it is a remember key for every bubble's parsed markdown.
@@ -292,13 +294,38 @@ fun ThreadScreen(
     BackHandler(enabled = selectedMsg != null) {
         selectedMsg = null
     }
+    BackHandler(enabled = showGifPicker) {
+        showGifPicker = false
+    }
     BackHandler(
-        enabled = !isRecording && !showPhotoPicker && !showPicker && reactorsFor == null &&
+        enabled = !isRecording && !showPhotoPicker && !showPicker && !showGifPicker && reactorsFor == null &&
             replyingTo == null && selectedMsg == null
     ) { onBack() }
 
     val hasNitro = currentUser?.hasNitro ?: false
     val sendAnimatedAsGif = SetupPreferences.getSendAnimatedAsGif(context)
+
+    if (showGifPicker) {
+        GifPickerScreen { gif ->
+            showGifPicker = false
+            val replyTarget = replyingTo
+            val ping = replyPing
+            replyingTo = null
+            replyPing = true
+            scope.launch {
+                val result = if (replyTarget != null) repo.sendReply(threadId, gif.url, replyTarget.id, ping)
+                else repo.sendMessage(threadId, gif.url)
+                result.onFailure {
+                    sendError = "Failed: ${it.message}"
+                    if (replyingTo == null && replyTarget != null) {
+                        replyingTo = replyTarget
+                        replyPing = ping
+                    }
+                }
+            }
+        }
+        return
+    }
 
     if (showPicker) {
         val isReactMode = reactingToMsg != null
@@ -708,6 +735,12 @@ fun ThreadScreen(
                                 .padding(6.dp),
                             horizontalArrangement = Arrangement.spacedBy(space = 16.dp, alignment = Alignment.CenterHorizontally)
                         ) {
+                            FilledIconButton(
+                                onClick = { showGifPicker = true },
+                                modifier = Modifier.size(40.dp),
+                            ) {
+                                Text("GIF", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
                             FilledIconButton(
                                 onClick = {
                                     val perm = if (android.os.Build.VERSION.SDK_INT >= 33)

@@ -329,6 +329,23 @@ class DiscordRestClient(private val token: String) {
         GuildEmoji.listFromJson(JSONArray(get("/guilds/$guildId/emojis")))
     }
 
+    /** Discord's GIF search (Tenor), as the web client's GIF picker does it. */
+    suspend fun searchGifs(query: String): Result<List<Gif>> = runCatching {
+        val q = java.net.URLEncoder.encode(query, "UTF-8")
+        Gifs.parseResults(get("/gifs/search?q=$q&media_format=mp4&provider=tenor&locale=en-US"))
+    }
+
+    suspend fun trendingGifs(): Result<List<Gif>> = runCatching {
+        Gifs.parseResults(get("/gifs/trending-gifs?media_format=mp4&provider=tenor&locale=en-US"))
+    }
+
+    /** The account's favourite GIFs (stored in the frecency settings proto), newest first. */
+    suspend fun favoriteGifs(): Result<List<Gif>> = runCatching {
+        val encoded = JSONObject(get("/users/@me/settings-proto/2")).optString("settings")
+        if (encoded.isEmpty()) emptyList()
+        else Gifs.parseFavorites(java.util.Base64.getDecoder().decode(encoded))
+    }
+
     suspend fun getGuildStickers(guildId: String): Result<List<StickerItem>> = runCatching {
         val arr = JSONArray(get("/guilds/$guildId/stickers"))
         (0 until arr.length()).map { StickerItem.fromJson(arr.getJSONObject(it)) }

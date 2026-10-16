@@ -36,6 +36,7 @@ import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.Color
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.Animatable
@@ -113,6 +114,7 @@ fun ChatScreen(
     var loading by remember { mutableStateOf(true) }
     var sendError by remember { mutableStateOf("") }
     var showPicker by remember { mutableStateOf(false) }
+    var showGifPicker by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(0) } // 0 = emoji, 1 = stickers
     var inputText by remember { mutableStateOf("") }
     var pendingText by remember { mutableStateOf("") }
@@ -411,7 +413,10 @@ fun ChatScreen(
     BackHandler(enabled = selectedMsg != null) {
         selectedMsg = null
     }
-    BackHandler(enabled = !showPicker && editingMsg == null && !isRecording && !showPhotoPicker && replyingTo == null && selectedMsg == null) {
+    BackHandler(enabled = showGifPicker) {
+        showGifPicker = false
+    }
+    BackHandler(enabled = !showPicker && !showGifPicker && editingMsg == null && !isRecording && !showPhotoPicker && replyingTo == null && selectedMsg == null) {
         onBack()
     }
 
@@ -485,6 +490,29 @@ fun ChatScreen(
                                 .height(36.dp),
                             colors = ButtonDefaults.outlinedButtonColors()
                         ) { Text("Cancel") }
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    if (showGifPicker) {
+        GifPickerScreen { gif ->
+            showGifPicker = false
+            // A GIF is its own message (like Discord), sent as a reply if one is being written.
+            val replyTarget = replyingTo
+            val ping = replyPing
+            replyingTo = null
+            replyPing = true
+            scope.launch {
+                val result = if (replyTarget != null) repo.sendReply(channelId, gif.url, replyTarget.id, ping)
+                else repo.sendMessage(channelId, gif.url)
+                result.onFailure {
+                    sendError = "Failed: ${it.message}"
+                    if (replyingTo == null && replyTarget != null) {
+                        replyingTo = replyTarget
+                        replyPing = ping
                     }
                 }
             }
@@ -1080,14 +1108,15 @@ fun ChatScreen(
                     if (canSend) {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             if (!isRecording) {
-                                Row(
+                                FlowRow(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(6.dp),
                                     horizontalArrangement = Arrangement.spacedBy(
                                         space = 8.dp,
                                         alignment = Alignment.CenterHorizontally
-                                    )
+                                    ),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     FilledIconButton(
                                         onClick = {
@@ -1151,6 +1180,12 @@ fun ChatScreen(
                                             painter = painterResource(id = R.drawable.mic),
                                             contentDescription = "Voice Message"
                                         )
+                                    }
+                                    FilledIconButton(
+                                        onClick = { showGifPicker = true },
+                                        modifier = Modifier.size(36.dp),
+                                    ) {
+                                        Text("GIF", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             } else {
