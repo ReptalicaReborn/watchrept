@@ -953,7 +953,15 @@ class DiscordRepository(
                     // even if to the same message: that read stands. A shorter one doesn't cover ours.
                     val seen = ackSeenAt[channelId]
                     if (seen != null && seen.first > startedAt && compareSnowflakes(seen.second, set.lastMessageId) >= 0) return@forEach
-                    before[channelId]?.let { out[channelId] = it } ?: out.remove(channelId)
+                    // Back to where Discord has it: as before, or a shorter read from another device meanwhile.
+                    val partial = seen?.takeIf { it.first > startedAt }?.second
+                    val old = before[channelId]
+                    when {
+                        partial != null && (old == null || compareSnowflakes(partial, old.lastMessageId) > 0) ->
+                            out[channelId] = ChannelUnreadState(partial, 0)
+                        old != null -> out[channelId] = old
+                        else -> out.remove(channelId)
+                    }
                     rolledBack += channelId
                 }
                 out
