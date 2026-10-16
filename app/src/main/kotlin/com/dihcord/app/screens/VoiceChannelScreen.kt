@@ -127,6 +127,7 @@ fun VoiceChannelScreen(
     channelName: String,
     /** Answer the incoming call straight away (from the notification's Accept button). */
     answer: Boolean = false,
+    onOpenSoundboard: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val repo = context.discordApp.repository ?: return
@@ -203,7 +204,15 @@ fun VoiceChannelScreen(
             }
         )
     }
-    val tiles = members.map { vs ->
+    // A stage: speakers are drawn in the circle, listeners are only counted.
+    val channelsMap by repo.guildChannelsMap.collectAsState()
+    val isStage = remember(channelsMap, guildId, channelId) {
+        guildId != null && channelsMap[guildId].orEmpty().flatMap { it.channels }.any { it.id == channelId && it.isStage }
+    }
+    val myState = members.firstOrNull { it.userId == me }
+    val listenerCount = if (isStage) members.count { it.suppress } else 0
+    val shown = if (isStage) members.filter { !it.suppress } else members
+    val tiles = shown.map { vs ->
         VoiceTile(
             userId = vs.userId,
             name = nameOf(vs.userId, vs.nick),
@@ -229,9 +238,25 @@ fun VoiceChannelScreen(
             CallRinger.cancel(context, channelId)
             scope.launch { repo.declineCall(channelId) }
         },
-        onJoin = { tryJoin() }
+        onJoin = { tryJoin() },
+        onOpenSoundboard = onOpenSoundboard.takeIf { active },
+        stage = if (isStage && active) StageState(
+            listeners = listenerCount,
+            listening = myState?.suppress == true,
+            requested = myState?.requestToSpeak == true,
+        ) else null,
+        onRequestSpeak = { request ->
+            scope.launch {
+                repo.requestToSpeak(guildId ?: return@launch, channelId, request).onFailure {
+                    android.widget.Toast.makeText(context, "Couldn't ask. " + friendlyError(it), android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
     )
 }
+
+/** On a stage: how many listen, whether we only listen, and whether we've asked to speak. */
+data class StageState(val listeners: Int, val listening: Boolean, val requested: Boolean)
 
 /** Someone in the channel, ready to draw. */
 data class VoiceTile(
@@ -271,6 +296,9 @@ internal fun VoiceChannelContent(
     onLeave: () -> Unit,
     onDecline: () -> Unit,
     onJoin: () -> Unit,
+    onOpenSoundboard: (() -> Unit)? = null,
+    stage: StageState? = null,
+    onRequestSpeak: (Boolean) -> Unit = {},
 ) {
     val state = rememberTransformingLazyColumnState()
     val elapsed = connectedAt?.let { callTimer(it) }
@@ -346,6 +374,34 @@ internal fun VoiceChannelContent(
                 }
             }
 
+            if (stage != null) item {
+                Column(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "${stage.listeners} listening" + if (stage.listening) " · you too" else "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (stage.listening) {
+                        CompactButton(
+                            onClick = { onRequestSpeak(!stage.requested) },
+                            icon = { Icon(painterResource(R.drawable.hand), null, Modifier.size(16.dp)) },
+                            label = { Text(if (stage.requested) "Asked to speak" else "Ask to speak") },
+                            colors = if (stage.requested) ButtonDefaults.buttonColors() else ButtonDefaults.filledTonalButtonColors(),
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                }
+            }
+            if (onOpenSoundboard != null && stage?.listening != true) item {
+                Box(Modifier.fillMaxWidth().padding(top = 2.dp), contentAlignment = Alignment.Center) {
+                    CompactButton(
+                        onClick = onOpenSoundboard,
+                        icon = { Icon(painterResource(R.drawable.sound), null, Modifier.size(16.dp)) },
+                        label = { Text("Soundboard") },
+                        colors = ButtonDefaults.childButtonColors()
+                    )
+                }
+            }
         }
 
         when (mode) {

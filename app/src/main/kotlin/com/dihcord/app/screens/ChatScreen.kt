@@ -102,6 +102,11 @@ fun ChatScreen(
     onOpenThreads: (() -> Unit)? = null,
     /** Opens the voice call screen of this DM/group. */
     onCall: (() -> Unit)? = null,
+    onOpenPins: (() -> Unit)? = null,
+    onOpenSearch: (() -> Unit)? = null,
+    onOpenMembers: (() -> Unit)? = null,
+    onForward: ((DiscordMessage) -> Unit)? = null,
+    onCreatePoll: (() -> Unit)? = null,
     onBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -138,6 +143,24 @@ fun ChatScreen(
     var pickedMentions by remember(channelId) { mutableStateOf(mapOf<String, String>()) }
     var mentionSuggestions by remember(channelId) { mutableStateOf<List<MentionCandidate>>(emptyList()) }
     var reactingToMsg by remember { mutableStateOf<DiscordMessage?>(null) }
+    // Slash commands: the list (loaded when "/" is typed) and the one being filled in.
+    var commands by remember(channelId) { mutableStateOf<List<ApplicationCommand>?>(null) }
+    var commandForm by remember { mutableStateOf<ApplicationCommand?>(null) }
+    var commandRunning by remember { mutableStateOf(false) }
+    var commandError by remember { mutableStateOf<Throwable?>(null) }
+    // A bot dropdown being picked from, and its message.
+    var selectFor by remember { mutableStateOf<Pair<DiscordMessage, MessageComponent.Select>?>(null) }
+    var componentSending by remember { mutableStateOf(false) }
+    val translations = remember(channelId) { mutableStateMapOf<String, String>() }
+    var showMore by remember { mutableStateOf(false) }
+    val online by repo.online.collectAsState()
+    val fromCache by repo.fromCache.collectAsState()
+    val relationships by repo.relationships.collectAsState()
+    val quickRepliesOn = remember { com.dihcord.app.FeaturePreferences.quickRepliesOn(context) }
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+    val offlineShown = !online && (channelId in fromCache || messages.isNotEmpty())
+    /** Rows above the first message: the title, the offline note, a draft waiting to send. */
+    fun headerRows() = 1 + (if (offlineShown) 1 else 0) + (if (pendingText.isNotBlank()) 1 else 0)
     val roleColorCache = remember { mutableStateMapOf<String, GuildRole?>() }
     val roleIconCache = remember { mutableStateMapOf<String, GuildRole?>() }
     val guildMemberCache = remember { mutableStateMapOf<String, GuildMember?>() }
@@ -211,12 +234,16 @@ fun ChatScreen(
     }
 
     val initialLastRead = remember(channelId) { repo.readState.value[channelId]?.lastMessageId }
+    // Where "New" goes: the first message from someone else after where the user stopped reading.
+    val firstUnreadId = remember(initialLastRead, messages, myId) {
+        initialLastRead?.let { read -> messages.firstOrNull { compareSnowflakes(it.id, read) > 0 && it.author.id != myId }?.id }
+    }
     val scrolledToUnread = remember { mutableStateOf(false) }
 
     LaunchedEffect(channelId, loading, messages.size, pendingText) {
         if (!loading && !scrolledToUnread.value && messages.isNotEmpty()) {
             scrolledToUnread.value = true
-            val headerOffset = 1 + (if (pendingText.isNotBlank()) 1 else 0)
+            val headerOffset = headerRows()
             if (initialLastRead != null) {
                 val lastReadIdx = messages.indexOfLast { compareSnowflakes(it.id, initialLastRead) <= 0 }
                 when {
@@ -273,7 +300,7 @@ fun ChatScreen(
         repo = repo,
         channelId = channelId,
         listState = listState,
-        headerCount = { 1 + (if (pendingText.isNotBlank()) 1 else 0) },
+        headerCount = { headerRows() },
         messages = { messages },
         ready = { !loading && scrolledToUnread.value },
     )
@@ -628,11 +655,120 @@ fun ChatScreen(
         return
     }
 
+    // A bot that doesn't answer a button or command gets a short note instead of silence.
+    LaunchedEffect(channelId) {
+        repo.interactionResults.collect { if (!it.success) sendError = "The bot didn't answer. Try again." }
+    }
+
+    fun pressComponent(msg: DiscordMessage, c: MessageComponent) {
+        when {
+            c is MessageComponent.Button && c.isLink -> runCatching { uriHandler.openUri(c.url!!) }
+            c is MessageComponent.Button && c.customId != null -> scope.launch {
+                repo.pressComponent(msg, 2, c.customId, null).onFailure { sendError = "Couldn't press it. " + friendlyError(it) }
+            }
+            c is MessageComponent.Select -> selectFor = msg to c
+        }
+    }
+
+    val pickingFrom = selectFor
+    if (pickingFrom != null) {
+        BackHandler { selectFor = null }
+        SelectMenuScreen(pickingFrom.second, componentSending) { values ->
+            componentSending = true
+            scope.launch {
+                repo.pressComponent(pickingFrom.first, pickingFrom.second.type, pickingFrom.second.customId, values)
+                    .onSuccess { selectFor = null }
+                    .onFailure { sendError = "Couldn't send it. " + friendlyError(it); selectFor = null }
+                componentSending = false
+            }
+        }
+        return
+    }
+
+    val formFor = commandForm
+    if (formFor != null) {
+        BackHandler { commandForm = null; commandError = null }
+        CommandFormScreen(formFor, commandRunning, commandError) { values ->
+            commandRunning = true; commandError = null
+            scope.launch {
+                repo.runCommand(formFor, values, guildId, channelId)
+                    .onSuccess { commandForm = null }
+                    .onFailure { commandError = it }
+                commandRunning = false
+            }
+        }
+        return
+    }
+
+    if (showMore) {
+        BackHandler { showMore = false }
+        ActionMenu(
+            title = "More",
+            actions = listOfNotNull(
+                if (abilities.canSend && onCreatePoll != null) MenuAction(R.drawable.check, "Poll") { showMore = false; onCreatePoll() } else null,
+                if (abilities.canSend) MenuAction(R.drawable.chat, "Command") {
+                    showMore = false
+                    inputText = "/"; pendingText = "/"
+                } else null,
+                onOpenSearch?.let { MenuAction(R.drawable.search, "Search") { showMore = false; it() } },
+                onOpenPins?.let { MenuAction(R.drawable.pin, "Pins") { showMore = false; it() } },
+                onOpenMembers?.let { MenuAction(R.drawable.people, "Members") { showMore = false; it() } },
+            ),
+            onDismiss = { showMore = false }
+        )
+        return
+    }
+
     val msgForOptions = selectedMsg
     if (msgForOptions != null) {
+        val savedNow = com.dihcord.app.FeaturePreferences.isSaved(context, msgForOptions.id)
         MessageOptionsDialog(
             msg = msgForOptions,
             isOwn = msgForOptions.author.id == myId,
+            pinned = msgForOptions.pinned,
+            saved = savedNow,
+            onPin = {
+                selectedMsg = null
+                scope.launch {
+                    repo.setPinned(channelId, msgForOptions.id, !msgForOptions.pinned)
+                        .onSuccess { android.widget.Toast.makeText(context, if (msgForOptions.pinned) "Unpinned" else "Pinned", android.widget.Toast.LENGTH_SHORT).show() }
+                        .onFailure {
+                            sendError = if (it is DiscordApiException && it.httpCode == 403) "You can't pin messages here." else "Couldn't pin. " + friendlyError(it)
+                        }
+                }
+            },
+            onForward = onForward?.let { f -> { selectedMsg = null; f(msgForOptions) } },
+            onSave = {
+                selectedMsg = null
+                val now = com.dihcord.app.FeaturePreferences.toggleSaved(
+                    context,
+                    SavedMessage(
+                        msgForOptions.id, channelId, guildId, channelName, msgForOptions.author.displayName,
+                        messagePreview(msgForOptions, myId, channelNames), System.currentTimeMillis()
+                    )
+                )
+                android.widget.Toast.makeText(context, if (now) "Saved" else "Removed from saved", android.widget.Toast.LENGTH_SHORT).show()
+            },
+            onReadAloud = {
+                selectedMsg = null
+                com.dihcord.app.ReadAloud.speak(context, msgForOptions.id, msgForOptions.author.displayName, messagePreview(msgForOptions, null, channelNames))
+            },
+            onTranslate = if (msgForOptions.content.isBlank()) null else ({
+                selectedMsg = null
+                translations[msgForOptions.id] = "Translating…"
+                scope.launch {
+                    translations[msgForOptions.id] = runCatching { com.dihcord.app.Translator.translate(messagePreview(msgForOptions, null, channelNames)) }.fold(
+                        onSuccess = { "Translated from ${it.fromLanguage}\n${it.text}" },
+                        onFailure = {
+                            when (it) {
+                                is com.dihcord.app.Translator.SameLanguageException -> "It's already in your language."
+                                is com.dihcord.app.Translator.UnknownLanguageException -> "Couldn't tell what language this is."
+                                else -> "Couldn't translate. Translation needs Wi-Fi the first time for each language."
+                            }
+                        }
+                    )
+                }
+            }),
             onReply = {
                 replyingTo = msgForOptions
                 selectedMsg = null
@@ -718,7 +854,7 @@ fun ChatScreen(
 
     // Index of the newest message in the list: title + optional draft banner come first.
     val lastMsgId = messages.lastOrNull()?.id
-    val lastMessageIndex = 1 + (if (pendingText.isNotBlank()) 1 else 0) + messages.size - 1
+    val lastMessageIndex = headerRows() + messages.size - 1
     val isAtBottom by remember(lastMsgId, lastMessageIndex) {
         derivedStateOf {
             val visible = listState.layoutInfo.visibleItemsInfo
@@ -794,7 +930,7 @@ fun ChatScreen(
             android.widget.Toast.makeText(context, "Original message isn't loaded", android.widget.Toast.LENGTH_SHORT).show()
             return
         }
-        val target = 1 + (if (pendingText.isNotBlank()) 1 else 0) + idx
+        val target = headerRows() + idx
         scope.launch {
             highlightedId = messageId
             listState.animateScrollToItem(target)
@@ -888,30 +1024,42 @@ fun ChatScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        if (onCall != null && guildId == null && repo != null) {
-                            val voiceStates by repo.voiceStates.collectAsState()
-                            val callActive = voiceStates.values.any { it.guildId == null && it.channelId == channelId }
-                            Text(
-                                if (callActive) "Join call ›" else "Call ›",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (callActive) androidx.compose.ui.graphics.Color(0xFF23A55A) else MaterialTheme.colorScheme.primary,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable { onCall() }
-                                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                            )
+                        // Shortcuts for this chat: search, pins, members, then threads (servers) or a call (DMs).
+                        val voiceStates by repo.voiceStates.collectAsState()
+                        val callActive = guildId == null && voiceStates.values.any { it.guildId == null && it.channelId == channelId }
+                        Row(
+                            Modifier.padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            @Composable
+                            fun Shortcut(icon: Int, label: String, tint: Color? = null, onClick: () -> Unit) {
+                                FilledTonalIconButton(onClick = onClick, modifier = Modifier.size(32.dp)) {
+                                    Icon(painterResource(icon), label, Modifier.size(16.dp), tint = tint ?: LocalContentColor.current)
+                                }
+                            }
+                            onOpenSearch?.let { Shortcut(R.drawable.search, "Search", onClick = it) }
+                            onOpenPins?.let { Shortcut(R.drawable.pin, "Pinned messages", onClick = it) }
+                            onOpenMembers?.let { Shortcut(R.drawable.people, "Members", onClick = it) }
+                            if (onOpenThreads != null && guildId != null) Shortcut(R.drawable.chat, "Threads", onClick = onOpenThreads)
+                            if (onCall != null && guildId == null) {
+                                Shortcut(R.drawable.call, if (callActive) "Join call" else "Call", tint = if (callActive) DiscordColors.Online else null, onClick = onCall)
+                            }
                         }
-                        if (onOpenThreads != null && guildId != null) {
-                            Text(
-                                "Threads ›",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable { onOpenThreads() }
-                                    .padding(horizontal = 8.dp, vertical = 3.dp)
-                            )
-                        }
+                    }
+                }
+
+                if (offlineShown) {
+                    item(key = "offline") {
+                        Text(
+                            if (channelId in fromCache) "Offline · showing saved messages" else "Offline · reconnecting",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = DiscordColors.MentionHighlight,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(DiscordColors.MentionHighlight.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                                .padding(vertical = 3.dp)
+                        )
                     }
                 }
 
@@ -976,6 +1124,7 @@ fun ChatScreen(
 
                     else -> items(messages.size, key = { messages[it].id }) { index ->
                         val msg = messages[index]
+                        if (msg.id == firstUnreadId) NewMessagesLine()
                         val prevMsg = if (index > 0) messages[index - 1] else null
                         fun String.toEpochMillis(): Long = runCatching {
                             java.time.OffsetDateTime.parse(this).toInstant().toEpochMilli()
@@ -1033,7 +1182,10 @@ fun ChatScreen(
                                 onNavigateToThread?.invoke(threadId, tname)
                             } else null,
                             onJumpToReply = { refId -> jumpToMessage(refId) },
-                            highlighted = msg.id == highlightedId
+                            highlighted = msg.id == highlightedId,
+                            onComponent = { c -> pressComponent(msg, c) },
+                            translation = translations[msg.id],
+                            blocked = relationships[msg.author.id]?.isBlocked == true
                         )
                     }
                 }
@@ -1140,6 +1292,36 @@ fun ChatScreen(
                                     mentionSuggestions = emptyList()
                                 }
                             }
+                            val typingCommand = inputText.startsWith("/") && !inputText.contains(' ')
+                            if (typingCommand) {
+                                LaunchedEffect(Unit) {
+                                    if (commands == null) commands = repo.commands(guildId, channelId).getOrDefault(emptyList())
+                                }
+                                val list = commands
+                                if (list == null) LoadingIndicator() else CommandSuggestions(list, inputText) { c ->
+                                    inputText = ""; pendingText = ""
+                                    commandForm = c
+                                }
+                            } else if (quickRepliesOn && inputText.isEmpty() && imageDraft == null) {
+                                // One tap sends: "ok", "on my way"...
+                                FlowRow(
+                                    Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    com.dihcord.app.FeaturePreferences.DEFAULT_QUICK_REPLIES.forEach { reply ->
+                                        Text(
+                                            reply,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(MaterialTheme.colorScheme.surfaceContainer)
+                                                .clickable(enabled = slowRemaining <= 0) { sendTyped(reply) }
+                                                .padding(horizontal = 9.dp, vertical = 5.dp)
+                                        )
+                                    }
+                                }
+                            }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -1148,6 +1330,10 @@ fun ChatScreen(
                                 CompactTextField(
                                     value = inputText,
                                     onValueChange = { newValue ->
+                                        // Others see "typing…" (not for slash commands, which aren't messages).
+                                        if (newValue.length > inputText.length && newValue.isNotBlank() && !newValue.startsWith("/")) {
+                                            repo.typingInChannel(channelId)
+                                        }
                                         inputText = newValue
                                         pendingText = newValue
                                     },
@@ -1252,6 +1438,16 @@ fun ChatScreen(
                                         modifier = Modifier.size(36.dp),
                                     ) {
                                         Text("GIF", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                    FilledTonalIconButton(
+                                        onClick = { showMore = true },
+                                        modifier = Modifier.size(36.dp),
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.add),
+                                            contentDescription = "More: poll, command, search",
+                                            modifier = Modifier.size(20.dp)
+                                        )
                                     }
                                 }
                             } else {
@@ -1455,6 +1651,13 @@ private val QuickReactions = listOf("❤️", "😂", "👍", "😮")
 internal fun MessageOptionsDialog(
     msg: DiscordMessage,
     isOwn: Boolean,
+    pinned: Boolean = false,
+    saved: Boolean = false,
+    onPin: (() -> Unit)? = null,
+    onForward: (() -> Unit)? = null,
+    onSave: (() -> Unit)? = null,
+    onReadAloud: (() -> Unit)? = null,
+    onTranslate: (() -> Unit)? = null,
     onReply: () -> Unit,
     onCopy: () -> Unit,
     onEdit: (() -> Unit)?,
@@ -1526,6 +1729,11 @@ internal fun MessageOptionsDialog(
             onCreateThread?.let { MenuAction(R.drawable.add, "Thread", onClick = it) },
             MenuAction(R.drawable.copy, "Copy", onClick = onCopy).takeIf { msg.content.isNotBlank() },
             onEdit?.let { MenuAction(R.drawable.edit, "Edit", onClick = it) }?.takeIf { isOwn },
+            onForward?.let { MenuAction(R.drawable.forward, "Forward", onClick = it) },
+            onPin?.let { MenuAction(if (pinned) R.drawable.unpin else R.drawable.pin, if (pinned) "Unpin" else "Pin", onClick = it) },
+            onSave?.let { MenuAction(if (saved) R.drawable.bookmark else R.drawable.bookmark_border, if (saved) "Saved" else "Save", onClick = it) },
+            onReadAloud?.let { MenuAction(R.drawable.volume, "Read", onClick = it) },
+            onTranslate?.let { MenuAction(R.drawable.translate, "Translate", onClick = it) },
             MenuAction(R.drawable.delete, "Delete", destructive = true) { confirmDelete = true }.takeIf { isOwn },
         ),
         onDismiss = onDismiss
@@ -1555,8 +1763,30 @@ internal fun MessageBubble(
     onAvatarClick: (userId: String) -> Unit = {},
     onOpenThread: ((threadId: String) -> Unit)? = null,
     onJumpToReply: ((messageId: String) -> Unit)? = null,
-    highlighted: Boolean = false
+    highlighted: Boolean = false,
+    /** Bot buttons and menus; without it they aren't drawn. */
+    onComponent: ((MessageComponent) -> Unit)? = null,
+    /** "Translated from X\ntext" under the message, when the user asked for it. */
+    translation: String? = null,
+    /** From someone the user blocked: folded away until tapped, like Discord. */
+    blocked: Boolean = false,
 ) {
+    if (blocked) {
+        var reveal by remember(msg.id) { mutableStateOf(false) }
+        if (!reveal) {
+            Text(
+                "Blocked message · tap to show",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { reveal = true }
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+            )
+            return
+        }
+    }
     val context = LocalContext.current
     val repo = context.discordApp.repository
 
@@ -1981,6 +2211,22 @@ internal fun MessageBubble(
                     }
 
                 msg.poll?.let { poll -> PollCard(poll, onPollVote) }
+
+                if (onComponent != null && msg.components.isNotEmpty()) MessageComponents(msg.components, onComponent)
+
+                if (translation != null) {
+                    val (head, body) = translation.split("\n", limit = 2).let { it[0] to it.getOrNull(1) }
+                    Column(
+                        Modifier
+                            .padding(top = 3.dp)
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                    ) {
+                        Text(head, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        if (body != null) Text(body, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
 
                 if (msg.reactions.isNotEmpty()) {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -2930,5 +3176,19 @@ private fun pollTimeLeft(ms: Long): String {
         mins < 60 -> "${mins}m left"
         mins < 48 * 60 -> "${mins / 60}h left"
         else -> "${mins / (24 * 60)}d left"
+    }
+}
+
+
+/** The red "New" line above the first message the user hasn't read, as in Discord. */
+@Composable
+private fun NewMessagesLine() {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Box(Modifier.weight(1f).height(1.dp).background(DiscordColors.Mention))
+        Text("NEW", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = DiscordColors.Mention)
     }
 }

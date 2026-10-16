@@ -112,4 +112,8 @@ dependencies {
     implementation libs.wear.protolayout
     implementation libs.wear.complications.source
     implementation libs.concurrent.futures
+    implementation libs.wear.remote.interactions // open links on the paired phone
+    implementation libs.wear.ongoing // a voice call shows on the watch face
+    implementation libs.mlkit.translate // on-device message translation
+    implementation libs.mlkit.language.id
 }

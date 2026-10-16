@@ -46,12 +46,17 @@ data class DmRow(
     val mentionCount: Int,
     val unread: Boolean,
     val hidden: Boolean,
+    val muted: Boolean = false,
+    val isGroup: Boolean = false,
 )
 
 @Composable
 fun DmsScreen(
     onNavigateToChatScreen: (channelId: String, channelName: String) -> Unit,
-    onNewDm: () -> Unit = {}
+    onNewDm: () -> Unit = {},
+    onFriends: () -> Unit = {},
+    onAddPeople: (channelId: String) -> Unit = {},
+    onMembers: (channelId: String, name: String) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     val repo = context.discordApp.repository ?: return
@@ -66,6 +71,10 @@ fun DmsScreen(
     var hiddenIds by remember { mutableStateOf(SetupPreferences.getHiddenDms(context)) }
     var showHidden by remember { mutableStateOf(false) }
     var menuDm by remember { mutableStateOf<DmRow?>(null) }
+    var muteMenu by remember { mutableStateOf(false) }
+    var mutedUntil by remember { mutableStateOf(com.dihcord.app.FeaturePreferences.mutedUntil(context)) }
+    val relationships by repo.relationships.collectAsState()
+    val requests = relationships.values.count { it.isIncoming }
     // Held here, above the menu branch, so closing the menu returns to the same spot in the list.
     val listState = rememberTransformingLazyColumnState()
 
@@ -84,7 +93,7 @@ fun DmsScreen(
         repo.loadLastMessages(sortedDms.take(12).map { it.id })
     }
 
-    val rows = remember(sortedDms, presences, readState, lastMessages, hiddenIds, myId) {
+    val rows = remember(sortedDms, presences, readState, lastMessages, hiddenIds, myId, mutedUntil) {
         sortedDms.map { dm ->
             val oneToOne = dm.recipients.size == 1
             val recipient = dm.recipients.firstOrNull()
@@ -110,20 +119,43 @@ fun DmsScreen(
                 mentionCount = if (showBadges) rs?.mentionCount ?: 0 else 0,
                 unread = showBadges && dm.lastMessageId != null && rs != null &&
                         compareSnowflakes(dm.lastMessageId, rs.lastMessageId) > 0,
-                hidden = dm.id in hiddenIds
+                hidden = dm.id in hiddenIds,
+                muted = dm.id in mutedUntil || dm.id in SetupPreferences.getMutedChannels(context),
+                isGroup = !oneToOne,
             )
         }
     }
 
     // Back closes the menu instead of leaving the screen.
-    BackHandler(enabled = menuDm != null) { menuDm = null }
+    BackHandler(enabled = menuDm != null) { if (muteMenu) muteMenu = false else menuDm = null }
 
     val activeDm = menuDm
+    if (activeDm != null && muteMenu) {
+        fun mute(ms: Long?) {
+            com.dihcord.app.FeaturePreferences.muteChat(context, activeDm.channelId, ms)
+            mutedUntil = com.dihcord.app.FeaturePreferences.mutedUntil(context)
+            muteMenu = false
+            menuDm = null
+        }
+        ActionMenu(
+            title = "Mute ${activeDm.name}",
+            actions = listOfNotNull(
+                MenuAction(R.drawable.mute, "1 hour") { mute(3_600_000L) },
+                MenuAction(R.drawable.mute, "8 hours") { mute(8 * 3_600_000L) },
+                MenuAction(R.drawable.mute, "24 hours") { mute(24 * 3_600_000L) },
+                MenuAction(R.drawable.mute, "Always") { mute(null) },
+                if (activeDm.muted) MenuAction(R.drawable.bell, "Unmute") { mute(0L) } else null,
+            ),
+            onDismiss = { muteMenu = false }
+        )
+        return
+    }
     if (activeDm != null) {
         ActionMenu(
             title = activeDm.name,
             header = { UserAvatar(activeDm.name, activeDm.avatarUrl, 36.dp) },
-            actions = listOf(
+            actions = listOfNotNull(
+                MenuAction(if (activeDm.muted) R.drawable.bell else R.drawable.mute, if (activeDm.muted) "Muted" else "Mute") { muteMenu = true },
                 MenuAction(
                     if (activeDm.hidden) R.drawable.unhide else R.drawable.hide,
                     if (activeDm.hidden) "Unhide" else "Hide"
@@ -131,7 +163,9 @@ fun DmsScreen(
                     SetupPreferences.toggleHiddenDm(context, activeDm.channelId)
                     hiddenIds = SetupPreferences.getHiddenDms(context)
                     menuDm = null
-                }
+                },
+                if (activeDm.isGroup) MenuAction(R.drawable.person_add, "Add") { menuDm = null; onAddPeople(activeDm.channelId) } else null,
+                if (activeDm.isGroup) MenuAction(R.drawable.people, "Members") { menuDm = null; onMembers(activeDm.channelId, activeDm.name) } else null,
             ),
             onDismiss = { menuDm = null }
         )
@@ -147,7 +181,9 @@ fun DmsScreen(
         onLongPress = { menuDm = it },
         onToggleHidden = { showHidden = !showHidden },
         onNewDm = onNewDm,
-        state = listState
+        state = listState,
+        friendRequests = requests,
+        onFriends = onFriends,
     )
 }
 
@@ -163,6 +199,8 @@ internal fun DmsContent(
     onToggleHidden: () -> Unit,
     onNewDm: () -> Unit,
     state: androidx.wear.compose.foundation.lazy.TransformingLazyColumnState = rememberTransformingLazyColumnState(),
+    friendRequests: Int = 0,
+    onFriends: () -> Unit = {},
 ) {
     val spec = rememberTransformationSpec()
     ScreenScaffold(
@@ -177,6 +215,18 @@ internal fun DmsContent(
     ) { padding ->
         TransformingLazyColumn(state = state, contentPadding = padding) {
             item { ScreenTitle("Direct Messages") }
+            item {
+                // Friends and requests; the badge counts requests waiting for an answer.
+                Box(Modifier.padding(bottom = 2.dp)) {
+                    CompactButton(
+                        onClick = onFriends,
+                        icon = { Icon(painterResource(R.drawable.people), null, Modifier.size(16.dp)) },
+                        label = { Text("Friends") },
+                        colors = ButtonDefaults.filledTonalButtonColors()
+                    )
+                    CountBadge(friendRequests, Modifier.align(Alignment.TopEnd).offset(x = 4.dp, y = (-4).dp))
+                }
+            }
             when {
                 loading && rows.isEmpty() -> items(3) { DmSkeletonRow(Modifier.transformedHeight(this, spec)) }
                 rows.isEmpty() -> item { EmptyState(R.drawable.chat, "No DMs yet", "Start one with New.") }
@@ -273,6 +323,13 @@ private fun DmRowContent(row: DmRow) {
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+                if (row.muted && !row.hidden) {
+                    Icon(
+                        painterResource(R.drawable.mute), "Muted",
+                        Modifier.padding(start = 3.dp).size(11.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 if (row.timeMillis != null && !row.hidden) {
                     Text(
                         shortAgo(row.timeMillis),

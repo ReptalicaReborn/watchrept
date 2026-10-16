@@ -193,7 +193,9 @@ fun messagePreview(msg: DiscordMessage, myId: String?, channelNames: Map<String,
         .replace(ChannelMentionRegex) { "#" + (channelNames[it.groupValues[1]] ?: "channel") }
         .replace(RoleMentionRegex, "@role")
         .replace(CustomEmojiRegex) { ":${it.groupValues[1]}:" }
-        .replace(TimestampRegex, "a time")
+        .replace(TimestampRegex) { m ->
+            m.groupValues[1].toLongOrNull()?.let { com.dihcord.app.api.DiscordTimestamp.format(it, m.groupValues[2].removePrefix(":").firstOrNull()) } ?: "a time"
+        }
         .replace(LinkRegex) { it.groupValues[1] }
         .replace(MarkdownMarks, "")
         .lines()

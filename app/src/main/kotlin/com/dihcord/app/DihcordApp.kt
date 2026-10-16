@@ -60,6 +60,10 @@ class DihcordApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         Perf.init(this)
+        // Lite mode on Auto follows battery saver.
+        androidx.core.content.ContextCompat.registerReceiver(this, object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: android.content.Context, intent: android.content.Intent) = Perf.refresh(context)
+        }, android.content.IntentFilter(android.os.PowerManager.ACTION_POWER_SAVE_MODE_CHANGED), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
         AppTheme.init(this)
         val screenFilter = android.content.IntentFilter().apply {
             addAction(android.content.Intent.ACTION_SCREEN_OFF)

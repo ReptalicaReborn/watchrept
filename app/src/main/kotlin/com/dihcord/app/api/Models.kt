@@ -322,7 +322,9 @@ data class GuildMember(
     val userId: String,
     val roleIds: List<String>,
     val avatarHash: String? = null,
-    val avatarDecorationSkuId: String? = null
+    val avatarDecorationSkuId: String? = null,
+    /** Their nickname in this server, if they set one. */
+    val nick: String? = null,
 ) {
     fun avatarUrl(guildId: String, size: Int = 64): String? =
         if (avatarHash != null)
@@ -349,6 +351,7 @@ data class GuildMember(
             return GuildMember(
                 userId = userId,
                 roleIds = roles,
+                nick = o.optString("nick").takeIf { !o.isNull("nick") && it.isNotEmpty() && it != "null" },
                 avatarHash = avatarHash,
                 avatarDecorationSkuId = decorSkuId
             )
@@ -1059,6 +1062,7 @@ data class DiscordMessage(
     /** The bot application behind the message, needed to press its buttons. */
     val applicationId: String? = null,
     val flags: Int = 0,
+    val pinned: Boolean = false,
 ) {
     fun pingFor(userId: String, memberRoleIds: List<String> = emptyList()): Boolean =
         mentionEveryone ||
@@ -1196,6 +1200,7 @@ data class DiscordMessage(
                     ?: o.optJSONObject("interaction_metadata")?.let { if (it.isNull("application_id")) null else it.optString("application_id") }
                     ?: o.optJSONObject("author")?.takeIf { it.optBoolean("bot") }?.optString("id"),
                 flags = o.optInt("flags", 0),
+                pinned = o.optBoolean("pinned", false),
             )
         }
 

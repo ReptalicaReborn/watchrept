@@ -151,6 +151,15 @@ object VoiceManager {
             }
             // Starting a DM/group call: the call exists now, so ring everyone else.
             if (ring) launch { repository.ringCall(channelId).onFailure { Log.w(TAG, "ring failed", it) } }
+            // Soundboard sounds played in this channel are heard here too (not while deafened).
+            launch {
+                repository.soundboardPlays.collect { e ->
+                    val c = _call.value ?: return@collect
+                    if (e.channelId == c.channelId && !c.deafened && e.userId != myId) {
+                        SoundboardPlayer.play("https://cdn.discordapp.com/soundboard-sounds/${e.soundId}", e.volume)
+                    }
+                }
+            }
 
             // Speaking rings: anyone heard in the last 400 ms.
             while (isActive) {
@@ -250,6 +259,7 @@ object VoiceManager {
 
     /** Hangs up (if in a call) and clears everything. */
     fun leave() {
+        SoundboardPlayer.stop()
         val call = _call.value
         if (call != null && call.status != VoiceCall.Status.ENDED) {
             repo?.updateVoiceState(call.guildId, null, selfMute = false, selfDeaf = false)
@@ -265,6 +275,7 @@ object VoiceManager {
 
     private fun end(reason: String) {
         Log.i(TAG, "call ended: $reason")
+        SoundboardPlayer.stop()
         val call = _call.value
         if (call != null) repo?.updateVoiceState(call.guildId, null, selfMute = false, selfDeaf = false)
         teardown()

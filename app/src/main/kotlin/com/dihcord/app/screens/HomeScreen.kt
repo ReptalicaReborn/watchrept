@@ -81,7 +81,8 @@ fun HomeScreen(
     onNavigateToWelcome: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onNavigateToChat: (channelId: String, channelName: String, guildId: String?, jumpTo: String?) -> Unit,
-    onOpenVoice: (call: VoiceCall) -> Unit = {}
+    onOpenVoice: (call: VoiceCall) -> Unit = {},
+    onOpenSaved: () -> Unit = {},
 ) {
     val voiceCall by com.dihcord.app.voice.VoiceManager.call.collectAsState()
     val context = LocalContext.current
@@ -197,6 +198,29 @@ fun HomeScreen(
         com.dihcord.app.Notifier.clear(context, channelId)
     }
 
+    val unreadGuilds by repo.unreadGuilds.collectAsState()
+    var confirmMarkAll by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    if (confirmMarkAll) {
+        androidx.activity.compose.BackHandler { confirmMarkAll = false }
+        ConfirmScreen(
+            iconRes = R.drawable.check,
+            title = "Mark everything read?",
+            text = "Every server, channel and DM, here and on Discord.",
+            confirmLabel = "Mark read",
+            onConfirm = {
+                confirmMarkAll = false
+                scope.launch {
+                    repo.markAllRead().onFailure {
+                        android.widget.Toast.makeText(context, "Couldn't mark everything read. " + friendlyError(it), android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onCancel = { confirmMarkAll = false }
+        )
+        return
+    }
+
     HomeContent(
         voiceCall = voiceCall?.takeIf { com.dihcord.app.voice.VoiceManager.isInCall },
         recentDms = recentDms,
@@ -209,7 +233,9 @@ fun HomeScreen(
         onOpenServers = onNavigateToServers,
         onOpenMention = { onNavigateToChat(it.channelId, it.channelName, it.guildId, it.jumpTo) },
         onDismissMention = { dismiss(it.channelId) },
-        onOpenSettings = onNavigateToSettings
+        onOpenSettings = onNavigateToSettings,
+        onOpenSaved = onOpenSaved,
+        onMarkAllRead = if (mentions.isNotEmpty() || unreadGuilds.isNotEmpty() || recentDms.any { it.unread }) ({ confirmMarkAll = true }) else null,
     )
 }
 
@@ -228,6 +254,9 @@ internal fun HomeContent(
     onOpenMention: (HomeMention) -> Unit,
     onDismissMention: (HomeMention) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenSaved: () -> Unit = {},
+    /** Shown when there's something unread. */
+    onMarkAllRead: (() -> Unit)? = null,
 ) {
     val state = rememberTransformingLazyColumnState()
     val spec = rememberTransformationSpec()
@@ -301,9 +330,20 @@ internal fun HomeContent(
             }
 
             item {
-                Box(Modifier.fillMaxWidth().padding(top = 4.dp), contentAlignment = Alignment.Center) {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                ) {
+                    FilledTonalIconButton(onClick = onOpenSaved, modifier = Modifier.size(40.dp)) {
+                        Icon(painterResource(R.drawable.bookmark_border), contentDescription = "Saved messages", modifier = Modifier.size(20.dp))
+                    }
                     FilledTonalIconButton(onClick = onOpenSettings, modifier = Modifier.size(40.dp)) {
                         Icon(painterResource(R.drawable.settings), contentDescription = "Settings", modifier = Modifier.size(20.dp))
+                    }
+                    if (onMarkAllRead != null) {
+                        FilledTonalIconButton(onClick = onMarkAllRead, modifier = Modifier.size(40.dp)) {
+                            Icon(painterResource(R.drawable.check), contentDescription = "Mark everything read", modifier = Modifier.size(20.dp))
+                        }
                     }
                 }
             }
