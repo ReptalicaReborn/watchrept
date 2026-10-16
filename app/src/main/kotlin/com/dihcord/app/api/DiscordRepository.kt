@@ -938,15 +938,20 @@ class DiscordRepository(
         }
         return rest.ackBulk(reads).onFailure { error ->
             // Discord didn't take it: show them unread again, so trying again sends them again.
+            val rolledBack = HashSet<String>()
             _readState.update { current ->
                 val out = current.toMutableMap()
+                rolledBack.clear()
                 marked.forEach { (channelId, set) ->
                     if (out[channelId] != set) return@forEach // Changed since (read in the chat, a new message).
                     before[channelId]?.let { out[channelId] = it } ?: out.remove(channelId)
+                    rolledBack += channelId
                 }
                 out
             }
-            _pings.update { list -> (list + pingsBefore).distinctBy { it.message.id } }
+            // Pings come back only where the unread state did; a channel read elsewhere meanwhile stays clear.
+            val restore = pingsBefore.filter { it.message.channelId in rolledBack }
+            _pings.update { list -> (list + restore).distinctBy { it.message.id } }
             handleApiError(error)
         }
     }
@@ -997,6 +1002,10 @@ class DiscordRepository(
         // same range again may get an empty answer, so keep what we have; updates keep streaming in.
         if (changed || guildId !in memberListStore.lists.value) gateway.subscribeMemberList(guildId, channelId)
     }
+
+    private val _sessions = MutableStateFlow(0)
+    /** Goes up on each READY: a new gateway session, whose subscriptions (op 14) must be asked for again. */
+    val sessions: StateFlow<Int> = _sessions.asStateFlow()
 
     /** Which channel each server's member list subscription is for, this gateway session. */
     private val memberListChannel = java.util.concurrent.ConcurrentHashMap<String, String>()
@@ -1351,6 +1360,7 @@ class DiscordRepository(
                         _notifySettings.value = event.notifySettings
                         relationshipStore.set(event.relationships)
                         memberListChannel.clear() // A new session has no subscriptions yet.
+                        _sessions.update { it + 1 }
                         unread.onReady(event.user.id, event.guilds, event.notifySettings, event.readState.ifEmpty { _readState.value })
                         _currentUser.value = event.user
                         currentUserId = event.user.id

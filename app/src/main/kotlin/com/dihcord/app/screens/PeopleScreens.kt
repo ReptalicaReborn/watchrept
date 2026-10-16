@@ -41,7 +41,9 @@ fun MembersScreen(guildId: String?, channelId: String, title: String, onOpenProf
     val dms by repo.dmChannels.collectAsState()
     val me = repo.currentUser.collectAsState().value
     var roleNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    LaunchedEffect(guildId, channelId) {
+    // A new gateway session (after a long disconnect) has no subscription: ask again.
+    val session by repo.sessions.collectAsState()
+    LaunchedEffect(guildId, channelId, session) {
         if (guildId != null) {
             repo.subscribeMemberList(guildId, channelId)
             roleNames = repo.getGuildRoles(guildId).associate { it.id to it.name }

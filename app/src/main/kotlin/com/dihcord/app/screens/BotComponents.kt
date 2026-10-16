@@ -6,6 +6,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -82,13 +89,10 @@ private fun ComponentBlock(c: MessageComponent, onClick: (MessageComponent) -> U
             Text("▾", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
         }
 
-        is MessageComponent.Text -> Text(
-            stripMarkdownLight(c.content),
-            style = MaterialTheme.typography.bodySmall
-        )
+        is MessageComponent.Text -> BotText(c.content)
 
         is MessageComponent.Section -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Column(Modifier.weight(1f)) { c.texts.forEach { Text(stripMarkdownLight(it), style = MaterialTheme.typography.bodySmall) } }
+            Column(Modifier.weight(1f)) { c.texts.forEach { BotText(it) } }
             c.accessory?.let { ComponentBlock(it, onClick) }
         }
 
@@ -105,6 +109,28 @@ private fun ComponentBlock(c: MessageComponent, onClick: (MessageComponent) -> U
             ) { c.children.forEach { ComponentBlock(it, onClick) } }
         }
     }
+}
+
+/** A bot's text block. Spoilers (||like this||) stay covered until tapped, as in the chat. */
+@Composable
+private fun BotText(raw: String) {
+    val text = stripMarkdownLight(raw)
+    val parts = remember(text) { text.split("||") } // Odd positions are inside a spoiler.
+    val hasSpoiler = parts.size >= 3
+    var revealed by remember(text) { mutableStateOf(false) }
+    val cover = MaterialTheme.colorScheme.onSurfaceVariant
+    Text(
+        buildAnnotatedString {
+            parts.forEachIndexed { i, part ->
+                // A lone "||" without its pair is just text.
+                val spoiler = i % 2 == 1 && i < parts.size - 1
+                if (spoiler && !revealed) withStyle(SpanStyle(color = cover, background = cover)) { append(part) }
+                else append(if (i % 2 == 1 && !spoiler) "||$part" else part)
+            }
+        },
+        style = MaterialTheme.typography.bodySmall,
+        modifier = if (hasSpoiler && !revealed) Modifier.clickable { revealed = true } else Modifier
+    )
 }
 
 /** Bot text blocks use markdown; on the watch the marks are dropped and headings kept as plain lines. */
