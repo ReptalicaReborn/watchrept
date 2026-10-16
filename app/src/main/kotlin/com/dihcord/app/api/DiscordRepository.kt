@@ -500,6 +500,8 @@ class DiscordRepository(
         )
     }
     fun selectChannel(channelId: String, guildId: String?) {
+        // This also subscribes to the channel's member list (op 14).
+        if (guildId != null) noteMemberListChannel(guildId, channelId)
         gateway.selectChannel(channelId, guildId)
     }
 
@@ -990,8 +992,20 @@ class DiscordRepository(
 
     /** Asks Discord to stream [guildId]'s member list (as seen from [channelId]) into [memberLists]. */
     fun subscribeMemberList(guildId: String, channelId: String) {
-        memberListStore.reset(guildId)
-        gateway.subscribeMemberList(guildId, channelId)
+        val changed = noteMemberListChannel(guildId, channelId)
+        // Already subscribed to this channel (opening its chat does it) and the list is here: asking for the
+        // same range again may get an empty answer, so keep what we have; updates keep streaming in.
+        if (changed || guildId !in memberListStore.lists.value) gateway.subscribeMemberList(guildId, channelId)
+    }
+
+    /** Which channel each server's member list subscription is for, this gateway session. */
+    private val memberListChannel = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Records [channelId] as [guildId]'s subscribed list; a different channel drops the old list. True if it changed. */
+    private fun noteMemberListChannel(guildId: String, channelId: String): Boolean {
+        val old = memberListChannel.put(guildId, channelId)
+        if (old != channelId) memberListStore.reset(guildId)
+        return old != channelId
     }
 
     // ---- Sending ----
@@ -1336,6 +1350,7 @@ class DiscordRepository(
                         }
                         _notifySettings.value = event.notifySettings
                         relationshipStore.set(event.relationships)
+                        memberListChannel.clear() // A new session has no subscriptions yet.
                         unread.onReady(event.user.id, event.guilds, event.notifySettings, event.readState.ifEmpty { _readState.value })
                         _currentUser.value = event.user
                         currentUserId = event.user.id

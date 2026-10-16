@@ -104,6 +104,7 @@ fun HomeScreen(
     val channelNames by repo.channelNames.collectAsState()
     val channelGuilds by repo.channelGuilds.collectAsState()
     val myId = repo.currentUser.collectAsState().value?.id
+    val relationships by repo.relationships.collectAsState()
     val hiddenDms = remember { SetupPreferences.getHiddenDms(context) }
 
     val dmIds = remember(dmChannels) { dmChannels.map { it.id }.toSet() }
@@ -146,8 +147,11 @@ fun HomeScreen(
         uncachedMentionIds.forEach { repo.ensureChannelCached(it) }
     }
 
-    val mentions = remember(readState, pings, dmIds, channelNames, channelGuilds, guilds, heldMessages, lastMessages, myId) {
+    val mentions = remember(readState, pings, dmIds, channelNames, channelGuilds, guilds, heldMessages, lastMessages, myId, relationships) {
         fun guildName(id: String?) = id?.let { gid -> guilds.firstOrNull { it.id == gid }?.name }
+        // Like the chat, which folds them: text from someone you blocked isn't shown here either.
+        fun preview(m: com.dihcord.app.api.DiscordMessage) =
+            if (relationships[m.author.id]?.isBlocked == true) "Blocked message" else messagePreview(m, myId, channelNames)
         // The read-state counts (known from startup), with the message itself when we have it: a live ping,
         // a held message that mentions us, or a DM's newest message.
         val fromReadState = readState.entries
@@ -166,7 +170,7 @@ fun HomeScreen(
                     guildName = guildName(guildId),
                     author = msg?.author?.displayName,
                     avatarUrl = msg?.author?.avatarUrl(64),
-                    preview = msg?.let { messagePreview(it, myId, channelNames) },
+                    preview = msg?.let { preview(it) },
                     timeMillis = snowflakeMillis(msg?.id),
                     count = state.mentionCount,
                     jumpTo = pings.firstOrNull { it.message.channelId == channelId }?.message?.id ?: JUMP_TO_FIRST_MENTION
@@ -184,7 +188,7 @@ fun HomeScreen(
                     guildName = p.guildName,
                     author = p.message.author.displayName,
                     avatarUrl = p.message.author.avatarUrl(64),
-                    preview = messagePreview(p.message, myId, channelNames),
+                    preview = preview(p.message),
                     timeMillis = snowflakeMillis(p.message.id),
                     count = 1,
                     jumpTo = p.message.id
