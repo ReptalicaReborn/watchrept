@@ -64,6 +64,9 @@ android {
     }
     buildTypes {
         release {
+            // Watches are ARM (the voice library is built for ARM only too). Leaving out the x86 copies of the
+            // translation library saves ~35 MB; debug builds keep them for the emulator.
+            ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
             // Without a release keystore, sign with the debug key so the optimized (R8, non-debuggable)
             // build is still installable. Debug builds are several times slower in Compose.
             signingConfig signingConfigs.findByName("release") ?: signingConfigs.debug

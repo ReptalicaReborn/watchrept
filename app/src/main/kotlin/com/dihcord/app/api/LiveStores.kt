@@ -21,6 +21,8 @@ class UnreadTracker {
 
     private val guilds = java.util.concurrent.ConcurrentHashMap<String, GuildInfo>()
     private val lastIds = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /** Which server each channel belongs to, so a message only re-checks its own server. */
+    private val channelGuild = java.util.concurrent.ConcurrentHashMap<String, String>()
     @Volatile private var myId: String? = null
     @Volatile private var settings: Map<String, NotifySettings> = emptyMap()
 
@@ -33,7 +35,10 @@ class UnreadTracker {
         settings = notify
         ready.forEach { g ->
             guilds[g.id] = GuildInfo(g.ownerId, g.roles, g.myRoleIds, g.channels.associateBy { it.id })
-            g.channels.forEach { ch -> ch.lastMessageId?.let { lastIds[ch.id] = it } }
+            g.channels.forEach { ch ->
+                channelGuild[ch.id] = g.id
+                ch.lastMessageId?.let { lastIds[ch.id] = it }
+            }
         }
         recompute(readState)
     }
@@ -47,7 +52,7 @@ class UnreadTracker {
     fun onMessage(channelId: String, messageId: String, readState: Map<String, ChannelUnreadState>) {
         val known = lastIds[channelId]
         if (known == null || compareSnowflakes(messageId, known) > 0) lastIds[channelId] = messageId
-        if (guilds.values.any { channelId in it.channels }) recompute(readState)
+        channelGuild[channelId]?.let { recomputeGuild(it, readState) }
     }
 
     /** Fresher channel data (e.g. after the channel list loaded, or a CHANNEL_UPDATE). */
@@ -55,11 +60,12 @@ class UnreadTracker {
         val info = guilds[guildId] ?: GuildInfo(null, emptyList(), null, emptyMap())
         guilds[guildId] = info.copy(channels = info.channels + channels.associateBy { it.id })
         channels.forEach { ch ->
+            channelGuild[ch.id] = guildId
             val id = ch.lastMessageId ?: return@forEach
             val known = lastIds[ch.id]
             if (known == null || compareSnowflakes(id, known) > 0) lastIds[ch.id] = id
         }
-        recompute(readState)
+        recomputeGuild(guildId, readState)
     }
 
     fun onRoles(guildId: String, myRoleIds: List<String>, readState: Map<String, ChannelUnreadState>) {
@@ -73,24 +79,39 @@ class UnreadTracker {
     }
 
     fun recompute(readState: Map<String, ChannelUnreadState>) {
-        _unreadGuilds.value = guilds.keys.filterTo(HashSet()) { unreadChannels(it, readState).isNotEmpty() }
+        _unreadGuilds.value = guilds.keys.filterTo(HashSet()) { hasUnread(it, readState) }
     }
 
+    /** Re-checks one server only (a message there, or its channels changed). */
+    private fun recomputeGuild(guildId: String, readState: Map<String, ChannelUnreadState>) {
+        val now = hasUnread(guildId, readState)
+        if ((guildId in _unreadGuilds.value) != now) {
+            _unreadGuilds.update { if (now) it + guildId else it - guildId }
+        }
+    }
+
+    private fun hasUnread(guildId: String, readState: Map<String, ChannelUnreadState>) = unreadChannels(guildId, readState, stopAtFirst = true).isNotEmpty()
+
     /** (channel id, newest message id) for each unread channel of [guildId]. */
-    fun unreadChannels(guildId: String, readState: Map<String, ChannelUnreadState>): List<Pair<String, String>> {
+    fun unreadChannels(guildId: String, readState: Map<String, ChannelUnreadState>, stopAtFirst: Boolean = false): List<Pair<String, String>> {
         val info = guilds[guildId] ?: return emptyList()
         val guildSettings = settings[guildId]
         if (guildSettings?.mutedNow() == true) return emptyList()
-        return info.channels.values.mapNotNull { ch ->
-            if (!ch.isText) return@mapNotNull null
-            val last = lastIds[ch.id] ?: return@mapNotNull null
-            val read = readState[ch.id] ?: return@mapNotNull null
-            if (compareSnowflakes(last, read.lastMessageId) <= 0) return@mapNotNull null
-            if (guildSettings?.channels?.get(ch.id)?.mutedNow() == true) return@mapNotNull null
-            if (ch.parentId != null && guildSettings?.channels?.get(ch.parentId)?.mutedNow() == true) return@mapNotNull null
-            if (!canView(guildId, info, ch)) return@mapNotNull null
-            ch.id to last
+        val out = mutableListOf<Pair<String, String>>()
+        for (ch in info.channels.values) {
+            // Voice channels have a text chat too.
+            if (!ch.isText && !ch.isVoice) continue
+            val last = lastIds[ch.id] ?: continue
+            val read = readState[ch.id] ?: continue
+            // The cheap checks first; permissions only for channels that really have something new.
+            if (compareSnowflakes(last, read.lastMessageId) <= 0) continue
+            if (guildSettings?.channels?.get(ch.id)?.mutedNow() == true) continue
+            if (ch.parentId != null && guildSettings?.channels?.get(ch.parentId)?.mutedNow() == true) continue
+            if (!canView(guildId, info, ch)) continue
+            out += ch.id to last
+            if (stopAtFirst) break
         }
+        return out
     }
 
     /** The newest message we know of in [channelId]. */

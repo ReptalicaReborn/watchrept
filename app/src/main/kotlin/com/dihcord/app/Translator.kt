@@ -27,7 +27,8 @@ object Translator {
 
     /** Translates [text] into the watch's language. */
     suspend fun translate(text: String, target: String = java.util.Locale.getDefault().language): Result {
-        val code = awaitTask(LanguageIdentification.getClient().identifyLanguage(text))
+        val identifier = LanguageIdentification.getClient()
+        val code = try { awaitTask(identifier.identifyLanguage(text)) } finally { identifier.close() }
         if (code == "und") throw UnknownLanguageException()
         val source = TranslateLanguage.fromLanguageTag(code) ?: throw UnknownLanguageException()
         val to = TranslateLanguage.fromLanguageTag(target) ?: TranslateLanguage.ENGLISH

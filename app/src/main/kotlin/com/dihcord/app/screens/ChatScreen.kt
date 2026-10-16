@@ -656,15 +656,23 @@ fun ChatScreen(
     }
 
     // A bot that doesn't answer a button or command gets a short note instead of silence.
+    val sentNonces = remember(channelId) { mutableSetOf<String>() }
     LaunchedEffect(channelId) {
-        repo.interactionResults.collect { if (!it.success) sendError = "The bot didn't answer. Try again." }
+        repo.interactionResults.collect {
+            if (it.nonce in sentNonces) {
+                sentNonces.remove(it.nonce)
+                if (!it.success) sendError = "The bot didn't answer. Try again."
+            }
+        }
     }
 
     fun pressComponent(msg: DiscordMessage, c: MessageComponent) {
         when {
             c is MessageComponent.Button && c.isLink -> runCatching { uriHandler.openUri(c.url!!) }
             c is MessageComponent.Button && c.customId != null -> scope.launch {
-                repo.pressComponent(msg, 2, c.customId, null).onFailure { sendError = "Couldn't press it. " + friendlyError(it) }
+                repo.pressComponent(msg, 2, c.customId, null)
+                    .onSuccess { sentNonces += it }
+                    .onFailure { sendError = "Couldn't press it. " + friendlyError(it) }
             }
             c is MessageComponent.Select -> selectFor = msg to c
         }
@@ -677,7 +685,7 @@ fun ChatScreen(
             componentSending = true
             scope.launch {
                 repo.pressComponent(pickingFrom.first, pickingFrom.second.type, pickingFrom.second.customId, values)
-                    .onSuccess { selectFor = null }
+                    .onSuccess { sentNonces += it; selectFor = null }
                     .onFailure { sendError = "Couldn't send it. " + friendlyError(it); selectFor = null }
                 componentSending = false
             }
@@ -692,7 +700,7 @@ fun ChatScreen(
             commandRunning = true; commandError = null
             scope.launch {
                 repo.runCommand(formFor, values, guildId, channelId)
-                    .onSuccess { commandForm = null }
+                    .onSuccess { sentNonces += it; commandForm = null }
                     .onFailure { commandError = it }
                 commandRunning = false
             }
