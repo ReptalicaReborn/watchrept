@@ -59,7 +59,9 @@ private val TileSizeNoLabel = 54.dp
 fun ServerScreen(
     folderKey: String? = null,
     onNavigateToChannels: (guildId: String, guildName: String) -> Unit,
-    onOpenFolder: (folderKey: String) -> Unit = {}
+    onOpenFolder: (folderKey: String) -> Unit = {},
+    /** Opens a mention's chat scrolled to the message; without it a mention opens the server instead. */
+    onNavigateToChat: ((channelId: String, channelName: String, guildId: String, jumpTo: String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val repo = context.discordApp.repository
@@ -249,14 +251,23 @@ fun ServerScreen(
                         modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
                     )
                 }
-                items(serverPings.size) { index ->
+                // Swipe sideways to clear (marks the channel read); tap to open the mentioned message.
+                items(serverPings.size, key = { "p" + serverPings[it].message.id }) { index ->
                     val ping = serverPings[index]
-                    PingCard(ping = ping, onClick = {
-                        onNavigateToChannels(
-                            ping.message.guildId ?: return@PingCard,
-                            ping.guildName ?: return@PingCard
-                        )
-                    })
+                    SwipeAway(onDismiss = {
+                        repo.dismissMentions(ping.message.channelId)
+                        com.dihcord.app.Notifier.clear(context, ping.message.channelId)
+                    }) {
+                        PingCard(ping = ping, onClick = {
+                            val guildId = ping.message.guildId ?: return@PingCard
+                            val open = onNavigateToChat
+                            if (open != null) {
+                                open(ping.message.channelId, ping.channelName, guildId, ping.message.id)
+                            } else {
+                                onNavigateToChannels(guildId, ping.guildName ?: return@PingCard)
+                            }
+                        })
+                    }
                 }
             }
 

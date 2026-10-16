@@ -254,7 +254,7 @@ fun HomeScreen(
 
 /** Lets a card be flung sideways off screen; past a third of its width it calls [onDismiss]. */
 @Composable
-private fun SwipeAway(onDismiss: () -> Unit, content: @Composable () -> Unit) {
+internal fun SwipeAway(onDismiss: () -> Unit, content: @Composable () -> Unit) {
     val scope = rememberCoroutineScope()
     val offset = remember { Animatable(0f) }
     var width by remember { mutableIntStateOf(1) }

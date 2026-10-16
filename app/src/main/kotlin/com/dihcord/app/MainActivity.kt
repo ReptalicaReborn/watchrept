@@ -310,7 +310,12 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToChannels = { gId, gName ->
                                     navController.navigate("ServerChannels/$gId/${Uri.encode(gName)}")
                                 },
-                                onOpenFolder = { folder -> navController.navigate("servers/folder/${Uri.encode(folder)}") }
+                                onOpenFolder = { folder -> navController.navigate("servers/folder/${Uri.encode(folder)}") },
+                                onNavigateToChat = { chId, chName, gId, jumpTo ->
+                                    navController.navigate(
+                                        "chatscreen/$chId/${Uri.encode(chName)}/$gId?jump=${Uri.encode(jumpTo)}"
+                                    )
+                                }
                             )
                         }
 
