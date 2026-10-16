@@ -34,14 +34,19 @@ object FeaturePreferences {
             else -> all[channelId] = System.currentTimeMillis() + durationMs
         }
         prefs(context).edit { putString(KEY_MUTE_UNTIL, JSONObject(all.mapValues { it.value }).toString()) }
-        // The old permanent list (notification "Mute" button) is part of the same answer.
-        if (durationMs == 0L) {
-            val old = SetupPreferences.getMutedChannels(context)
-            if (channelId in old) {
-                SetupPreferences.clearMutedChannels(context)
-                (old - channelId).forEach { SetupPreferences.muteChannel(context, it) }
-            }
+        // The old permanent list (notification "Mute" button) is part of the same answer: any new choice,
+        // timed or not, replaces it, so a 1-hour mute really ends after an hour.
+        val old = SetupPreferences.getMutedChannels(context)
+        if (channelId in old) {
+            SetupPreferences.clearMutedChannels(context)
+            (old - channelId).forEach { SetupPreferences.muteChannel(context, it) }
         }
+    }
+
+    /** Ends every chat mute, timed or not (Settings' "Unmute all"). */
+    fun unmuteAllChats(context: Context) {
+        prefs(context).edit { remove(KEY_MUTE_UNTIL) }
+        SetupPreferences.clearMutedChannels(context)
     }
 
     /** Whether notifications from [channelId] are silenced right now (timed mute or the old permanent one). */

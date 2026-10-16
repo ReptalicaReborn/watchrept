@@ -27,6 +27,7 @@ import com.dihcord.app.R
 import com.dihcord.app.api.*
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
 // ---------------------------------------------------------------- Invites
@@ -49,7 +50,9 @@ fun InviteScreen(initialCode: String?, onOpenServer: (guildId: String, name: Str
         // Typed codes: look up once typing settles, not every half-typed code on the way.
         if (code != InvitePreview.codeFrom(initialCode.orEmpty())) delay(800)
         loading = true
-        repo.invitePreview(code).onSuccess { preview = it }.onFailure { error = it }
+        val found = repo.invitePreview(code)
+        ensureActive() // The code changed meanwhile: this (cancelled) answer is stale.
+        found.onSuccess { preview = it }.onFailure { error = it }
         loading = false
     }
     val member = preview?.guild?.let { g -> guilds.any { it.id == g.id } } == true

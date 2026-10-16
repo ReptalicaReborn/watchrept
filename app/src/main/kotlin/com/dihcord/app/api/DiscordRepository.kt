@@ -426,10 +426,6 @@ class DiscordRepository(
     val newMessages: SharedFlow<DiscordMessage> = _newMessages.asSharedFlow()
 
     /**
-     * Decides whether [msg] deserves a notification (a DM, or a mention of the user / their roles / @everyone,
-     * never their own messages) and builds its text. Null when it should stay silent.
-     */
-    /**
      * How loud [channelId] in [guildId] should be: the user's choice on this watch, or else Discord's own
      * settings (a muted server or channel says nothing; "default" means mentions only).
      */
@@ -437,7 +433,8 @@ class DiscordRepository(
         if (local != com.dihcord.app.FeaturePreferences.AlertLevel.DISCORD) return local
         val settings = _notifySettings.value[guildId ?: ""]
         val channel = settings?.channels?.get(channelId)
-        val parent = channelCache[channelId]?.parentId?.let { settings?.channels?.get(it) }
+        // Channels never opened aren't in channelCache; READY's server data still knows their category.
+        val parent = (channelCache[channelId]?.parentId ?: unread.parentOf(channelId))?.let { settings?.channels?.get(it) }
         if (settings?.mutedNow() == true || channel?.mutedNow() == true || parent?.mutedNow() == true) return com.dihcord.app.FeaturePreferences.AlertLevel.NOTHING
         val level = channel?.level?.takeIf { it != 3 } ?: parent?.level?.takeIf { it != 3 } ?: settings?.level?.takeIf { it != 3 }
         return when (level) {
@@ -447,6 +444,10 @@ class DiscordRepository(
         }
     }
 
+    /**
+     * Decides whether [msg] deserves a notification (a DM, or a mention of the user / their roles / @everyone,
+     * never their own messages) and builds its text. Null when it should stay silent.
+     */
     suspend fun notificationFor(msg: DiscordMessage, notifyAll: Boolean = false): NotificationInfo? {
         val myId = currentUserId ?: return null
         if (msg.author.id == myId) return null
@@ -792,10 +793,10 @@ class DiscordRepository(
 
         val pageSize = com.dihcord.app.Perf.messagePageSize
         // Show the saved copy straight away (and when offline); the live page replaces it below.
-        var cachedIds: Set<String> = emptySet()
         if (_messages.value[channelId].isNullOrEmpty()) {
             messageCache.load(channelId)?.let { saved ->
-                cachedIds = saved.mapTo(HashSet()) { it.id }
+                // Remembered until a live page replaces them, even across failed (offline) tries.
+                cachedIdsByChannel[channelId] = saved.mapTo(HashSet()) { it.id }
                 _messages.update { it + (channelId to saved) }
                 _fromCache.update { it + channelId }
             }
@@ -804,6 +805,7 @@ class DiscordRepository(
             DiscordMessage.listFromJson(JSONArray(raw)).also { messageCache.save(channelId, raw) }
         }.onSuccess { fetched ->
             _fromCache.update { it - channelId }
+            val cachedIds = cachedIdsByChannel.remove(channelId).orEmpty()
             val fetchedList = fetched.reversed()
             fetchedList.forEach { userDisplayNames[it.author.id] = it.author.displayName }
             if (fetched.size < pageSize) reachedStart.add(channelId)
@@ -826,6 +828,8 @@ class DiscordRepository(
     }
 
     private val reachedStart: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    /** Ids of messages shown from the disk copy that no live page has replaced yet, by channel. */
+    private val cachedIdsByChannel = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
     private val loadingOlder: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /** False once the beginning of [channelId]'s history has been loaded. */
@@ -961,7 +965,10 @@ class DiscordRepository(
         relationshipStore.put(Relationship(user.id, Relationship.BLOCKED, user))
     }
 
-    suspend fun setNickname(guildId: String, nick: String) = rest.setNickname(guildId, nick)
+    suspend fun setNickname(guildId: String, nick: String) = rest.setNickname(guildId, nick).onSuccess {
+        // The cached member still has the old nickname; the next look fetches the new one.
+        currentUser.value?.id?.let { me -> guildMemberCache.remove("$guildId:$me") }
+    }
 
     suspend fun createGroupDm(userIds: List<String>): Result<Channel> = rest.createGroupDm(userIds).onSuccess { ch ->
         channelNameCache[ch.id] = ch.displayName
@@ -1361,6 +1368,13 @@ class DiscordRepository(
                     is GatewayEvent.SoundboardPlay -> _soundboardPlays.tryEmit(event)
                     is GatewayEvent.InteractionResult -> _interactionResults.tryEmit(event)
                     is GatewayEvent.GuildJoined -> {
+                        currentUser.value?.id?.let { me ->
+                            val wrapped = JSONObject().put("guilds", JSONArray().put(event.raw))
+                            ReadyParsing.guilds(wrapped, me).firstOrNull()?.let { g ->
+                                g.channels.forEach { ch -> channelGuildCache[ch.id] = g.id }
+                                unread.onGuildJoined(g, _readState.value)
+                            }
+                        }
                         if (_guilds.value.none { it.id == event.guild.id }) {
                             _guilds.update { it + event.guild }
                             scope.launch { refreshGuilds() }

@@ -79,7 +79,8 @@ fun SettingsScreen(
     var quietEnd by remember { mutableStateOf(SetupPreferences.getQuietEndHour(context)) }
     var mutedCount by remember {
         mutableStateOf(
-            SetupPreferences.getMutedChannels(context).size + SetupPreferences.getMutedServers(context).size
+            (SetupPreferences.getMutedChannels(context) + com.dihcord.app.FeaturePreferences.mutedUntil(context).keys).size +
+                SetupPreferences.getMutedServers(context).size
         )
     }
     val initialPerfMode = remember { SetupPreferences.getPerfMode(context) }
@@ -346,7 +347,7 @@ fun SettingsScreen(
                     Button(
                         transformation = SurfaceTransformation(spec),
                         onClick = {
-                            SetupPreferences.clearMutedChannels(context)
+                            com.dihcord.app.FeaturePreferences.unmuteAllChats(context)
                             SetupPreferences.clearMutedServers(context)
                             mutedCount = 0
                         },

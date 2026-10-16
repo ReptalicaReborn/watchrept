@@ -27,6 +27,7 @@ import com.dihcord.app.R
 import com.dihcord.app.api.*
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
 /**
@@ -142,7 +143,9 @@ fun SearchScreen(channelId: String, guildId: String?, channelName: String, onOpe
         if (q.length < 2) { results = emptyList(); return@LaunchedEffect }
         delay(600) // wait for typing to settle
         results = null
-        repo.search(guildId, channelId, q).onSuccess { results = it }.onFailure { error = it; results = emptyList() }
+        val found = repo.search(guildId, channelId, q)
+        ensureActive() // A newer search replaced this one: its (cancelled) answer must not show.
+        found.onSuccess { results = it }.onFailure { error = it; results = emptyList() }
     }
     SearchContent(channelName, query, { query = it.take(64) }, results, error, myId, onRetry = { attempt++ }, onOpen = onOpen)
 }

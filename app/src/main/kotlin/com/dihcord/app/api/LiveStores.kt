@@ -33,14 +33,22 @@ class UnreadTracker {
     fun onReady(userId: String, ready: List<ReadyGuild>, notify: Map<String, NotifySettings>, readState: Map<String, ChannelUnreadState>) {
         myId = userId
         settings = notify
-        ready.forEach { g ->
-            guilds[g.id] = GuildInfo(g.ownerId, g.roles, g.myRoleIds, g.channels.associateBy { it.id })
-            g.channels.forEach { ch ->
-                channelGuild[ch.id] = g.id
-                ch.lastMessageId?.let { lastIds[ch.id] = it }
-            }
-        }
+        ready.forEach { put(it) }
         recompute(readState)
+    }
+
+    /** A server joined while connected: it comes with its channels, roles and our member, like in READY. */
+    fun onGuildJoined(guild: ReadyGuild, readState: Map<String, ChannelUnreadState>) {
+        put(guild)
+        recomputeGuild(guild.id, readState)
+    }
+
+    private fun put(g: ReadyGuild) {
+        guilds[g.id] = GuildInfo(g.ownerId, g.roles, g.myRoleIds, g.channels.associateBy { it.id })
+        g.channels.forEach { ch ->
+            channelGuild[ch.id] = g.id
+            ch.lastMessageId?.let { lastIds[ch.id] = it }
+        }
     }
 
     fun onSettings(guildId: String, value: NotifySettings, readState: Map<String, ChannelUnreadState>) {
@@ -129,6 +137,9 @@ class UnreadTracker {
         }
         return out
     }
+
+    /** [channelId]'s category, from the server data READY (or a join) gave us. */
+    fun parentOf(channelId: String): String? = channelGuild[channelId]?.let { guilds[it]?.channels?.get(channelId)?.parentId }
 
     /** The newest message we know of in [channelId]. */
     fun lastMessageId(channelId: String): String? = lastIds[channelId]

@@ -314,9 +314,13 @@ object SetupPreferences {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getStringSet(KEY_HIDDEN_DMS, emptySet()) ?: emptySet()
 
+    /** Goes up on every change to the hidden DMs, so the Recent DMs tile can redraw without them. */
+    val hiddenDmsChanges = kotlinx.coroutines.flow.MutableStateFlow(0)
+
     fun setHiddenDms(context: Context, ids: Set<String>) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit { putStringSet(KEY_HIDDEN_DMS, ids) }
+        hiddenDmsChanges.value++
     }
 
     fun toggleHiddenDm(context: Context, channelId: String): Boolean {

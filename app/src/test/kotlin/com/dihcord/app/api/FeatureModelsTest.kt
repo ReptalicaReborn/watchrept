@@ -218,4 +218,13 @@ class FeatureModelsTest {
         t.onReady("me", listOf(ReadyGuild("g", null, listOf(voice), listOf(everyone), emptyList())), emptyMap(), read)
         assertEquals(setOf("g"), t.unreadGuilds.value)
     }
+
+    @Test fun joinedServerGetsUnreadData() {
+        val t = UnreadTracker()
+        t.onReady("me", emptyList(), emptyMap(), emptyMap())
+        val read = mapOf("a" to ChannelUnreadState("10"))
+        t.onGuildJoined(ReadyGuild("g", null, listOf(channel("a", "20", parent = "cat")), listOf(everyone), emptyList()), read)
+        assertEquals(setOf("g"), t.unreadGuilds.value)
+        assertEquals("cat", t.parentOf("a"))
+    }
 }

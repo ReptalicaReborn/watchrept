@@ -457,7 +457,7 @@ class DiscordGateway(private val token: String) {
             "INTERACTION_SUCCESS" -> GatewayEvent.InteractionResult(d.optString("nonce"), success = true)
             "INTERACTION_FAILURE" -> GatewayEvent.InteractionResult(d.optString("nonce"), success = false)
 
-            "GUILD_CREATE" -> runCatching { GatewayEvent.GuildJoined(Guild.fromJson(d)) }.getOrNull()
+            "GUILD_CREATE" -> runCatching { GatewayEvent.GuildJoined(Guild.fromJson(d), d) }.getOrNull()
             "GUILD_DELETE" -> d.optString("id").takeIf { it.isNotEmpty() && !d.optBoolean("unavailable", false) }
                 ?.let { GatewayEvent.GuildLeft(it) }
 
@@ -672,7 +672,8 @@ sealed class GatewayEvent {
     data class SoundboardPlay(val channelId: String, val userId: String, val soundId: String, val volume: Double) : GatewayEvent()
     /** A bot answered (or failed) an interaction we sent with [nonce]. */
     data class InteractionResult(val nonce: String, val success: Boolean) : GatewayEvent()
-    data class GuildJoined(val guild: Guild) : GatewayEvent()
+    /** [raw] is the full guild (channels, roles, our member), read like a READY guild. */
+    data class GuildJoined(val guild: Guild, val raw: JSONObject) : GatewayEvent()
     data class GuildLeft(val guildId: String) : GatewayEvent()
     data class NotifySettingsUpdate(val guildId: String, val settings: NotifySettings) : GatewayEvent()
 

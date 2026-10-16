@@ -112,7 +112,7 @@ class DihcordApp : Application(), ImageLoaderFactory {
         recentDmsJob?.cancel()
         recentDmsJob = appScope.launch {
             // The Recent DMs tile reads this snapshot, so it draws without the app or a connection.
-            combine(repo.readState, repo.dmChannels) { read, dms ->
+            combine(repo.readState, repo.dmChannels, SetupPreferences.hiddenDmsChanges) { read, dms, _ ->
                 val hidden = SetupPreferences.getHiddenDms(this@DihcordApp)
                 dms.filter { it.id !in hidden }
                     .sortedByDescending { it.lastMessageId?.toLongOrNull() ?: 0L }
