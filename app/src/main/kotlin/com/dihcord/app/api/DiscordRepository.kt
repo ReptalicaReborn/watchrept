@@ -922,8 +922,13 @@ class DiscordRepository(
         return ackLocallyAndRemotely(reads.distinctBy { it.first })
     }
 
+    /** Counts MESSAGE_ACK events; [ackSeenAt] has the count at each channel's latest one. */
+    private val ackEvents = java.util.concurrent.atomic.AtomicLong()
+    private val ackSeenAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     private suspend fun ackLocallyAndRemotely(reads: List<Pair<String, String>>): Result<Unit> {
         if (reads.isEmpty()) return Result.success(Unit)
+        val startedAt = ackEvents.get()
         val ids = reads.map { it.first }.toSet()
         val pingsBefore = _pings.value.filter { it.message.channelId in ids }
         val before = _readState.value
@@ -944,6 +949,8 @@ class DiscordRepository(
                 rolledBack.clear()
                 marked.forEach { (channelId, set) ->
                     if (out[channelId] != set) return@forEach // Changed since (read in the chat, a new message).
+                    // Discord said it's read (another device) while we waited, even if to the same message.
+                    if ((ackSeenAt[channelId] ?: 0L) > startedAt) return@forEach
                     before[channelId]?.let { out[channelId] = it } ?: out.remove(channelId)
                     rolledBack += channelId
                 }
@@ -1384,6 +1391,7 @@ class DiscordRepository(
                     }
 
                     is GatewayEvent.MessageAck -> {
+                        ackSeenAt[event.channelId] = ackEvents.incrementAndGet()
                         _readState.update { current ->
                             val old = current[event.channelId]
                             if (old != null && compareSnowflakes(event.messageId, old.lastMessageId) < 0) current
