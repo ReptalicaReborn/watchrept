@@ -196,20 +196,21 @@ fun WelcomeScreen(
 
             item {
                 Button(
-                    onClick = { onNavigateToQrLogin() },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp),
-                ) { Text("Scan QR Code") }
-            }
-
-            item {
-                Button(
                     onClick = { onNavigateToEmailLogin() },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(36.dp),
                 ) { Text("Email & Password") }
+            }
+
+            item {
+                Button(
+                    onClick = { onNavigateToQrLogin() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors()
+                ) { Text("Scan QR Code") }
             }
 
             item {

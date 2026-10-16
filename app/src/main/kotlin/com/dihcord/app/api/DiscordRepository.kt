@@ -397,6 +397,20 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         }.onFailure { handleApiError(it) }
     }
 
+    suspend fun getFriends(): Result<List<DiscordUser>> = rest.getFriends()
+
+    /** The DM with [userId], opening one on Discord if there isn't one yet. */
+    suspend fun openDm(userId: String): Result<Channel> {
+        _dmChannels.value.firstOrNull { ch -> ch.recipients.size == 1 && ch.recipients[0].id == userId }
+            ?.let { return Result.success(it) }
+        return rest.openDm(userId).onSuccess { ch ->
+            channelNameCache[ch.id] = ch.displayName
+            channelCache[ch.id] = ch
+            _channelNames.value = channelNameCache.toMap()
+            _dmChannels.update { list -> if (list.any { it.id == ch.id }) list else listOf(ch) + list }
+        }
+    }
+
     fun cacheChannelNames(groups: List<CategoryGroup>) {
         groups.forEach { g ->
             g.channels.forEach { ch ->

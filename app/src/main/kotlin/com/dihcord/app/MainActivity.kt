@@ -257,6 +257,9 @@ class MainActivity : ComponentActivity() {
                             UserProfileScreen(
                                 userId = userId,
                                 guildId = guildId,
+                                onNavigateToChat = { chId, chName ->
+                                    navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/dm")
+                                },
                                 onBack = { navController.popBackStack() }
                             )
                         }
@@ -299,8 +302,19 @@ class MainActivity : ComponentActivity() {
 
                         composable("DMs") {
                             activeChannelId = null
-                            DmsScreen(onNavigateToChatScreen = { chId, chName ->
-                                navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/dm")
+                            DmsScreen(
+                                onNavigateToChatScreen = { chId, chName ->
+                                    navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/dm")
+                                },
+                                onNewDm = { navController.navigate("newdm") }
+                            )
+                        }
+
+                        composable("newdm") {
+                            NewDmScreen(onOpenDm = { chId, chName ->
+                                navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/dm") {
+                                    popUpTo("newdm") { inclusive = true }
+                                }
                             })
                         }
 

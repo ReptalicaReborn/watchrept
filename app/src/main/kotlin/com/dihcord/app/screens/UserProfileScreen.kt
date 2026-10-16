@@ -30,6 +30,7 @@ import coil.decode.SvgDecoder
 import coil.request.ImageRequest
 import com.dihcord.app.api.*
 import com.dihcord.app.discordApp
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -44,6 +45,8 @@ fun UserProfileScreen(
     val repo = context.discordApp.repository
     val listState = rememberScalingLazyListState()
     val imageLoader = context.imageLoader
+    val dmScope = rememberCoroutineScope()
+    var openingDm by remember { mutableStateOf(false) }
     var user by remember { mutableStateOf(initialUser) }
     var loading by remember { mutableStateOf(initialUser == null) }
     var error by remember { mutableStateOf("") }
@@ -358,6 +361,28 @@ fun UserProfileScreen(
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(horizontal = 12.dp)
                     )
+                }
+            }
+
+            // Message anyone you can see, e.g. from a server's member list, not just existing DMs.
+            if (repo != null && userId != repo.currentUser.value?.id) {
+                item {
+                    Button(
+                        onClick = {
+                            if (openingDm) return@Button
+                            openingDm = true
+                            error = ""
+                            dmScope.launch {
+                                repo.openDm(userId)
+                                    .onSuccess { onNavigateToChat(it.id, it.displayName) }
+                                    .onFailure { error = "Couldn't open a DM: ${it.message}" }
+                                openingDm = false
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(36.dp)
+                    ) { Text(if (openingDm) "Opening…" else "Message") }
                 }
             }
 

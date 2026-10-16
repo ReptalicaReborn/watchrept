@@ -36,7 +36,8 @@ import com.dihcord.app.R
 
 @Composable
 fun DmsScreen(
-    onNavigateToChatScreen: (channelId: String, channelName: String) -> Unit
+    onNavigateToChatScreen: (channelId: String, channelName: String) -> Unit,
+    onNewDm: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val repo = context.discordApp.repository
@@ -124,6 +125,14 @@ fun DmsScreen(
     ScreenScaffold(scrollState = listState) {
         ScalingLazyColumn(state = listState) {
             item { ScreenTitle("Direct Messages") }
+            item {
+                Button(
+                    onClick = onNewDm,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp)
+                ) { Text("New message") }
+            }
 
             if (loading) {
                 item { LoadingIndicator() }

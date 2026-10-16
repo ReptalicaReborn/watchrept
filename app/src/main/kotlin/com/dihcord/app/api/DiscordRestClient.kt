@@ -282,6 +282,21 @@ class DiscordRestClient(private val token: String) {
             DiscordMessage.listFromJson(JSONArray(get("/channels/$channelId/messages?limit=$safe$cursor")))
         }
 
+    /** Opens (or returns the existing) DM channel with [userId]. */
+    suspend fun openDm(userId: String): Result<Channel> = runCatching {
+        Channel.fromJson(JSONObject(post("/users/@me/channels", JSONObject().put("recipients", JSONArray().put(userId)))))
+    }
+
+    /** People on the friends list (relationship type 1). */
+    suspend fun getFriends(): Result<List<DiscordUser>> = runCatching {
+        val arr = JSONArray(get("/users/@me/relationships"))
+        (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            if (o.optInt("type") != 1) return@mapNotNull null
+            o.optJSONObject("user")?.let { runCatching { DiscordUser.fromJson(it) }.getOrNull() }
+        }
+    }
+
     suspend fun sendMessage(channelId: String, content: String): Result<DiscordMessage> =
         runCatching {
             val body = JSONObject().put("content", content)
