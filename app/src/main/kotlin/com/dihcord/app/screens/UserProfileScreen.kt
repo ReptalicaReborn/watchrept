@@ -436,6 +436,12 @@ private fun BioContent(
                     }
                 }
 
+                is ContentParser.Part.Timestamp -> Text(
+                    com.dihcord.app.api.DiscordTimestamp.format(part.epochSeconds, part.style),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontSize = 11.sp
+                )
+
                 is ContentParser.Part.CustomEmoji -> {
                     AsyncImage(
                         model = ImageRequest.Builder(context)

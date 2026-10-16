@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -106,6 +107,7 @@ class DiscordRepository(
             cacheChannelNames(groups)
             saveChannels(guildId, groups)
             _guildChannelsMap.update { current -> current + (guildId to groups) }
+            unread.onChannels(guildId, groups.flatMap { it.channels }, _readState.value)
         }.onFailure { handleApiError(it) }
     }
 
@@ -141,6 +143,39 @@ class DiscordRepository(
 
     private val _pings = MutableStateFlow<List<Ping>>(emptyList())
     val pings: StateFlow<List<Ping>> = _pings.asStateFlow()
+
+    /** Unread servers and channels (white dots), from READY and live messages. */
+    val unread = UnreadTracker()
+    val unreadGuilds: StateFlow<Set<String>> get() = unread.unreadGuilds
+
+    private val memberListStore = MemberListStore()
+    /** Server member lists by guild id, filled after [subscribeMemberList]. */
+    val memberLists: StateFlow<Map<String, MemberList>> get() = memberListStore.lists
+
+    private val relationshipStore = RelationshipStore()
+    /** Friends, blocks and requests by user id. */
+    val relationships: StateFlow<Map<String, Relationship>> get() = relationshipStore.all
+    fun isBlocked(userId: String): Boolean = relationshipStore.isBlocked(userId)
+
+    private val _notifySettings = MutableStateFlow<Map<String, NotifySettings>>(emptyMap())
+    /** Discord's own per-server notification settings ("" for DMs). */
+    val notifySettings: StateFlow<Map<String, NotifySettings>> = _notifySettings.asStateFlow()
+
+    /** Whether live data is flowing; false shows chats from the offline cache. */
+    val online: StateFlow<Boolean> get() = gateway.online
+
+    private val messageCache = MessageCache(context?.let { MessageCache.dirFor(it) })
+    private val _fromCache = MutableStateFlow<Set<String>>(emptySet())
+    /** Channels whose messages are, for now, the saved copy from disk. */
+    val fromCache: StateFlow<Set<String>> = _fromCache.asStateFlow()
+
+    private val _interactionResults = MutableSharedFlow<GatewayEvent.InteractionResult>(extraBufferCapacity = 8)
+    /** Answers to bot buttons and slash commands, by nonce. */
+    val interactionResults: SharedFlow<GatewayEvent.InteractionResult> = _interactionResults.asSharedFlow()
+
+    private val _soundboardPlays = MutableSharedFlow<GatewayEvent.SoundboardPlay>(extraBufferCapacity = 8)
+    /** Soundboard sounds played in voice channels, for the call to play aloud. */
+    val soundboardPlays: SharedFlow<GatewayEvent.SoundboardPlay> = _soundboardPlays.asSharedFlow()
 
     private val _readState = MutableStateFlow<Map<String, ChannelUnreadState>>(emptyMap())
     val readState: StateFlow<Map<String, ChannelUnreadState>> = _readState.asStateFlow()
@@ -394,12 +429,30 @@ class DiscordRepository(
      * Decides whether [msg] deserves a notification (a DM, or a mention of the user / their roles / @everyone,
      * never their own messages) and builds its text. Null when it should stay silent.
      */
-    suspend fun notificationFor(msg: DiscordMessage): NotificationInfo? {
+    /**
+     * How loud [channelId] in [guildId] should be: the user's choice on this watch, or else Discord's own
+     * settings (a muted server or channel says nothing; "default" means mentions only).
+     */
+    fun alertLevelFor(guildId: String?, channelId: String, local: com.dihcord.app.FeaturePreferences.AlertLevel): com.dihcord.app.FeaturePreferences.AlertLevel {
+        if (local != com.dihcord.app.FeaturePreferences.AlertLevel.DISCORD) return local
+        val settings = _notifySettings.value[guildId ?: ""]
+        val channel = settings?.channels?.get(channelId)
+        val parent = channelCache[channelId]?.parentId?.let { settings?.channels?.get(it) }
+        if (settings?.mutedNow() == true || channel?.mutedNow() == true || parent?.mutedNow() == true) return com.dihcord.app.FeaturePreferences.AlertLevel.NOTHING
+        val level = channel?.level?.takeIf { it != 3 } ?: parent?.level?.takeIf { it != 3 } ?: settings?.level?.takeIf { it != 3 }
+        return when (level) {
+            0 -> com.dihcord.app.FeaturePreferences.AlertLevel.ALL
+            2 -> com.dihcord.app.FeaturePreferences.AlertLevel.NOTHING
+            else -> com.dihcord.app.FeaturePreferences.AlertLevel.MENTIONS
+        }
+    }
+
+    suspend fun notificationFor(msg: DiscordMessage, notifyAll: Boolean = false): NotificationInfo? {
         val myId = currentUserId ?: return null
         if (msg.author.id == myId) return null
         val isDm = _dmChannels.value.any { it.id == msg.channelId }
         val guildId = msg.guildId ?: channelGuildCache[msg.channelId]
-        val mentioned = if (isDm) true else {
+        val mentioned = if (isDm || notifyAll) true else {
             val roles = if (guildId != null && msg.mentionedRoleIds.isNotEmpty()) {
                 myRolesByGuild[guildId]
                     ?: rest.getGuildMemberRoles(guildId, myId).getOrNull()?.also { myRolesByGuild[guildId] = it }
@@ -738,7 +791,17 @@ class DiscordRepository(
         }
 
         val pageSize = com.dihcord.app.Perf.messagePageSize
-        rest.getMessages(channelId, limit = pageSize).onSuccess { fetched ->
+        // Show the saved copy straight away (and when offline); the live page replaces it below.
+        if (_messages.value[channelId].isNullOrEmpty()) {
+            messageCache.load(channelId)?.let { saved ->
+                _messages.update { it + (channelId to saved) }
+                _fromCache.update { it + channelId }
+            }
+        }
+        rest.getMessagesRaw(channelId, limit = pageSize).mapCatching { raw ->
+            DiscordMessage.listFromJson(JSONArray(raw)).also { messageCache.save(channelId, raw) }
+        }.onSuccess { fetched ->
+            _fromCache.update { it - channelId }
             val fetchedList = fetched.reversed()
             fetchedList.forEach { userDisplayNames[it.author.id] = it.author.displayName }
             if (fetched.size < pageSize) reachedStart.add(channelId)
@@ -788,6 +851,167 @@ class DiscordRepository(
     }
 
     fun getDisplayName(userId: String): String? = userDisplayNames[userId]
+
+    // ---- Typing ----
+
+    private val typingSentAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Lets the others see we're typing; at most once every 8 s per channel, like Discord's client. */
+    fun typingInChannel(channelId: String) {
+        val now = System.currentTimeMillis()
+        val last = typingSentAt[channelId] ?: 0L
+        if (now - last < 8_000) return
+        typingSentAt[channelId] = now
+        scope.launch { rest.sendTyping(channelId) }
+    }
+
+    /** After sending, the next keystroke may say "typing" again straight away. */
+    private fun typingDone(channelId: String) { typingSentAt.remove(channelId) }
+
+    // ---- Read state ----
+
+    /** Marks every unread channel of [guildId] read (mentions too), here and on Discord. */
+    suspend fun markGuildRead(guildId: String): Result<Unit> {
+        val rs = _readState.value
+        val reads = unread.unreadChannels(guildId, rs).toMutableList()
+        rs.forEach { (channelId, state) ->
+            if (state.mentionCount > 0 && channelGuildCache[channelId] == guildId && reads.none { it.first == channelId }) {
+                (unread.lastMessageId(channelId) ?: state.lastMessageId).let { reads += channelId to it }
+            }
+        }
+        return ackLocallyAndRemotely(reads)
+    }
+
+    /** Marks everything read: every server's unread channels and every DM. */
+    suspend fun markAllRead(): Result<Unit> {
+        val rs = _readState.value
+        val reads = mutableListOf<Pair<String, String>>()
+        _guilds.value.forEach { g -> reads += unread.unreadChannels(g.id, rs) }
+        _dmChannels.value.forEach { dm ->
+            val last = dm.lastMessageId ?: return@forEach
+            val state = rs[dm.id]
+            if (state == null || compareSnowflakes(last, state.lastMessageId) > 0 || state.mentionCount > 0) reads += dm.id to last
+        }
+        rs.forEach { (channelId, state) ->
+            if (state.mentionCount > 0 && reads.none { it.first == channelId }) {
+                reads += channelId to (unread.lastMessageId(channelId) ?: state.lastMessageId)
+            }
+        }
+        return ackLocallyAndRemotely(reads.distinctBy { it.first })
+    }
+
+    private suspend fun ackLocallyAndRemotely(reads: List<Pair<String, String>>): Result<Unit> {
+        if (reads.isEmpty()) return Result.success(Unit)
+        val ids = reads.map { it.first }.toSet()
+        _pings.update { list -> list.filterNot { it.message.channelId in ids } }
+        _readState.update { current ->
+            current + reads.associate { (channelId, messageId) ->
+                val newest = current[channelId]?.lastMessageId?.takeIf { compareSnowflakes(it, messageId) > 0 } ?: messageId
+                channelId to ChannelUnreadState(newest, 0)
+            }
+        }
+        return rest.ackBulk(reads).onFailure { handleApiError(it) }
+    }
+
+    // ---- Pins, search ----
+
+    suspend fun pins(channelId: String) = rest.getPins(channelId).onFailure { handleApiError(it) }
+    suspend fun setPinned(channelId: String, messageId: String, pinned: Boolean) = rest.setPinned(channelId, messageId, pinned)
+    suspend fun search(guildId: String?, channelId: String, query: String) = rest.searchMessages(guildId, channelId, query)
+
+    // ---- People ----
+
+    suspend fun refreshRelationships(): Result<List<Relationship>> =
+        rest.getRelationships().onSuccess { relationshipStore.set(it) }.onFailure { handleApiError(it) }
+
+    suspend fun acceptFriend(user: DiscordUser): Result<Unit> = rest.acceptFriend(user.id).onSuccess {
+        relationshipStore.put(Relationship(user.id, Relationship.FRIEND, user))
+    }
+
+    suspend fun removeRelationship(userId: String): Result<Unit> = rest.removeRelationship(userId).onSuccess {
+        relationshipStore.remove(userId)
+    }
+
+    suspend fun blockUser(user: DiscordUser): Result<Unit> = rest.blockUser(user.id).onSuccess {
+        relationshipStore.put(Relationship(user.id, Relationship.BLOCKED, user))
+    }
+
+    suspend fun setNickname(guildId: String, nick: String) = rest.setNickname(guildId, nick)
+
+    suspend fun createGroupDm(userIds: List<String>): Result<Channel> = rest.createGroupDm(userIds).onSuccess { ch ->
+        channelNameCache[ch.id] = ch.displayName
+        channelCache[ch.id] = ch
+        _channelNames.value = channelNameCache.toMap()
+        _dmChannels.update { list -> if (list.any { it.id == ch.id }) list else listOf(ch) + list }
+    }
+
+    suspend fun addToGroup(channelId: String, userId: String) = rest.addToGroup(channelId, userId).onSuccess {
+        scope.launch { refreshDmChannels() }
+    }
+
+    /** Asks Discord to stream [guildId]'s member list (as seen from [channelId]) into [memberLists]. */
+    fun subscribeMemberList(guildId: String, channelId: String) = gateway.subscribeMemberList(guildId, channelId)
+
+    // ---- Sending ----
+
+    suspend fun forward(message: DiscordMessage, toChannelId: String) =
+        rest.forwardMessage(toChannelId, message.channelId, message.guildId ?: channelGuildCache[message.channelId], message.id)
+
+    suspend fun createPoll(channelId: String, question: String, answers: List<Pair<String, String?>>, hours: Int, multiselect: Boolean) =
+        rest.createPoll(channelId, question, answers, hours, multiselect).onSuccess { typingDone(channelId) }
+
+    // ---- Servers ----
+
+    suspend fun invitePreview(code: String) = rest.getInvite(code)
+
+    suspend fun joinInvite(code: String): Result<Unit> = rest.joinInvite(code).onSuccess {
+        scope.launch { refreshGuilds() }
+    }
+
+    suspend fun leaveGuild(guildId: String): Result<Unit> = rest.leaveGuild(guildId).onSuccess {
+        _guilds.update { list -> list.filterNot { it.id == guildId } }
+        unread.forgetGuild(guildId, _readState.value)
+    }
+
+    suspend fun scheduledEvents(guildId: String) = rest.getScheduledEvents(guildId)
+    suspend fun setEventInterest(guildId: String, eventId: String, interested: Boolean) = rest.setEventInterest(guildId, eventId, interested)
+    suspend fun requestToSpeak(guildId: String, channelId: String, request: Boolean) = rest.requestToSpeak(guildId, channelId, request)
+
+    // ---- Soundboard ----
+
+    private val soundCache = java.util.concurrent.ConcurrentHashMap<String, List<SoundboardSound>>()
+
+    /** The server's own sounds first, then Discord's defaults. */
+    suspend fun soundboard(guildId: String?): List<SoundboardSound> {
+        val defaults = soundCache["default"] ?: rest.getDefaultSounds().getOrNull()?.also { soundCache["default"] = it }.orEmpty()
+        val own = if (guildId == null) emptyList()
+        else soundCache[guildId] ?: rest.getGuildSounds(guildId).getOrNull()?.also { soundCache[guildId] = it }.orEmpty()
+        return own + defaults
+    }
+
+    suspend fun playSound(voiceChannelId: String, sound: SoundboardSound) = rest.playSound(voiceChannelId, sound)
+
+    // ---- Bots ----
+
+    private val commandCache = java.util.concurrent.ConcurrentHashMap<String, List<ApplicationCommand>>()
+
+    /** Slash commands for [channelId] (cached per server, or per DM). */
+    suspend fun commands(guildId: String?, channelId: String): Result<List<ApplicationCommand>> {
+        val key = guildId ?: channelId
+        commandCache[key]?.let { return Result.success(it) }
+        return rest.getCommands(guildId, channelId).onSuccess { commandCache[key] = it.filter { c -> c.usable } }
+            .map { commandCache[key].orEmpty() }
+    }
+
+    suspend fun runCommand(command: ApplicationCommand, options: Map<String, Any>, guildId: String?, channelId: String): Result<String> {
+        val session = gateway.currentSessionId ?: return Result.failure(java.io.IOException("Not connected"))
+        return rest.runCommand(command, options, guildId, channelId, session)
+    }
+
+    suspend fun pressComponent(message: DiscordMessage, componentType: Int, customId: String, values: List<String>?): Result<String> {
+        val session = gateway.currentSessionId ?: return Result.failure(java.io.IOException("Not connected"))
+        return rest.pressComponent(message, componentType, customId, values, message.guildId ?: channelGuildCache[message.channelId], session)
+    }
     suspend fun sendMessage(channelId: String, content: String): Result<DiscordMessage> {
         val result = rest.sendMessage(channelId, content)
         result.onSuccess { msg ->
@@ -1059,6 +1283,18 @@ class DiscordRepository(
                     }
 
                     is GatewayEvent.Ready -> {
+                        event.guilds.forEach { g ->
+                            g.myRoleIds?.let { myRolesByGuild[g.id] = it }
+                            g.ownerId?.let { guildOwnerCache[g.id] = it }
+                            if (g.roles.isNotEmpty()) guildRolesCache[g.id] = g.roles
+                            g.channels.forEach { ch ->
+                                channelGuildCache[ch.id] = g.id
+                                if (!channelNameCache.containsKey(ch.id)) channelNameCache[ch.id] = ch.name
+                            }
+                        }
+                        _notifySettings.value = event.notifySettings
+                        relationshipStore.set(event.relationships)
+                        unread.onReady(event.user.id, event.guilds, event.notifySettings, event.readState.ifEmpty { _readState.value })
                         _currentUser.value = event.user
                         currentUserId = event.user.id
                         _voiceStates.value = event.voiceStates.filter { it.channelId != null }.associateBy(::voiceKey)
@@ -1080,8 +1316,41 @@ class DiscordRepository(
                         }
                     }
 
+                    is GatewayEvent.MessageAck -> {
+                        _readState.update { current ->
+                            val old = current[event.channelId]
+                            if (old != null && compareSnowflakes(event.messageId, old.lastMessageId) < 0) current
+                            else current + (event.channelId to ChannelUnreadState(event.messageId, event.mentionCount))
+                        }
+                        if (event.mentionCount == 0) _pings.update { list ->
+                            list.filterNot { it.message.channelId == event.channelId && compareSnowflakes(it.message.id, event.messageId) <= 0 }
+                        }
+                    }
+
+                    is GatewayEvent.MemberListUpdate -> memberListStore.apply(event)
+                    is GatewayEvent.RelationshipAdd -> relationshipStore.put(event.relationship)
+                    is GatewayEvent.RelationshipRemove -> relationshipStore.remove(event.userId)
+                    is GatewayEvent.SoundboardPlay -> _soundboardPlays.tryEmit(event)
+                    is GatewayEvent.InteractionResult -> _interactionResults.tryEmit(event)
+                    is GatewayEvent.GuildJoined -> {
+                        if (_guilds.value.none { it.id == event.guild.id }) {
+                            _guilds.update { it + event.guild }
+                            scope.launch { refreshGuilds() }
+                        }
+                    }
+                    is GatewayEvent.GuildLeft -> {
+                        _guilds.update { list -> list.filterNot { it.id == event.guildId } }
+                        unread.forgetGuild(event.guildId, _readState.value)
+                    }
+                    is GatewayEvent.NotifySettingsUpdate -> {
+                        _notifySettings.update { it + (event.guildId to event.settings) }
+                        unread.onSettings(event.guildId, event.settings, _readState.value)
+                    }
+
                     is GatewayEvent.MessageCreate -> {
                         val msg = event.message
+                        if (msg.author.id == currentUserId) typingDone(msg.channelId)
+                        unread.onMessage(msg.channelId, msg.id, _readState.value)
                         userDisplayNames[msg.author.id] = msg.author.displayName
                         val myId = currentUserId
                         if (myId != null && msg.author.id == myId &&
@@ -1255,6 +1524,7 @@ class DiscordRepository(
 
                     is GatewayEvent.ChannelUpdate -> {
                         val ch = event.channel
+                        ch.guildId?.let { unread.onChannels(it, listOf(ch), _readState.value) }
                         channelCache[ch.id] = ch
                         channelNameCache[ch.id] = ch.displayName
                         if (ch.guildId != null) {
@@ -1343,7 +1613,14 @@ class DiscordRepository(
 
     init {
         _dmChannels.value = loadCachedDmChannels()
+        scope.launch {
+            @OptIn(kotlinx.coroutines.FlowPreview::class)
+            _readState.debounce(300).collect { unread.recompute(it) }
+        }
     }
+
+    /** Forgets what's kept on disk for offline reading (log-out). */
+    fun clearOfflineCache() = messageCache.clear()
 
     /**
      * Fills the repository with sample data, as if it had connected, for the screenshot tests. The app

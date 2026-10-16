@@ -52,11 +52,18 @@ class NotificationService : Service() {
             repo.newMessages.collect { msg ->
                 if (AppState.inForeground) return@collect
                 if (SetupPreferences.isQuietNow(this@NotificationService)) return@collect
-                if (msg.channelId in SetupPreferences.getMutedChannels(this@NotificationService)) return@collect
-                val info = repo.notificationFor(msg) ?: return@collect
-                if (info.guildId != null && info.guildId in SetupPreferences.getMutedServers(this@NotificationService)) {
-                    return@collect
-                }
+                val ctx = this@NotificationService
+                if (FeaturePreferences.isChatMuted(ctx, msg.channelId)) return@collect
+                val guildId = msg.guildId ?: repo.getChannelGuilds()[msg.channelId]
+                if (guildId != null && guildId in SetupPreferences.getMutedServers(ctx)) return@collect
+                val level = repo.alertLevelFor(
+                    guildId, msg.channelId,
+                    guildId?.let { FeaturePreferences.alertLevel(ctx, it) } ?: FeaturePreferences.AlertLevel.DISCORD
+                )
+                // DMs always notify unless muted; servers follow their alert level.
+                if (level == FeaturePreferences.AlertLevel.NOTHING) return@collect
+                val info = repo.notificationFor(msg, notifyAll = guildId != null && level == FeaturePreferences.AlertLevel.ALL)
+                    ?: return@collect
                 Notifier.show(this@NotificationService, info)
             }
         }

@@ -109,6 +109,238 @@ class DiscordRestClient(private val token: String, private val baseUrl: String =
     private suspend fun delete(path: String): String =
         execute(buildRequest(path).delete().build())
 
+    private suspend fun put(path: String, body: JSONObject = JSONObject()): String =
+        execute(buildRequest(path).put(body.toString().toRequestBody(jsonMime)).build())
+
+    private suspend fun patch(path: String, body: JSONObject): String =
+        execute(buildRequest(path).patch(body.toString().toRequestBody(jsonMime)).build())
+
+    /** A POST with an extra header, e.g. the X-Context-Properties Discord's client sends when joining. */
+    private suspend fun postWith(path: String, body: JSONObject, header: Pair<String, String>): String =
+        execute(buildRequest(path).header(header.first, header.second).post(body.toString().toRequestBody(jsonMime)).build())
+
+    private fun nonce(): String = (((System.currentTimeMillis() - 1_420_070_400_000L) shl 22)).toString()
+
+    // ---- Typing, read state ----
+
+    /** Tells the others in [channelId] we're typing (Discord shows it for ~10 s). */
+    suspend fun sendTyping(channelId: String): Result<Unit> = runCatching {
+        post("/channels/$channelId/typing", JSONObject()); Unit
+    }
+
+    /** Marks many channels read at once; [reads] are (channel id, message id). */
+    suspend fun ackBulk(reads: List<Pair<String, String>>): Result<Unit> = runCatching {
+        reads.chunked(100).forEach { chunk ->
+            val arr = JSONArray()
+            chunk.forEach { (c, m) -> arr.put(JSONObject().put("channel_id", c).put("message_id", m).put("read_state_type", 0)) }
+            post("/read-states/ack-bulk", JSONObject().put("read_states", arr))
+        }
+    }
+
+    // ---- Pins, search ----
+
+    suspend fun getPins(channelId: String): Result<List<DiscordMessage>> = runCatching {
+        DiscordMessage.listFromJson(JSONArray(get("/channels/$channelId/pins")))
+    }
+
+    suspend fun setPinned(channelId: String, messageId: String, pinned: Boolean): Result<Unit> = runCatching {
+        if (pinned) put("/channels/$channelId/pins/$messageId") else delete("/channels/$channelId/pins/$messageId")
+        Unit
+    }
+
+    /** Thrown when Discord is still indexing a channel for search (it answers 202 with a retry hint). */
+    class SearchNotReadyException : java.io.IOException("Search isn't ready yet")
+
+    /** Messages matching [query] in [channelId] (a server channel when [guildId] is set, else a DM), newest first. */
+    suspend fun searchMessages(guildId: String?, channelId: String, query: String): Result<List<DiscordMessage>> = runCatching {
+        val q = java.net.URLEncoder.encode(query, "UTF-8")
+        val path = if (guildId != null) "/guilds/$guildId/messages/search?content=$q&channel_id=$channelId"
+        else "/channels/$channelId/messages/search?content=$q"
+        val response = send(buildRequest(path).get().build())
+        if (response.code == 202) throw SearchNotReadyException()
+        val o = JSONObject(checked(response))
+        val groups = o.optJSONArray("messages") ?: JSONArray()
+        (0 until groups.length()).mapNotNull { i ->
+            val group = groups.optJSONArray(i) ?: return@mapNotNull null
+            // Each hit comes with context messages around it; the hit itself is flagged.
+            val hit = (0 until group.length()).map { group.getJSONObject(it) }.firstOrNull { it.optBoolean("hit") }
+                ?: group.optJSONObject(0) ?: return@mapNotNull null
+            runCatching { DiscordMessage.fromJson(hit) }.getOrNull()
+        }
+    }
+
+    // ---- People ----
+
+    suspend fun getRelationships(): Result<List<Relationship>> = runCatching {
+        Relationship.listFromJson(JSONArray(get("/users/@me/relationships")))
+    }
+
+    /** Accepts a friend request (or sends one back). */
+    suspend fun acceptFriend(userId: String): Result<Unit> = runCatching { put("/users/@me/relationships/$userId"); Unit }
+
+    /** Declines/cancels a request, removes a friend, or unblocks. */
+    suspend fun removeRelationship(userId: String): Result<Unit> = runCatching { delete("/users/@me/relationships/$userId"); Unit }
+
+    suspend fun blockUser(userId: String): Result<Unit> = runCatching {
+        put("/users/@me/relationships/$userId", JSONObject().put("type", Relationship.BLOCKED)); Unit
+    }
+
+    /** Sets our nickname in [guildId]; blank clears it. */
+    suspend fun setNickname(guildId: String, nick: String): Result<Unit> = runCatching {
+        patch("/guilds/$guildId/members/@me", JSONObject().put("nick", nick.ifBlank { JSONObject.NULL }))
+        Unit
+    }
+
+    /** Creates a group DM with [userIds]. */
+    suspend fun createGroupDm(userIds: List<String>): Result<Channel> = runCatching {
+        Channel.fromJson(JSONObject(post("/users/@me/channels", JSONObject().put("recipients", JSONArray(userIds)))))
+    }
+
+    suspend fun addToGroup(channelId: String, userId: String): Result<Unit> = runCatching {
+        put("/channels/$channelId/recipients/$userId"); Unit
+    }
+
+    // ---- Sending ----
+
+    /** Forwards [messageId] (from [fromChannelId]) to [toChannelId]. */
+    suspend fun forwardMessage(toChannelId: String, fromChannelId: String, fromGuildId: String?, messageId: String): Result<DiscordMessage> = runCatching {
+        val ref = JSONObject().put("type", 1).put("message_id", messageId).put("channel_id", fromChannelId)
+        if (fromGuildId != null) ref.put("guild_id", fromGuildId)
+        DiscordMessage.fromJson(JSONObject(post("/channels/$toChannelId/messages", JSONObject().put("message_reference", ref).put("nonce", nonce()))))
+    }
+
+    /** Posts a poll; [answers] are (text, emoji or null). */
+    suspend fun createPoll(channelId: String, question: String, answers: List<Pair<String, String?>>, hours: Int, multiselect: Boolean): Result<DiscordMessage> = runCatching {
+        val arr = JSONArray()
+        answers.forEach { (text, emoji) ->
+            val media = JSONObject().put("text", text)
+            if (emoji != null) media.put("emoji", JSONObject().put("name", emoji))
+            arr.put(JSONObject().put("poll_media", media))
+        }
+        val poll = JSONObject()
+            .put("question", JSONObject().put("text", question))
+            .put("answers", arr)
+            .put("duration", hours)
+            .put("allow_multiselect", multiselect)
+            .put("layout_type", 1)
+        DiscordMessage.fromJson(JSONObject(post("/channels/$channelId/messages", JSONObject().put("poll", poll).put("nonce", nonce()))))
+    }
+
+    // ---- Servers ----
+
+    suspend fun getInvite(code: String): Result<InvitePreview> = runCatching {
+        InvitePreview.fromJson(JSONObject(get("/invites/$code?with_counts=true")))
+    }
+
+    /** Joins the server behind [code] (a captcha may be asked, like on Discord's own client). */
+    suspend fun joinInvite(code: String): Result<Unit> = runCatching {
+        val context = java.util.Base64.getEncoder().encodeToString("{\"location\":\"Markdown Link\"}".toByteArray())
+        postWith("/invites/$code", JSONObject(), "X-Context-Properties" to context)
+        Unit
+    }
+
+    suspend fun leaveGuild(guildId: String): Result<Unit> = runCatching {
+        execute(buildRequest("/users/@me/guilds/$guildId").delete(JSONObject().put("lurking", false).toString().toRequestBody(jsonMime)).build())
+        Unit
+    }
+
+    suspend fun getScheduledEvents(guildId: String): Result<List<ScheduledEvent>> = runCatching {
+        ScheduledEvent.listFromJson(JSONArray(get("/guilds/$guildId/scheduled-events?with_user_count=true")))
+    }
+
+    suspend fun setEventInterest(guildId: String, eventId: String, interested: Boolean): Result<Unit> = runCatching {
+        val path = "/guilds/$guildId/scheduled-events/$eventId/users/@me"
+        if (interested) put(path) else delete(path)
+        Unit
+    }
+
+    /** On a stage: ask to speak (or take the request back). */
+    suspend fun requestToSpeak(guildId: String, channelId: String, request: Boolean): Result<Unit> = runCatching {
+        val at: Any = if (request) java.time.Instant.now().toString() else JSONObject.NULL
+        patch("/guilds/$guildId/voice-states/@me", JSONObject().put("channel_id", channelId).put("request_to_speak_timestamp", at))
+        Unit
+    }
+
+    // ---- Soundboard ----
+
+    suspend fun getDefaultSounds(): Result<List<SoundboardSound>> = runCatching {
+        SoundboardSound.listFromJson(JSONArray(get("/soundboard-default-sounds")))
+    }
+
+    suspend fun getGuildSounds(guildId: String): Result<List<SoundboardSound>> = runCatching {
+        SoundboardSound.listFromJson(JSONObject(get("/guilds/$guildId/soundboard-sounds")).optJSONArray("items"))
+    }
+
+    suspend fun playSound(voiceChannelId: String, sound: SoundboardSound): Result<Unit> = runCatching {
+        val body = JSONObject().put("sound_id", sound.id)
+        if (sound.guildId != null) body.put("source_guild_id", sound.guildId)
+        post("/channels/$voiceChannelId/send-soundboard-sound", body)
+        Unit
+    }
+
+    // ---- Bots: commands and components ----
+
+    /** Slash commands usable in [channelId] (a server's when [guildId] is set). */
+    suspend fun getCommands(guildId: String?, channelId: String): Result<List<ApplicationCommand>> = runCatching {
+        val path = if (guildId != null) "/guilds/$guildId/application-command-index" else "/channels/$channelId/application-command-index"
+        ApplicationCommand.indexFromJson(JSONObject(get(path)))
+    }
+
+    /** Runs [command] with [options] (name to value). Returns the nonce the gateway's answer will carry. */
+    suspend fun runCommand(
+        command: ApplicationCommand,
+        options: Map<String, Any>,
+        guildId: String?,
+        channelId: String,
+        sessionId: String,
+    ): Result<String> = runCatching {
+        val opts = JSONArray()
+        command.options.filter { it.name in options }.forEach { o ->
+            opts.put(JSONObject().put("type", o.type).put("name", o.name).put("value", options[o.name]))
+        }
+        val data = JSONObject()
+            .put("version", command.version)
+            .put("id", command.id)
+            .put("name", command.name)
+            .put("type", 1)
+            .put("options", opts)
+            .put("application_command", command.raw)
+            .put("attachments", JSONArray())
+        val n = nonce()
+        post("/interactions", interaction(2, command.applicationId, guildId, channelId, sessionId, n).put("data", data))
+        n
+    }
+
+    /** Presses a bot button, or picks [values] in its menu. Returns the nonce. */
+    suspend fun pressComponent(
+        message: DiscordMessage,
+        componentType: Int,
+        customId: String,
+        values: List<String>?,
+        guildId: String?,
+        sessionId: String,
+    ): Result<String> = runCatching {
+        val appId = message.applicationId ?: error("This message has no bot behind it")
+        val data = JSONObject().put("component_type", componentType).put("custom_id", customId)
+        if (values != null) data.put("values", JSONArray(values))
+        val n = nonce()
+        val body = interaction(3, appId, guildId, message.channelId, sessionId, n)
+            .put("message_id", message.id)
+            .put("message_flags", message.flags)
+            .put("data", data)
+        post("/interactions", body)
+        n
+    }
+
+    private fun interaction(type: Int, appId: String, guildId: String?, channelId: String, sessionId: String, nonce: String) =
+        JSONObject()
+            .put("type", type)
+            .put("application_id", appId)
+            .put("guild_id", guildId ?: JSONObject.NULL)
+            .put("channel_id", channelId)
+            .put("session_id", sessionId)
+            .put("nonce", nonce)
+
     /** The user's online status ("online", "idle", "dnd", "invisible") and custom status text. */
     suspend fun getStatus(): Result<Pair<String, String>> = runCatching {
         val o = JSONObject(get("/users/@me/settings"))
@@ -269,6 +501,11 @@ class DiscordRestClient(private val token: String, private val baseUrl: String =
 
     suspend fun getDmChannels(): Result<List<Channel>> = runCatching {
         Channel.listFromJson(JSONArray(get("/users/@me/channels"))).filter { it.isDm }
+    }
+
+    /** The newest page as raw JSON (newest first), for the offline cache. */
+    suspend fun getMessagesRaw(channelId: String, limit: Int): Result<String> = runCatching {
+        get("/channels/$channelId/messages?limit=${limit.coerceIn(1, 100)}")
     }
 
     /** Newest first. With [before], the page of messages older than that message id. */

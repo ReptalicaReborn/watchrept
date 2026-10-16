@@ -200,8 +200,12 @@ data class UserPresence(
     val status: OnlineStatus = OnlineStatus.OFFLINE,
     val clientStatus: ClientStatus = ClientStatus(),
     val customStatusText: String? = null,
-    val customStatusEmoji: String? = null
+    val customStatusEmoji: String? = null,
+    val activities: List<Activity> = emptyList(),
 ) {
+    /** "Playing Minecraft" etc., the first one that has a label. */
+    val activityLabel: String? get() = activities.firstNotNullOfOrNull { it.label }
+
     companion object {
         private fun parseStatus(s: String?) = when (s) {
             "online" -> OnlineStatus.ONLINE
@@ -246,7 +250,7 @@ data class UserPresence(
                     }
                 }
             }
-            return UserPresence(userId, status, clientStatus, customText, customEmoji)
+            return UserPresence(userId, status, clientStatus, customText, customEmoji, Activity.listFromJson(activities))
         }
     }
 }
@@ -291,7 +295,7 @@ enum class ChannelType(val code: Int) {
     GUILD_TEXT(0), DM(1), GUILD_VOICE(2), GROUP_DM(3),
     GUILD_CATEGORY(4), GUILD_NEWS(5),
     ANNOUNCEMENT_THREAD(10), PUBLIC_THREAD(11), PRIVATE_THREAD(12),
-    GUILD_FORUM(15), GUILD_MEDIA(16), UNKNOWN(-1);
+    GUILD_STAGE_VOICE(13), GUILD_FORUM(15), GUILD_MEDIA(16), UNKNOWN(-1);
 
     companion object {
         fun from(code: Int) = entries.firstOrNull { it.code == code } ?: UNKNOWN
@@ -472,7 +476,9 @@ data class Channel(
     val isDm: Boolean get() = type == ChannelType.DM || type == ChannelType.GROUP_DM
     val isText: Boolean get() = type == ChannelType.GUILD_TEXT || type == ChannelType.GUILD_NEWS
     val isCategory: Boolean get() = type == ChannelType.GUILD_CATEGORY
-    val isVoice: Boolean get() = type == ChannelType.GUILD_VOICE
+    /** Voice and stage channels: both are joined over the voice connection. */
+    val isVoice: Boolean get() = type == ChannelType.GUILD_VOICE || type == ChannelType.GUILD_STAGE_VOICE
+    val isStage: Boolean get() = type == ChannelType.GUILD_STAGE_VOICE
     /** Forum and media channels hold posts (threads) instead of messages. */
     val isForum: Boolean get() = type == ChannelType.GUILD_FORUM || type == ChannelType.GUILD_MEDIA
 
@@ -700,6 +706,8 @@ object ContentParser {
         data class RoleMention(val roleId: String, val roleName: String) : Part()
         data class ChannelMention(val channelId: String, val channelName: String) : Part()
         data class Link(val url: String) : Part()
+        /** A `<t:unix:style>` tag; [style] is null for the default. */
+        data class Timestamp(val epochSeconds: Long, val style: Char?) : Part()
     }
 
     data class MarkdownSpan(
@@ -859,6 +867,7 @@ object ContentParser {
                 "|<@!?\\d+>" +
                 "|<@&\\d+>" +
                 "|<#\\d+>" +
+                "|<t:-?\\d{1,13}(?::[tTdDfFR])?>" +
                 "|https?://[^\\s>]+"
     )
 
@@ -901,6 +910,12 @@ object ContentParser {
                 token.startsWith("<@") -> {
                     val id = token.removePrefix("<@!").removePrefix("<@").removeSuffix(">")
                     parts += Part.UserMention(id, userNames[id] ?: "@unknown")
+                }
+
+                token.startsWith("<t:") -> {
+                    val m = DiscordTimestamp.REGEX.matchEntire(token)
+                    val secs = m?.groupValues?.get(1)?.toLongOrNull()
+                    parts += if (secs != null) Part.Timestamp(secs, m.groupValues[2].firstOrNull()) else Part.PlainText(token)
                 }
 
                 token.startsWith("<#") -> {
@@ -1038,7 +1053,12 @@ data class DiscordMessage(
     /** Non-null if this message started a thread. */
     val threadId: String? = null,
     val threadMessageCount: Int = 0,
-    val poll: Poll? = null
+    val poll: Poll? = null,
+    /** Bot buttons, menus and components-v2 layout. */
+    val components: List<MessageComponent> = emptyList(),
+    /** The bot application behind the message, needed to press its buttons. */
+    val applicationId: String? = null,
+    val flags: Int = 0,
 ) {
     fun pingFor(userId: String, memberRoleIds: List<String> = emptyList()): Boolean =
         mentionEveryone ||
@@ -1170,7 +1190,12 @@ data class DiscordMessage(
                 threadId = o.optJSONObject("thread")?.optString("id")
                     ?.takeIf { it.isNotEmpty() && it != "null" },
                 threadMessageCount = o.optJSONObject("thread")?.optInt("message_count", 0) ?: 0,
-                poll = o.optJSONObject("poll")?.let { runCatching { Poll.fromJson(it) }.getOrNull() }
+                poll = o.optJSONObject("poll")?.let { runCatching { Poll.fromJson(it) }.getOrNull() },
+                components = runCatching { MessageComponent.listFromJson(o.optJSONArray("components")) }.getOrDefault(emptyList()),
+                applicationId = o.nullableString("application_id")
+                    ?: o.optJSONObject("interaction_metadata")?.let { if (it.isNull("application_id")) null else it.optString("application_id") }
+                    ?: o.optJSONObject("author")?.takeIf { it.optBoolean("bot") }?.optString("id"),
+                flags = o.optInt("flags", 0),
             )
         }
 

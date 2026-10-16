@@ -114,6 +114,8 @@ class DihcordApp : Application(), ImageLoaderFactory {
         com.dihcord.app.voice.VoiceManager.leave()
         UnreadSummary.reset(this)
         NotificationService.stop(this)
+        // Saved chats belong to the account that's leaving.
+        repository?.clearOfflineCache()
         repository?.close()
         _repositoryFlow.value = null
     }

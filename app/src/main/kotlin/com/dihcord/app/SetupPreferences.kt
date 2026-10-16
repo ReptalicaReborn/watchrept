@@ -338,5 +338,7 @@ object SetupPreferences {
     fun clearAll(context: Context) {
         clearToken(context)
         clearDiscordCache(context)
+        FeaturePreferences.clear(context)
+        com.dihcord.app.api.MessageCache(com.dihcord.app.api.MessageCache.dirFor(context)).clear()
     }
 }

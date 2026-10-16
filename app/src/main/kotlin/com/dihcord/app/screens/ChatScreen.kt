@@ -2115,6 +2115,10 @@ private fun InlineMessageLine(
                     append("#${part.channelName}")
                 }
 
+                is ContentParser.Part.Timestamp -> withStyle(
+                    SpanStyle(background = colors.surfaceContainerHigh)
+                ) { append(com.dihcord.app.api.DiscordTimestamp.format(part.epochSeconds, part.style)) }
+
                 is ContentParser.Part.Link -> withLink(
                     androidx.compose.ui.text.LinkAnnotation.Url(
                         part.url,
@@ -2325,18 +2329,20 @@ private fun MessageContent(
                                         )
                                     ) { append(part.url) }
                                 }
+                                // Through the app's link handler: Discord links open in the app, others on the phone.
+                                val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
                                 Text(
                                     text = annotated,
                                     style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.clickable {
-                                        runCatching {
-                                            val intent = Intent(Intent.ACTION_VIEW, part.url.toUri())
-                                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            context.startActivity(intent)
-                                        }
-                                    }
+                                    modifier = Modifier.clickable { runCatching { uriHandler.openUri(part.url) } }
                                 )
                             }
+
+                            is ContentParser.Part.Timestamp -> Text(
+                                com.dihcord.app.api.DiscordTimestamp.format(part.epochSeconds, part.style),
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(4.dp))
+                            )
                         }
                     }
                 }

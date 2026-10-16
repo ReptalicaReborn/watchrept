@@ -64,6 +64,13 @@ class DiscordGateway(private val token: String) {
 
     val isConnected: Boolean get() = connected
 
+    private val _online = kotlinx.coroutines.flow.MutableStateFlow(false)
+    /** True from READY/RESUMED until the socket drops: whether live data is flowing. */
+    val online: kotlinx.coroutines.flow.StateFlow<Boolean> = _online
+
+    /** This session's id, which interactions (bot buttons, slash commands) must carry. */
+    val currentSessionId: String? get() = sessionId
+
     /** False after [pause]: scheduled reconnects (after errors, RECONNECT, INVALID_SESSION) then stay quiet. */
     @Volatile private var wanted = true
 
@@ -104,6 +111,7 @@ class DiscordGateway(private val token: String) {
     @Synchronized
     private fun close(code: Int) {
         connected = false
+        _online.value = false
         heartbeatJob?.cancel()
         ws?.close(code, "Goodbye")
         ws = null
@@ -114,6 +122,7 @@ class DiscordGateway(private val token: String) {
     private fun lost(socket: WebSocket, reconnectInMs: Long?) {
         if (socket !== ws) return
         connected = false
+        _online.value = false
         heartbeatJob?.cancel()
         ws = null
         if (reconnectInMs != null) reconnectLater(reconnectInMs)
@@ -184,6 +193,18 @@ class DiscordGateway(private val token: String) {
                 .put("self_mute", selfMute)
                 .put("self_deaf", selfDeaf)
                 .put("self_video", false)
+        )
+    }
+
+    /** Asks for the first 100 rows of [guildId]'s member list as seen from [channelId] (GUILD_MEMBER_LIST_UPDATE). */
+    fun subscribeMemberList(guildId: String, channelId: String) {
+        send(
+            14,
+            JSONObject()
+                .put("guild_id", guildId)
+                .put("typing", true)
+                .put("activities", true)
+                .put("channels", JSONObject().put(channelId, JSONArray().put(JSONArray().put(0).put(99))))
         )
     }
 
@@ -389,10 +410,59 @@ class DiscordGateway(private val token: String) {
                         }
                     }
                 }
+                _online.value = true
                 if (user != null) {
-                    GatewayEvent.Ready(user, readState, presences, folders, guildEmojis, guildStickers, voiceStates)
+                    GatewayEvent.Ready(
+                        user, readState, presences, folders, guildEmojis, guildStickers, voiceStates,
+                        guilds = ReadyParsing.guilds(d, user.id),
+                        notifySettings = ReadyParsing.notifySettings(d.opt("user_guild_settings")),
+                        relationships = Relationship.listFromJson(d.optJSONArray("relationships")),
+                    )
                 } else null
             }
+
+            "RESUMED" -> { _online.value = true; null }
+
+            "MESSAGE_ACK" -> runCatching {
+                GatewayEvent.MessageAck(
+                    channelId = d.getString("channel_id"),
+                    messageId = d.getString("message_id"),
+                    mentionCount = d.optInt("mention_count", 0),
+                )
+            }.getOrNull()
+
+            "GUILD_MEMBER_LIST_UPDATE" -> runCatching {
+                GatewayEvent.MemberListUpdate(
+                    guildId = d.getString("guild_id"),
+                    listId = d.optString("id"),
+                    memberCount = d.optInt("member_count"),
+                    onlineCount = d.optInt("online_count"),
+                    ops = MemberListOp.listFromJson(d.optJSONArray("ops")),
+                )
+            }.getOrNull()
+
+            "RELATIONSHIP_ADD", "RELATIONSHIP_UPDATE" -> Relationship.fromJson(d)?.let { GatewayEvent.RelationshipAdd(it) }
+
+            "RELATIONSHIP_REMOVE" -> d.optString("id").takeIf { it.isNotEmpty() }?.let { GatewayEvent.RelationshipRemove(it) }
+
+            "VOICE_CHANNEL_EFFECT_SEND" -> d.optString("sound_id").takeIf { it.isNotEmpty() && it != "null" }?.let { sound ->
+                GatewayEvent.SoundboardPlay(
+                    channelId = d.optString("channel_id"),
+                    userId = d.optString("user_id"),
+                    soundId = sound,
+                    volume = d.optDouble("sound_volume", 1.0),
+                )
+            }
+
+            "INTERACTION_SUCCESS" -> GatewayEvent.InteractionResult(d.optString("nonce"), success = true)
+            "INTERACTION_FAILURE" -> GatewayEvent.InteractionResult(d.optString("nonce"), success = false)
+
+            "GUILD_CREATE" -> runCatching { GatewayEvent.GuildJoined(Guild.fromJson(d)) }.getOrNull()
+            "GUILD_DELETE" -> d.optString("id").takeIf { it.isNotEmpty() && !d.optBoolean("unavailable", false) }
+                ?.let { GatewayEvent.GuildLeft(it) }
+
+            "USER_GUILD_SETTINGS_UPDATE" -> ReadyParsing.notifySettings(JSONArray().put(d))
+                .entries.firstOrNull()?.let { (guildId, settings) -> GatewayEvent.NotifySettingsUpdate(guildId, settings) }
 
             "MESSAGE_CREATE" -> runCatching {
                 val msg = DiscordMessage.fromJson(d)
@@ -580,8 +650,31 @@ sealed class GatewayEvent {
         val folders: List<GuildFolder> = emptyList(),
         val guildEmojis: Map<String, List<GuildEmoji>> = emptyMap(),
         val guildStickers: Map<String, List<StickerItem>> = emptyMap(),
-        val voiceStates: List<VoiceState> = emptyList()
+        val voiceStates: List<VoiceState> = emptyList(),
+        val guilds: List<ReadyGuild> = emptyList(),
+        /** Keyed by guild id; "" holds the DM settings. */
+        val notifySettings: Map<String, NotifySettings> = emptyMap(),
+        val relationships: List<Relationship> = emptyList(),
     ) : GatewayEvent()
+
+    /** Another device (or this one) marked [channelId] read up to [messageId]. */
+    data class MessageAck(val channelId: String, val messageId: String, val mentionCount: Int) : GatewayEvent()
+    data class MemberListUpdate(
+        val guildId: String,
+        val listId: String,
+        val memberCount: Int,
+        val onlineCount: Int,
+        val ops: List<MemberListOp>,
+    ) : GatewayEvent()
+    data class RelationshipAdd(val relationship: Relationship) : GatewayEvent()
+    data class RelationshipRemove(val userId: String) : GatewayEvent()
+    /** Someone played a soundboard sound in a voice channel. */
+    data class SoundboardPlay(val channelId: String, val userId: String, val soundId: String, val volume: Double) : GatewayEvent()
+    /** A bot answered (or failed) an interaction we sent with [nonce]. */
+    data class InteractionResult(val nonce: String, val success: Boolean) : GatewayEvent()
+    data class GuildJoined(val guild: Guild) : GatewayEvent()
+    data class GuildLeft(val guildId: String) : GatewayEvent()
+    data class NotifySettingsUpdate(val guildId: String, val settings: NotifySettings) : GatewayEvent()
 
     data class VoiceStateUpdate(val state: VoiceState) : GatewayEvent()
     /** A DM/group call started or changed; [ringing] is who is being rung right now. */
@@ -664,7 +757,11 @@ data class VoiceState(
     val serverDeaf: Boolean,
     /** From the member object, when the event carries one. */
     val user: DiscordUser? = null,
-    val nick: String? = null
+    val nick: String? = null,
+    /** On a stage: true for listeners (not speakers). */
+    val suppress: Boolean = false,
+    /** On a stage: set while they've asked to speak. */
+    val requestToSpeak: Boolean = false,
 ) {
     val muted: Boolean get() = selfMute || serverMute
     val deafened: Boolean get() = selfDeaf || serverDeaf
@@ -683,8 +780,101 @@ data class VoiceState(
                 serverMute = o.optBoolean("mute"),
                 serverDeaf = o.optBoolean("deaf"),
                 user = member?.optJSONObject("user")?.let { runCatching { DiscordUser.fromJson(it) }.getOrNull() },
-                nick = member?.optString("nick")?.takeIf { it.isNotEmpty() && it != "null" }
+                nick = member?.optString("nick")?.takeIf { it.isNotEmpty() && it != "null" },
+                suppress = o.optBoolean("suppress", false),
+                requestToSpeak = !o.isNull("request_to_speak_timestamp") && o.optString("request_to_speak_timestamp").isNotEmpty(),
             )
         }
+    }
+}
+
+/** What READY says about one server: its channels and roles, and our roles in it (null if not sent). */
+data class ReadyGuild(
+    val id: String,
+    val ownerId: String?,
+    val channels: List<Channel>,
+    val roles: List<GuildRole>,
+    val myRoleIds: List<String>?,
+)
+
+/**
+ * Discord's notification settings for a server (or DMs): [level] 0 all messages, 1 only mentions,
+ * 2 nothing, 3 the server's default; [muteUntil] is epoch ms, 0 for "until I unmute".
+ */
+data class NotifySettings(
+    val muted: Boolean,
+    val muteUntil: Long,
+    val level: Int,
+    val channels: Map<String, ChannelNotify>,
+) {
+    fun mutedNow(now: Long = System.currentTimeMillis()) = muted && (muteUntil == 0L || muteUntil > now)
+}
+
+data class ChannelNotify(val muted: Boolean, val muteUntil: Long, val level: Int) {
+    fun mutedNow(now: Long = System.currentTimeMillis()) = muted && (muteUntil == 0L || muteUntil > now)
+}
+
+internal object ReadyParsing {
+    private fun ids(arr: JSONArray?): List<String> = (0 until (arr?.length() ?: 0)).mapNotNull { arr?.optString(it) }
+
+    fun guilds(d: JSONObject, myId: String): List<ReadyGuild> {
+        val arr = d.optJSONArray("guilds") ?: return emptyList()
+        // With some client capabilities our member objects come separately, one array per guild, in order.
+        val merged = d.optJSONArray("merged_members")
+        return (0 until arr.length()).mapNotNull { i ->
+            val g = arr.optJSONObject(i) ?: return@mapNotNull null
+            val id = g.optString("id").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val props = g.optJSONObject("properties")
+            val channels = g.optJSONArray("channels")?.let { ch ->
+                (0 until ch.length()).mapNotNull { j ->
+                    ch.optJSONObject(j)?.let { o -> runCatching { Channel.fromJson(o.put("guild_id", id)) }.getOrNull() }
+                }
+            }.orEmpty()
+            val roles = g.optJSONArray("roles")?.let { runCatching { GuildRole.listFromJson(it) }.getOrNull() }.orEmpty()
+            fun rolesIn(list: JSONArray?): List<String>? {
+                if (list == null) return null
+                for (j in 0 until list.length()) {
+                    val m = list.optJSONObject(j) ?: continue
+                    val uid = m.optString("user_id").ifEmpty { m.optJSONObject("user")?.optString("id").orEmpty() }
+                    if (uid == myId) return ids(m.optJSONArray("roles"))
+                }
+                return null
+            }
+            ReadyGuild(
+                id = id,
+                ownerId = (g.optString("owner_id").ifEmpty { props?.optString("owner_id").orEmpty() }).ifEmpty { null },
+                channels = channels,
+                roles = roles,
+                myRoleIds = rolesIn(merged?.optJSONArray(i)) ?: rolesIn(g.optJSONArray("members")),
+            )
+        }
+    }
+
+    private fun muteEnd(o: JSONObject): Long {
+        val end = o.optJSONObject("mute_config")?.let { if (it.isNull("end_time")) null else it.optString("end_time") }
+        return end?.let { runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull() } ?: 0L
+    }
+
+    /** `user_guild_settings` is a list in some READY versions and `{entries: [...]}` in others. */
+    fun notifySettings(raw: Any?): Map<String, NotifySettings> {
+        val arr = when (raw) {
+            is JSONArray -> raw
+            is JSONObject -> raw.optJSONArray("entries")
+            else -> null
+        } ?: return emptyMap()
+        val out = mutableMapOf<String, NotifySettings>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val guildId = if (o.isNull("guild_id")) "" else o.optString("guild_id")
+            val overrides = o.optJSONArray("channel_overrides")
+            val channels = mutableMapOf<String, ChannelNotify>()
+            for (j in 0 until (overrides?.length() ?: 0)) {
+                val c = overrides!!.optJSONObject(j) ?: continue
+                val cid = c.optString("channel_id").takeIf { it.isNotEmpty() } ?: continue
+                channels[cid] = ChannelNotify(c.optBoolean("muted"), muteEnd(c), c.optInt("message_notifications", 3))
+            }
+            out[guildId] = NotifySettings(o.optBoolean("muted"), muteEnd(o), o.optInt("message_notifications", 3), channels)
+        }
+        return out
     }
 }
