@@ -122,6 +122,7 @@ fun ThreadScreen(
     var pendingText by remember { mutableStateOf("") }
     var selectedMsg by remember { mutableStateOf<DiscordMessage?>(null) }
     var replyingTo by remember { mutableStateOf<DiscordMessage?>(null) }
+    var imageDraft by remember { mutableStateOf<ImageDraft?>(null) }
     var replyPing by remember { mutableStateOf(true) }
     var reactingToMsg by remember { mutableStateOf<DiscordMessage?>(null) }
     var showPicker by remember { mutableStateOf(false) }
@@ -377,22 +378,8 @@ fun ThreadScreen(
             imageLoader = imageLoader,
             onImageSelected = { uri, mime ->
                 showPhotoPicker = false
-                scope.launch {
-                    runCatching {
-                        val cr = context.contentResolver
-                        val ext = when {
-                            mime.contains("png") -> "png"
-                            mime.contains("gif") -> "gif"
-                            mime.contains("webp") -> "webp"
-                            else -> "jpg"
-                        }
-                        val bytes = withContext(Dispatchers.IO) {
-                            cr.openInputStream(uri)?.use { it.readBytes() }
-                        } ?: throw Exception("Cannot read image")
-                        repo.sendFileAttachment(threadId, bytes, "image.$ext", mime)
-                            .onFailure { uploadError = "Upload failed: ${it.message}" }
-                    }.onFailure { uploadError = "Error: ${it.message}" }
-                }
+                // Wait for Send so the image can go out with a caption and/or as a reply.
+                imageDraft = ImageDraft(uri, mime)
             },
             onDismiss = { showPhotoPicker = false }
         )
@@ -609,6 +596,9 @@ fun ThreadScreen(
             // Text input
             item(key = "text_input") {
               Column(modifier = Modifier.fillMaxWidth()) {
+                imageDraft?.let { draft ->
+                    ImageDraftChip(draft, imageLoader) { imageDraft = null }
+                }
                 if (mentionQuery != null) {
                     MentionSuggestions(mentionSuggestions) { c ->
                         val newText = MentionInput.complete(inputText, c)
@@ -663,21 +653,32 @@ fun ThreadScreen(
                                 val raw = inputText
                                 val mentions = pickedMentions
                                 val text = MentionInput.toWire(raw.trim(), mentions)
-                                if (text.isBlank()) return@FilledIconButton
+                                val image = imageDraft
+                                if (text.isBlank() && image == null) return@FilledIconButton
                                 pickedMentions = emptyMap()
                                 inputText = ""
                                 pendingText = ""
+                                imageDraft = null
                                 val replyTarget = replyingTo
                                 val ping = replyPing
                                 replyingTo = null
                                 replyPing = true
                                 scope.launch {
-                                    val result = if (replyTarget != null) {
-                                        repo.sendReply(threadId, text, replyTarget.id, ping)
-                                    } else {
-                                        repo.sendMessage(threadId, text)
+                                    val result = when {
+                                        image != null -> runCatching { image.readBytes(context) }.fold(
+                                            onSuccess = { bytes ->
+                                                repo.sendFileAttachment(
+                                                    threadId, bytes, image.filename, image.mime, text,
+                                                    replyTarget?.id, ping
+                                                )
+                                            },
+                                            onFailure = { Result.failure(it) }
+                                        )
+                                        replyTarget != null -> repo.sendReply(threadId, text, replyTarget.id, ping)
+                                        else -> repo.sendMessage(threadId, text)
                                     }
                                     result.onFailure {
+                                        if (image != null && imageDraft == null) imageDraft = image
                                         sendError = "Failed: ${it.message}"
                                         // Give the draft back so it can be retried, unless something new was typed.
                                         if (inputText.isEmpty()) {
@@ -693,7 +694,7 @@ fun ThreadScreen(
                                 }
                             },
                             modifier = Modifier.size(40.dp),
-                            enabled = inputText.isNotBlank()
+                            enabled = inputText.isNotBlank() || imageDraft != null
                         ) {
                             Icon(painter = painterResource(id = R.drawable.send),
                                 contentDescription = "Send")

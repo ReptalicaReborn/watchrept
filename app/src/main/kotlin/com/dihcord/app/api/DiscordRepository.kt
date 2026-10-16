@@ -678,9 +678,11 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         fileBytes: ByteArray,
         filename: String,
         mimeType: String,
-        caption: String = ""
+        caption: String = "",
+        replyToId: String? = null,
+        ping: Boolean = true
     ): Result<DiscordMessage> {
-        val result = rest.sendFileAttachment(channelId, fileBytes, filename, mimeType, caption)
+        val result = rest.sendFileAttachment(channelId, fileBytes, filename, mimeType, caption, replyToId, ping)
         result.onSuccess { msg ->
             lastSentAt[channelId] = System.currentTimeMillis()
             _messages.update { current ->

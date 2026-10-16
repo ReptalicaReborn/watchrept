@@ -345,7 +345,9 @@ class DiscordRestClient(private val token: String) {
         fileBytes: ByteArray,
         filename: String,
         mimeType: String,
-        caption: String = ""
+        caption: String = "",
+        replyToId: String? = null,
+        ping: Boolean = true
     ): Result<DiscordMessage> = runCatching {
         withContext(Dispatchers.IO) {
             val payloadJson = JSONObject()
@@ -355,6 +357,17 @@ class DiscordRestClient(private val token: String) {
                         JSONObject().put("id", 0).put("filename", filename)
                     )
                 )
+                .apply {
+                    if (replyToId != null) {
+                        put(
+                            "message_reference", JSONObject()
+                                .put("message_id", replyToId)
+                                .put("channel_id", channelId)
+                                .put("fail_if_not_exists", false)
+                        )
+                        put("allowed_mentions", JSONObject().put("replied_user", ping))
+                    }
+                }
                 .toString()
 
             val multipart = MultipartBody.Builder()

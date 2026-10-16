@@ -117,6 +117,7 @@ fun ChatScreen(
     var inputText by remember { mutableStateOf("") }
     var pendingText by remember { mutableStateOf("") }
     var replyingTo by remember { mutableStateOf<DiscordMessage?>(null) }
+    var imageDraft by remember { mutableStateOf<ImageDraft?>(null) }
     var replyPing by remember { mutableStateOf(true) }
     var selectedMsg by remember { mutableStateOf<DiscordMessage?>(null) }
     var threadSourceMsg by remember { mutableStateOf<DiscordMessage?>(null) }
@@ -424,22 +425,8 @@ fun ChatScreen(
             imageLoader = imageLoader,
             onImageSelected = { uri, mime ->
                 showPhotoPicker = false
-                scope.launch {
-                    runCatching {
-                        val cr = context.contentResolver
-                        val ext = when {
-                            mime.contains("png") -> "png"
-                            mime.contains("gif") -> "gif"
-                            mime.contains("webp") -> "webp"
-                            else -> "jpg"
-                        }
-                        val bytes = withContext(Dispatchers.IO) {
-                            cr.openInputStream(uri)?.use { it.readBytes() }
-                        } ?: throw Exception("Cannot read image")
-                        repo.sendFileAttachment(channelId, bytes, "image.$ext", mime)
-                            .onFailure { uploadError = "Upload failed: ${it.message}" }
-                    }.onFailure { uploadError = "Error: ${it.message}" }
-                }
+                // Wait for Send so the image can go out with a caption and/or as a reply.
+                imageDraft = ImageDraft(uri, mime)
             },
             onDismiss = { showPhotoPicker = false }
         )
@@ -745,22 +732,32 @@ fun ChatScreen(
     fun sendTyped(raw: String = inputText) {
         val mentions = pickedMentions
         val text = MentionInput.toWire(raw.trim(), mentions)
-        if (text.isBlank() || slowRemaining > 0) return
+        val image = imageDraft
+        if ((text.isBlank() && image == null) || slowRemaining > 0) return
         pickedMentions = emptyMap()
         inputText = ""
         pendingText = ""
+        imageDraft = null
         val replyTarget = replyingTo
         val ping = replyPing
         replyingTo = null
         replyPing = true
         scope.launch {
             slowRemaining = slowModeSecs
-            val result = if (replyTarget != null) {
-                repo.sendReply(channelId, text, replyTarget.id, ping)
-            } else {
-                repo.sendMessage(channelId, text)
+            val result = when {
+                image != null -> runCatching { image.readBytes(context) }.fold(
+                    onSuccess = { bytes ->
+                        repo.sendFileAttachment(
+                            channelId, bytes, image.filename, image.mime, text, replyTarget?.id, ping
+                        )
+                    },
+                    onFailure = { Result.failure(it) }
+                )
+                replyTarget != null -> repo.sendReply(channelId, text, replyTarget.id, ping)
+                else -> repo.sendMessage(channelId, text)
             }
             result.onFailure {
+                if (image != null && imageDraft == null) imageDraft = image
                 sendError = "Failed: ${it.message}"
                 // Give the draft back so it can be retried, unless something new was typed meanwhile.
                 if (inputText.isEmpty()) {
@@ -1024,6 +1021,9 @@ fun ChatScreen(
                         }
 
                         if (canSend) {
+                            imageDraft?.let { draft ->
+                                ImageDraftChip(draft, imageLoader) { imageDraft = null }
+                            }
                             if (mentionQuery != null) {
                                 MentionSuggestions(mentionSuggestions) { c ->
                                     val newText = MentionInput.complete(inputText, c)
@@ -1054,7 +1054,7 @@ fun ChatScreen(
                                 FilledIconButton(
                                     onClick = { sendTyped() },
                                     modifier = Modifier.size(36.dp),
-                                    enabled = inputText.isNotBlank() && slowRemaining <= 0
+                                    enabled = (inputText.isNotBlank() || imageDraft != null) && slowRemaining <= 0
                                 ) {
                                     Icon(
                                         painter = painterResource(id = R.drawable.send),
