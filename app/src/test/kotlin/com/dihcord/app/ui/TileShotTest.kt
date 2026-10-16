@@ -28,13 +28,16 @@ import java.util.concurrent.TimeUnit
 @Config(sdk = [35], qualifiers = "w216dp-h216dp-round-watch-xhdpi")
 class TileShotTest {
 
-    private fun shot(name: String, counts: UnreadSummary.Counts) {
+    private fun shot(name: String, counts: UnreadSummary.Counts) =
+        render(name) { pkg -> UnreadTileService.layout(pkg, counts) }
+
+    private fun render(name: String, root: (String) -> LayoutElementBuilders.LayoutElement) {
         val activity = Robolectric.buildActivity(ComponentActivity::class.java).setup().get()
         // Tiles sit on black on the watch; the test activity's window is light.
         val parent = FrameLayout(activity).apply { setBackgroundColor(android.graphics.Color.BLACK) }
         activity.setContentView(parent)
         val layout = LayoutElementBuilders.Layout.Builder()
-            .setRoot(UnreadTileService.layout(activity.packageName, counts))
+            .setRoot(root(activity.packageName))
             .build()
         val resources = ResourceBuilders.Resources.Builder().setVersion(UnreadTileService.RESOURCES_VERSION).build()
         val renderer = TileRenderer(activity, { it.run() }, { })
@@ -58,4 +61,17 @@ class TileShotTest {
 
     @Test fun tile() = shot("tile", UnreadSummary.Counts(dm = 2, server = 3))
     @Test fun tileEmpty() = shot("tile_empty", UnreadSummary.Counts(dm = 0, server = 0))
+
+    @Test fun recentDms() = render("tile_recent_dms") { pkg ->
+        com.dihcord.app.RecentDmsTileService.layout(pkg, listOf(
+            com.dihcord.app.RecentDmsSummary.Entry("1", "Zaffox", 1, true),
+            com.dihcord.app.RecentDmsSummary.Entry("2", "Mira Okafor", 0, false),
+            com.dihcord.app.RecentDmsSummary.Entry("3", "Game night", 0, true),
+            com.dihcord.app.RecentDmsSummary.Entry("4", "Inês Duarte", 0, false),
+        ))
+    }
+    @Test fun voiceTile() = render("tile_voice") { pkg ->
+        com.dihcord.app.VoiceTileService.layout(pkg, com.dihcord.app.voice.VoiceCall("700", "806", "Lobby", com.dihcord.app.voice.VoiceCall.Status.CONNECTED, muted = true))
+    }
+    @Test fun voiceTileIdle() = render("tile_voice_idle") { pkg -> com.dihcord.app.VoiceTileService.layout(pkg, null) }
 }

@@ -125,7 +125,7 @@ class FullScreenShotTest {
     @Test fun threads() = shot("threads") {
         ThreadListScreen(SampleData.ideas.id, SampleData.ideas.name, SampleData.blockhaven.id, isForum = true) { _, _ -> }
     }
-    @Test fun newDm() = shot("new_dm") { NewDmScreen { _, _ -> } }
+    @Test fun newDm() = shot("new_dm") { NewDmScreen(onOpenDm = { _, _ -> }) }
     @Test fun emoji() = shot("emoji") { EmojiStickerScreen(0, SampleData.blockhaven.id, onEmojiPicked = { _, _ -> }, onUnicodeEmojiPicked = {}, onStickerPicked = { _, _ -> }) }
     @Test fun gifs() = shot("gifs") { GifPickerScreen {} }
     @Test fun reactors() = shot("reactors") {

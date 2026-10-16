@@ -265,13 +265,15 @@ internal fun HomeContent(
         scrollState = state,
         edgeButton = {
             EdgeButton(onClick = onOpenServers) {
-                Icon(painterResource(R.drawable.servers), contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Servers")
-                if (serverMentionCount > 0) {
+                // A badge gets squashed in the curved button; the count reads fine as text (then without the icon, to fit).
+                if (serverMentionCount == 0) {
+                    Icon(painterResource(R.drawable.servers), contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
-                    CountBadge(serverMentionCount)
                 }
+                Text(
+                    if (serverMentionCount > 0) "Servers · ${if (serverMentionCount > 99) "99+" else serverMentionCount}" else "Servers",
+                    maxLines = 1
+                )
             }
         }
     ) { padding ->

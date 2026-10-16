@@ -433,17 +433,17 @@ internal fun CommandFormScreen(command: ApplicationCommand, running: Boolean, er
             if (options.isEmpty()) item { EmptyState(R.drawable.chat, "No options", "Tap Send to run it.") }
             options.forEach { o ->
                 item(key = o.name) {
-                    Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
                             o.name + if (o.required) " *" else "",
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                            modifier = Modifier.padding(start = 6.dp)
+                            textAlign = TextAlign.Center
                         )
                         if (o.description.isNotBlank()) {
-                            Text(o.description, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 6.dp, bottom = 2.dp))
+                            Text(o.description, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center, modifier = Modifier.padding(bottom = 2.dp))
                         }
                         when {
-                            o.choices.isNotEmpty() -> FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            o.choices.isNotEmpty() -> FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 o.choices.forEach { (label, value) ->
                                     val on = values[o.name] == value
                                     Box(

@@ -1636,6 +1636,7 @@ class DiscordRepository(
         presences: List<UserPresence> = emptyList(),
         voiceStates: List<VoiceState> = emptyList(),
         folders: List<GuildFolder> = emptyList(),
+        relationships: List<Relationship> = emptyList(),
     ) {
         _currentUser.value = user
         currentUserId = user.id
@@ -1657,6 +1658,14 @@ class DiscordRepository(
         _readState.value = readState
         _presences.value = presences.associateBy { it.userId }
         _voiceStates.value = voiceStates.filter { it.channelId != null }.associateBy(::voiceKey)
+        relationshipStore.set(relationships)
+        // Everyone can see every channel in the sample servers.
+        val everyone = { gid: String -> GuildRole(gid, "@everyone", 0, 0, Permissions.VIEW_CHANNEL) }
+        unread.onReady(
+            user.id,
+            channels.map { (gid, groups) -> ReadyGuild(gid, null, groups.flatMap { it.channels }, listOf(everyone(gid)), emptyList()) },
+            emptyMap(), readState
+        )
     }
 }
 

@@ -231,7 +231,10 @@ internal fun EventCard(event: ScheduledEvent, interested: Boolean, modifier: Mod
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             Icon(painterResource(R.drawable.event), null, Modifier.size(12.dp), tint = if (event.isLive) DiscordColors.Online else MaterialTheme.colorScheme.primary)
             Text(
-                if (event.isLive) "LIVE NOW" else event.startMillis?.let { com.dihcord.app.api.DiscordTimestamp.format(it / 1000, 'f') } ?: "Soon",
+                if (event.isLive) "LIVE NOW" else event.startMillis?.let {
+                    java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault())
+                        .format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a"))
+                } ?: "Soon",
                 style = MaterialTheme.typography.labelSmall,
                 color = if (event.isLive) DiscordColors.Online else MaterialTheme.colorScheme.primary,
                 maxLines = 1, overflow = TextOverflow.Ellipsis

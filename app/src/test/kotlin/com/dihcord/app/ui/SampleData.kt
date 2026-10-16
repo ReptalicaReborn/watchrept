@@ -8,6 +8,7 @@ import com.dihcord.app.api.DiscordMessage
 import com.dihcord.app.api.DiscordRepository
 import com.dihcord.app.api.DiscordUser
 import com.dihcord.app.api.Embed
+import com.dihcord.app.api.MessageComponent
 import com.dihcord.app.api.Guild
 import com.dihcord.app.api.OnlineStatus
 import com.dihcord.app.api.Reaction
@@ -38,6 +39,9 @@ object SampleData {
     val kai = user("903", "Kai Tanaka", "kai")
     val ines = user("904", "Inês Duarte", "ines")
     val teodor = user("905", "Teodor", "teo")
+    val ana = user("906", "Ana Silva", "ana")
+    val spam = user("907", "spam_account", "spammer")
+    val roleBot = DiscordUser("908", "RoleBot", "0", "RoleBot", null)
 
     val blockhaven = Guild("700", "Blockhaven", null)
     val nightOwls = Guild("701", "Night Owls Club", null)
@@ -96,6 +100,14 @@ object SampleData {
         msg(general, kai, 8, "i'm in after dinner", replyTo = ranked),
         msg(general, zaffox, 1, "<@900> you coming?", mentions = listOf(me)),
     )
+    val botMessage = DiscordMessage(
+        id(60 * 4), "801", roleBot, "Pick your team for the event:", ts(60 * 4), null, guildId = "700",
+        applicationId = "908",
+        components = MessageComponent.listFromJson(org.json.JSONArray(
+            """[{"type":1,"components":[{"type":2,"style":4,"label":"Red","custom_id":"r"},{"type":2,"style":1,"label":"Blue","custom_id":"b"},{"type":2,"style":3,"label":"Green","custom_id":"g"}]},
+               {"type":1,"components":[{"type":3,"custom_id":"game","placeholder":"Choose a game…","options":[{"label":"Bed Wars","value":"bw","description":"Teams of 4"},{"label":"Sky Wars","value":"sw"},{"label":"Parkour","value":"pk"}]}]}]"""
+        ))
+    )
     val announcementMessages = listOf(
         msg(announcements, teodor, 60 * 6, "**Season 4 starts Friday!** New biomes, a bigger spawn and a fresh map.",
             embeds = listOf(Embed("rich", "Season 4 patch notes", "Everything that changes on reset night, from mob caps to the new trading hall.",
@@ -112,6 +124,7 @@ object SampleData {
                 expiry = java.time.Instant.ofEpochMilli(now + 26 * 3_600_000L).toString(), multiselect = false, finalized = false
             )
         ),
+        botMessage,
     )
     val zaffoxMessages = listOf(
         msg(dmZaffox, me, 40, "did you finish the castle?"),
@@ -154,9 +167,16 @@ object SampleData {
                 ideas.id to ChannelUnreadState(id(90)),
             ),
             presences = listOf(
-                UserPresence(zaffox.id, OnlineStatus.ONLINE),
+                UserPresence(zaffox.id, OnlineStatus.ONLINE, activities = listOf(com.dihcord.app.api.Activity(0, "Minecraft", null, null))),
                 UserPresence(mira.id, OnlineStatus.IDLE, customStatusText = "studying"),
                 UserPresence(ines.id, OnlineStatus.DND),
+            ),
+            relationships = listOf(
+                com.dihcord.app.api.Relationship(zaffox.id, 1, zaffox),
+                com.dihcord.app.api.Relationship(mira.id, 1, mira),
+                com.dihcord.app.api.Relationship(kai.id, 1, kai),
+                com.dihcord.app.api.Relationship(ana.id, 3, ana),
+                com.dihcord.app.api.Relationship(spam.id, 2, spam),
             ),
             voiceStates = listOf(
                 VoiceState(kai.id, blockhaven.id, lobby.id, "s1", false, false, false, false, kai),

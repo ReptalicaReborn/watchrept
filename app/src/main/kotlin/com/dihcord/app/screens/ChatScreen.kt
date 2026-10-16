@@ -1124,6 +1124,7 @@ fun ChatScreen(
 
                     else -> items(messages.size, key = { messages[it].id }) { index ->
                         val msg = messages[index]
+                        Column {
                         if (msg.id == firstUnreadId) NewMessagesLine()
                         val prevMsg = if (index > 0) messages[index - 1] else null
                         fun String.toEpochMillis(): Long = runCatching {
@@ -1187,6 +1188,7 @@ fun ChatScreen(
                             translation = translations[msg.id],
                             blocked = relationships[msg.author.id]?.isBlocked == true
                         )
+                        }
                     }
                 }
 
@@ -1377,6 +1379,8 @@ fun ChatScreen(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(6.dp),
+                                    // Five buttons as 3 + 2: one row of five doesn't fit the round screen.
+                                    maxItemsInEachRow = 3,
                                     horizontalArrangement = Arrangement.spacedBy(
                                         space = 6.dp,
                                         alignment = Alignment.CenterHorizontally

@@ -382,12 +382,10 @@ internal fun VoiceChannelContent(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (stage.listening) {
-                        CompactButton(
-                            onClick = { onRequestSpeak(!stage.requested) },
-                            icon = { Icon(painterResource(R.drawable.hand), null, Modifier.size(16.dp)) },
-                            label = { Text(if (stage.requested) "Asked to speak" else "Ask to speak") },
-                            colors = if (stage.requested) ButtonDefaults.buttonColors() else ButtonDefaults.filledTonalButtonColors(),
-                            modifier = Modifier.padding(top = 2.dp)
+                        Text(
+                            if (stage.requested) "You asked to speak" else "Tap the hand to speak",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (stage.requested) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -406,7 +404,13 @@ internal fun VoiceChannelContent(
 
         when (mode) {
             is VoiceMode.Active -> CallControls(Modifier.align(Alignment.BottomCenter)) {
-                FilledIconButton(
+                if (stage?.listening == true) FilledIconButton(
+                    onClick = { onRequestSpeak(!stage.requested) },
+                    colors = if (stage.requested) IconButtonDefaults.filledIconButtonColors() else IconButtonDefaults.filledTonalIconButtonColors(),
+                    modifier = Modifier.padding(bottom = 10.dp).size(44.dp)
+                ) {
+                    Icon(painterResource(R.drawable.hand), if (stage.requested) "Take back request to speak" else "Ask to speak")
+                } else FilledIconButton(
                     onClick = onToggleMute,
                     colors = if (mode.muted) altIconButtonColors() else IconButtonDefaults.filledTonalIconButtonColors(),
                     modifier = Modifier.padding(bottom = 10.dp).size(44.dp)
