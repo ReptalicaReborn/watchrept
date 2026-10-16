@@ -23,6 +23,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.dihcord.app.SetupPreferences
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -927,15 +928,22 @@ class DiscordRepository(
         val furthest = java.util.concurrent.ConcurrentHashMap<String, ChannelUnreadState>()
     }
     private val ackWatches = java.util.concurrent.CopyOnWriteArrayList<AckWatch>()
+    /**
+     * Mark-reads take turns: each one's "before" is then what the last one left (done or undone), so two
+     * failing at once can't undo each other's undo.
+     */
+    private val ackTurns = kotlinx.coroutines.sync.Mutex()
 
     private suspend fun ackLocallyAndRemotely(reads: List<Pair<String, String>>): Result<Unit> {
         if (reads.isEmpty()) return Result.success(Unit)
         val ids = reads.map { it.first }.toSet()
-        val watch = AckWatch(ids).also { ackWatches += it }
-        try {
-            return ackWatched(reads, ids, watch)
-        } finally {
-            ackWatches -= watch
+        return ackTurns.withLock {
+            val watch = AckWatch(ids).also { ackWatches += it }
+            try {
+                ackWatched(reads, ids, watch)
+            } finally {
+                ackWatches -= watch
+            }
         }
     }
 
