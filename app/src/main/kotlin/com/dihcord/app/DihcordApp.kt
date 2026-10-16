@@ -102,6 +102,11 @@ class DihcordApp : Application(), ImageLoaderFactory {
         }
     }
 
+    /** Puts a ready-made repository in place without connecting anything, for the screenshot tests. */
+    internal fun useRepositoryForTests(repo: DiscordRepository?) {
+        _repositoryFlow.value = repo
+    }
+
     fun clearRepository() {
         summaryJob?.cancel()
         callScope?.cancel()

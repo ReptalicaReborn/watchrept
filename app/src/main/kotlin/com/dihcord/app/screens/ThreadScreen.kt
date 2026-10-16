@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.*
@@ -416,74 +418,38 @@ fun ThreadScreen(
     // Message options overlay
     val msgForOptions = selectedMsg
     if (msgForOptions != null) {
-        val threadListState = rememberScalingLazyListState()
-        ScreenScaffold(scrollState = threadListState) {
-            ScalingLazyColumn(state = threadListState, modifier = Modifier.fillMaxSize()) {
-                item {
-                    Text("Message by ${msgForOptions.author.displayName}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+        MessageOptionsDialog(
+            msg = msgForOptions,
+            isOwn = msgForOptions.author.id == myId,
+            onReply = { replyingTo = msgForOptions; selectedMsg = null },
+            onCopy = {
+                val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("message", msgForOptions.content))
+                selectedMsg = null
+            },
+            onEdit = null,
+            onDelete = {
+                scope.launch {
+                    repo.deleteMessage(threadId, msgForOptions.id)
+                        .onFailure { sendError = "Couldn't delete. " + friendlyError(it) }
                 }
-                item {
-                    Button(onClick = { replyingTo = msgForOptions; selectedMsg = null },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()) {
-                        Icon(painter = painterResource(id = R.drawable.reply),
-                            contentDescription = null, tint = Color.White,
-                            modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Reply")
-                    }
+                selectedMsg = null
+            },
+            onReact = {
+                reactingToMsg = msgForOptions
+                selectedMsg = null
+                showPicker = true
+            },
+            onQuickReact = { emoji ->
+                selectedMsg = null
+                scope.launch {
+                    repo.toggleReaction(threadId, msgForOptions.id, ReactionEmoji(null, emoji, false))
+                        .onFailure { sendError = "Couldn't react. " + friendlyError(it) }
                 }
-                item {
-                    Button(onClick = {
-                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                            as android.content.ClipboardManager
-                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("message", msgForOptions.content))
-                        selectedMsg = null
-                    }, modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()) {
-                        Icon(painter = painterResource(id = R.drawable.copy),
-                            contentDescription = null, tint = Color.White,
-                            modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Copy")
-                    }
-                }
-                if (msgForOptions.author.id == myId) {
-                    item {
-                        Button(onClick = {
-                            scope.launch {
-                                repo.deleteMessage(threadId, msgForOptions.id)
-                                    .onFailure { sendError = "Delete failed" }
-                            }
-                            selectedMsg = null
-                        }, modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error)) {
-                            Icon(painter = painterResource(id = R.drawable.delete),
-                                contentDescription = null, tint = Color.White,
-                                modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Delete")
-                        }
-                    }
-                }
-                item {
-                    Button(onClick = { selectedMsg = null },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.outlinedButtonColors()) { Text("Cancel") }
-                }
-            }
-        }
+            },
+            onDismiss = { selectedMsg = null }
+        )
         return
     }
 
@@ -497,7 +463,11 @@ fun ThreadScreen(
 
     Box(modifier = Modifier.fillMaxSize()) {
         ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        ScalingLazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 16.dp)
+        ) {
             item(key = "thread_title") {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Row(verticalAlignment = Alignment.CenterVertically,
@@ -610,11 +580,16 @@ fun ThreadScreen(
                                     .clickable { replyPing = !replyPing }
                                     .padding(4.dp)
                             )
-                            Text("X", style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            Icon(
+                                painter = painterResource(id = R.drawable.close),
+                                contentDescription = "Cancel reply",
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
                                 modifier = Modifier
+                                    .clip(CircleShape)
                                     .clickable { replyingTo = null; replyPing = true }
-                                    .padding(4.dp))
+                                    .padding(4.dp)
+                                    .size(14.dp)
+                            )
                         }
                     }
                 }
@@ -661,19 +636,7 @@ fun ThreadScreen(
                             modifier = Modifier.size(40.dp),
                         ) {
                             Icon(painter = painterResource(id = R.drawable.emoji),
-                                contentDescription = "Emoji")
-                        }
-                        FilledIconButton(
-                            colors = altIconButtonColors(),
-                            onClick = {
-                                reactingToMsg = null
-                                showPicker = true
-                                tab = 1
-                            },
-                            modifier = Modifier.size(40.dp),
-                        ) {
-                            Icon(painter = painterResource(id = R.drawable.sticker),
-                                contentDescription = "Stickers")
+                                contentDescription = "Emoji and stickers")
                         }
                         FilledIconButton(
                             onClick = {

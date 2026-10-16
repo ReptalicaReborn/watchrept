@@ -1,38 +1,52 @@
 package com.dihcord.app.screens
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.ui.res.painterResource
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
-import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
 import androidx.wear.compose.material3.*
-import coil.ImageLoader
+import androidx.wear.compose.material3.lazy.rememberTransformationSpec
+import androidx.wear.compose.material3.lazy.transformedHeight
+import coil.compose.AsyncImage
+import coil.compose.rememberAsyncImagePainter
 import coil.imageLoader
-import coil.compose.SubcomposeAsyncImage
-import coil.request.ImageRequest
 import com.dihcord.app.Perf
+import com.dihcord.app.R
 import com.dihcord.app.SetupPreferences
 import com.dihcord.app.api.*
 import com.dihcord.app.discordApp
-import kotlinx.coroutines.launch
-import com.dihcord.app.R
+
+/** One row of the DM list, as plain data. */
+data class DmRow(
+    val channelId: String,
+    val name: String,
+    val avatarUrl: String?,
+    val decorationUrl: String?,
+    val nameplateUrl: String?,
+    val status: OnlineStatus?,
+    /** The newest message as one line ("You: ok see you"), when we have it. */
+    val preview: String?,
+    /** What to show when there is no preview: the custom status, or the status itself. */
+    val fallback: String?,
+    val timeMillis: Long?,
+    val mentionCount: Int,
+    val unread: Boolean,
+    val hidden: Boolean,
+)
 
 @Composable
 fun DmsScreen(
@@ -40,27 +54,24 @@ fun DmsScreen(
     onNewDm: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val repo = context.discordApp.repository
-    val listState = rememberScalingLazyListState()
-    val scope = rememberCoroutineScope()
-    val imageLoader = context.imageLoader
-
-    if (repo == null) return
+    val repo = context.discordApp.repository ?: return
     val dmChannels by repo.dmChannels.collectAsState()
     val presences by repo.presences.collectAsState()
     val readState by repo.readState.collectAsState()
+    val lastMessages by repo.lastMessages.collectAsState()
+    val channelNames by repo.channelNames.collectAsState()
+    val myId = repo.currentUser.collectAsState().value?.id
     val showBadges = remember { SetupPreferences.getShowMentionBadges(context) }
     var loading by remember { mutableStateOf(dmChannels.isEmpty()) }
     var hiddenIds by remember { mutableStateOf(SetupPreferences.getHiddenDms(context)) }
     var showHidden by remember { mutableStateOf(false) }
-    var menuDm by remember { mutableStateOf<Channel?>(null) }
-    val menuState = rememberScalingLazyListState()
+    var menuDm by remember { mutableStateOf<DmRow?>(null) }
+    // Held here, above the menu branch, so closing the menu returns to the same spot in the list.
+    val listState = rememberTransformingLazyColumnState()
 
     LaunchedEffect(Unit) {
-        scope.launch {
-            repo.refreshDmChannels()
-            loading = false
-        }
+        repo.refreshDmChannels()
+        loading = false
     }
 
     val sortedDms = remember(dmChannels, hiddenIds, showHidden) {
@@ -68,125 +79,250 @@ fun DmsScreen(
             .filter { showHidden || !hiddenIds.contains(it.id) }
             .sortedByDescending { it.lastMessageId?.toLongOrNull() ?: 0L }
     }
+    // Previews for the DMs near the top; the rest fill in as they get messages or are opened.
+    LaunchedEffect(sortedDms.take(12).map { it.id to it.lastMessageId }) {
+        repo.loadLastMessages(sortedDms.take(12).map { it.id })
+    }
 
-    // Back closes the hide menu instead of leaving the screen.
+    val rows = remember(sortedDms, presences, readState, lastMessages, hiddenIds, myId) {
+        sortedDms.map { dm ->
+            val oneToOne = dm.recipients.size == 1
+            val recipient = dm.recipients.firstOrNull()
+            val presence = if (oneToOne) recipient?.let { presences[it.id] } else null
+            val rs = readState[dm.id]
+            val status = presence?.status ?: if (oneToOne) OnlineStatus.OFFLINE else null
+            DmRow(
+                channelId = dm.id,
+                name = dm.displayName,
+                avatarUrl = if (oneToOne) recipient?.avatarUrl(64) else null,
+                decorationUrl = if (oneToOne && !Perf.lite) recipient?.avatarDecorationUrl() else null,
+                nameplateUrl = if (oneToOne && !Perf.lite) recipient?.nameplateUrl() else null,
+                status = status,
+                preview = lastMessages[dm.id]?.takeIf { it.id == dm.lastMessageId }?.let { msg ->
+                    val text = messagePreview(msg, myId, channelNames)
+                    if (!oneToOne && msg.author.id != myId) msg.author.displayName.substringBefore(' ') + ": " + text else text
+                },
+                fallback = presence?.customStatusText ?: when {
+                    !oneToOne -> "${dm.recipients.size + 1} members"
+                    else -> status?.label()
+                },
+                timeMillis = snowflakeMillis(dm.lastMessageId),
+                mentionCount = if (showBadges) rs?.mentionCount ?: 0 else 0,
+                unread = showBadges && dm.lastMessageId != null && rs != null &&
+                        compareSnowflakes(dm.lastMessageId, rs.lastMessageId) > 0,
+                hidden = dm.id in hiddenIds
+            )
+        }
+    }
+
+    // Back closes the menu instead of leaving the screen.
     BackHandler(enabled = menuDm != null) { menuDm = null }
 
     val activeDm = menuDm
     if (activeDm != null) {
-        val isHiddenMenu = hiddenIds.contains(activeDm.id)
-        ScreenScaffold(scrollState = menuState) {
-            ScalingLazyColumn(state = menuState, modifier = Modifier.fillMaxSize()) {
-                item {
-                    Text(
-                        activeDm.displayName,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+        ActionMenu(
+            title = activeDm.name,
+            header = { UserAvatar(activeDm.name, activeDm.avatarUrl, 36.dp) },
+            actions = listOf(
+                MenuAction(
+                    if (activeDm.hidden) R.drawable.unhide else R.drawable.hide,
+                    if (activeDm.hidden) "Unhide" else "Hide"
+                ) {
+                    SetupPreferences.toggleHiddenDm(context, activeDm.channelId)
+                    hiddenIds = SetupPreferences.getHiddenDms(context)
+                    menuDm = null
                 }
-                item {
-                    Button(
-                        onClick = {
-                            SetupPreferences.toggleHiddenDm(context, activeDm.id)
-                            hiddenIds = SetupPreferences.getHiddenDms(context)
-                            menuDm = null
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) {
-                        Icon(
-                            painter = painterResource(id = if (isHiddenMenu) R.drawable.unhide else R.drawable.hide),
-                            tint = Color.White,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (isHiddenMenu) "Unhide" else "Hide")
-                    }
-                }
-                item {
-                    Button(
-                        onClick = { menuDm = null },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) { Text("Cancel") }
-                }
-            }
-        }
+            ),
+            onDismiss = { menuDm = null }
+        )
         return
     }
 
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState) {
-            item { ScreenTitle("Direct Messages") }
-            item {
-                Button(
-                    onClick = onNewDm,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp)
-                ) { Text("New message") }
-            }
+    DmsContent(
+        rows = rows,
+        loading = loading,
+        hiddenCount = hiddenIds.size,
+        showingHidden = showHidden,
+        onOpen = { if (!it.hidden) onNavigateToChatScreen(it.channelId, it.name) },
+        onLongPress = { menuDm = it },
+        onToggleHidden = { showHidden = !showHidden },
+        onNewDm = onNewDm,
+        state = listState
+    )
+}
 
-            if (loading) {
-                item { LoadingIndicator() }
-            } else if (sortedDms.isEmpty()) {
-                item { Text("No DMs yet.", style = MaterialTheme.typography.bodySmall) }
-            } else {
-                items(sortedDms.size) { index ->
-                    val dm = sortedDms[index]
-                    val recipient = dm.recipients.firstOrNull()
-                    val presence = recipient?.let { presences[it.id] }
-                    val isHidden = hiddenIds.contains(dm.id)
-                    DmButton(
-                        dm = dm,
-                        recipient = recipient,
-                        presence = presence,
-                        imageLoader = imageLoader,
-                        mentionCount = if (showBadges) readState[dm.id]?.mentionCount ?: 0 else 0,
-                        hasUnread = showBadges && dm.lastMessageId != null && run {
-                            val rs = readState[dm.id] ?: return@run false
-                            compareSnowflakes(dm.lastMessageId, rs.lastMessageId) > 0
-                        },
-                        isHidden = isHidden,
-                        onClick = { if (!isHidden) onNavigateToChatScreen(dm.id, dm.displayName) },
-                        onLongClick = { menuDm = dm }
+/** The DM list, drawn from plain data. */
+@Composable
+internal fun DmsContent(
+    rows: List<DmRow>,
+    loading: Boolean,
+    hiddenCount: Int,
+    showingHidden: Boolean,
+    onOpen: (DmRow) -> Unit,
+    onLongPress: (DmRow) -> Unit,
+    onToggleHidden: () -> Unit,
+    onNewDm: () -> Unit,
+    state: androidx.wear.compose.foundation.lazy.TransformingLazyColumnState = rememberTransformingLazyColumnState(),
+) {
+    val spec = rememberTransformationSpec()
+    ScreenScaffold(
+        scrollState = state,
+        edgeButton = {
+            EdgeButton(onClick = onNewDm) {
+                Icon(painterResource(R.drawable.add), contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(2.dp))
+                Text("New")
+            }
+        }
+    ) { padding ->
+        TransformingLazyColumn(state = state, contentPadding = padding) {
+            item { ScreenTitle("Direct Messages") }
+            when {
+                loading && rows.isEmpty() -> items(3) { DmSkeletonRow(Modifier.transformedHeight(this, spec)) }
+                rows.isEmpty() -> item { EmptyState(R.drawable.chat, "No DMs yet", "Start one with New.") }
+                else -> items(rows.size, key = { rows[it].channelId }) { index ->
+                    val row = rows[index]
+                    DmRowCard(
+                        row = row,
+                        modifier = Modifier.transformedHeight(this, spec),
+                        transformation = SurfaceTransformation(spec),
+                        onClick = { onOpen(row) },
+                        onLongClick = { onLongPress(row) }
                     )
                 }
-
-                if (hiddenIds.isNotEmpty()) {
-                    item {
-                        Button(
-                            onClick = { showHidden = !showHidden },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(32.dp),
-                            colors = ButtonDefaults.filledTonalButtonColors()
-                        ) {
-                            Text(
-                                if (showHidden) "Hide hidden DMs" else "Show hidden (${hiddenIds.size})",
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        }
-                    }
+            }
+            if (hiddenCount > 0) {
+                item {
+                    CompactButton(
+                        onClick = onToggleHidden,
+                        label = { Text(if (showingHidden) "Hide hidden DMs" else "Show hidden ($hiddenCount)") },
+                        colors = ButtonDefaults.filledTonalButtonColors(),
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
             }
         }
     }
 }
 
-private fun OnlineStatus.dotColor(): Color = when (this) {
-    OnlineStatus.ONLINE -> Color(0xFF23A55A)
-    OnlineStatus.IDLE -> Color(0xFFF0B232)
-    OnlineStatus.DND -> Color(0xFFF23F43)
-    OnlineStatus.INVISIBLE,
-    OnlineStatus.OFFLINE -> Color(0xFF80848E)
+/**
+ * Avatar with its status ring, the name and how long ago, and the last message under it. The
+ * person's Discord nameplate, if any, is the background, darkened so the text stays readable.
+ */
+@Composable
+private fun DmRowCard(
+    row: DmRow,
+    modifier: Modifier,
+    transformation: SurfaceTransformation,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    val padding = PaddingValues(start = 8.dp, end = 12.dp, top = 6.dp, bottom = 6.dp)
+    val content: @Composable ColumnScope.() -> Unit = { DmRowContent(row) }
+    val nameplate = row.nameplateUrl?.takeIf { !row.hidden }
+    if (nameplate != null) {
+        Card(
+            onClick = onClick,
+            onLongClick = onLongClick,
+            containerPainter = CardDefaults.containerPainter(
+                image = rememberAsyncImagePainter(nameplate, imageLoader = LocalContext.current.imageLoader),
+                scrim = Brush.horizontalGradient(listOf(Color.Black.copy(alpha = 0.75f), Color.Black.copy(alpha = 0.35f)))
+            ),
+            colors = CardDefaults.cardWithContainerPainterColors(),
+            modifier = modifier.fillMaxWidth(),
+            transformation = transformation,
+            contentPadding = padding,
+            content = content
+        )
+    } else {
+        Card(
+            onClick = onClick,
+            onLongClick = onLongClick,
+            modifier = modifier.fillMaxWidth(),
+            transformation = transformation,
+            contentPadding = padding,
+            content = content
+        )
+    }
+}
+
+@Composable
+private fun DmRowContent(row: DmRow) {
+    val bright = row.unread || row.mentionCount > 0
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+            UserAvatar(row.name, row.avatarUrl, 34.dp, ring = if (row.hidden) null else row.status?.ringColor(), dimmed = row.hidden)
+            if (row.decorationUrl != null && !row.hidden) {
+                AsyncImage(
+                    model = row.decorationUrl,
+                    imageLoader = LocalContext.current.imageLoader,
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.size(40.dp)
+                )
+            }
+            if (!row.hidden && row.mentionCount > 0) CountBadge(row.mentionCount, Modifier.align(Alignment.TopEnd))
+        }
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    row.name,
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = if (bright) FontWeight.Bold else FontWeight.Medium),
+                    color = if (row.hidden) Color.White.copy(alpha = 0.4f) else Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (row.timeMillis != null && !row.hidden) {
+                    Text(
+                        shortAgo(row.timeMillis),
+                        style = MaterialTheme.typography.labelSmall.merge(TabularNumbers),
+                        color = if (bright) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        modifier = Modifier.padding(start = 4.dp)
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    when {
+                        row.hidden -> "Hidden"
+                        else -> row.preview ?: row.fallback ?: ""
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = when {
+                        row.hidden -> Color.White.copy(alpha = 0.4f)
+                        bright -> Color.White
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (row.unread && row.mentionCount == 0 && !row.hidden) UnreadDot(Modifier.padding(start = 4.dp))
+            }
+        }
+    }
+}
+
+/** A grey stand-in row with the same shape as a DM, shown while the list loads. */
+@Composable
+private fun DmSkeletonRow(modifier: Modifier = Modifier) {
+    val shade = MaterialTheme.colorScheme.surfaceContainerHigh
+    Row(
+        modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(26.dp))
+            .padding(start = 11.dp, end = 12.dp, top = 9.dp, bottom = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp)
+    ) {
+        Box(Modifier.size(34.dp).background(shade, CircleShape))
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Box(Modifier.width(70.dp).height(10.dp).background(shade, RoundedCornerShape(5.dp)))
+            Box(Modifier.width(100.dp).height(8.dp).background(shade, RoundedCornerShape(4.dp)))
+        }
+    }
 }
 
 private fun OnlineStatus.label(): String = when (this) {
@@ -195,235 +331,4 @@ private fun OnlineStatus.label(): String = when (this) {
     OnlineStatus.DND -> "Do Not Disturb"
     OnlineStatus.INVISIBLE -> "Invisible"
     OnlineStatus.OFFLINE -> "Offline"
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun DmButton(
-    dm: Channel,
-    recipient: DiscordUser?,
-    presence: UserPresence?,
-    imageLoader: ImageLoader,
-    mentionCount: Int = 0,
-    hasUnread: Boolean = false,
-    isHidden: Boolean = false,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit
-) {
-    val context = LocalContext.current
-    val avatarUrl = recipient?.avatarUrl(64)
-    val nameplateUrl = if (Perf.lite) null else recipient?.nameplateUrl()
-    val status = presence?.status ?: OnlineStatus.OFFLINE
-    val initial = dm.displayName.firstOrNull()?.uppercaseChar()?.toString() ?: "?"
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(64.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-    ) {
-        if (nameplateUrl != null && !isHidden) {
-            SubcomposeAsyncImage(
-                model = ImageRequest.Builder(context).data(nameplateUrl).crossfade(true).build(),
-                imageLoader = imageLoader,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.matchParentSize(),
-                error = { Box(Modifier.matchParentSize()) }
-            )
-            val scrimAlphaStart = 0.45f
-            val scrimAlphaEnd = 0.20f
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(
-                                Color.Black.copy(scrimAlphaStart),
-                                Color.Black.copy(scrimAlphaEnd)
-                            )
-                        )
-                    )
-            )
-        } else {
-            Box(
-                Modifier
-                    .matchParentSize()
-                    .background(
-                        if (isHidden) MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.4f)
-                        else MaterialTheme.colorScheme.surfaceContainer
-                    )
-            )
-        }
-
-        Row(
-            modifier = Modifier
-                .matchParentSize()
-                .padding(horizontal = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Box(contentAlignment = Alignment.BottomEnd) {
-                Box(modifier = Modifier.size(52.dp), contentAlignment = Alignment.Center) {
-                    val avatarAlpha = if (isHidden) 0.38f else 1f
-                    if (avatarUrl != null && !isHidden) {
-                        SubcomposeAsyncImage(
-                            model = ImageRequest.Builder(context).data(avatarUrl).crossfade(true)
-                                .build(),
-                            imageLoader = imageLoader,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape),
-                            error = {
-                                Box(
-                                    modifier = Modifier
-                                        .size(38.dp)
-                                        .background(Color(0xFF1E1F22), CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        initial,
-                                        color = Color.White,
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
-                        )
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(
-                                    Color(0xFF1E1F22).copy(alpha = avatarAlpha),
-                                    CircleShape
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                initial,
-                                color = Color.White.copy(alpha = avatarAlpha),
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    val decorUrl = if (Perf.lite) null else recipient?.avatarDecorationUrl()
-                    if (decorUrl != null && !isHidden) {
-                        SubcomposeAsyncImage(
-                            model = ImageRequest.Builder(context).data(decorUrl).crossfade(false)
-                                .build(),
-                            imageLoader = imageLoader,
-                            contentDescription = null,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.size(52.dp)
-                        )
-                    }
-                    if (mentionCount > 0 && !isHidden) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .defaultMinSize(minWidth = 15.dp, minHeight = 15.dp)
-                                .background(Color(0xFFF23F43), CircleShape)
-                                .padding(horizontal = 3.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = if (mentionCount > 99) "99+" else mentionCount.toString(),
-                                color = Color.White,
-                                fontSize = 8.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    } else if (hasUnread && !isHidden) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .size(9.dp)
-                                .background(Color.White, CircleShape)
-                        )
-                    }
-                }
-                if (!isHidden) {
-                    Box(
-                        modifier = Modifier
-                            .size(13.dp)
-                            .background(Color(0xFF1E1F22), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(9.dp)
-                                .background(status.dotColor(), CircleShape)
-                        )
-                    }
-                }
-            }
-
-            Column(modifier = Modifier.weight(1f)) {
-                val nameColor = if (isHidden) Color.White.copy(alpha = 0.38f) else Color.White
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = dm.displayName,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Bold,
-                        color = nameColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                }
-                if (isHidden) {
-                    Text(
-                        "Hidden",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.38f),
-                        fontSize = 9.sp
-                    )
-                } else {
-                    val customText = presence?.customStatusText
-                    val customEmoji = presence?.customStatusEmoji
-                    if (customText != null || customEmoji != null) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            if (customEmoji != null) {
-                                if (customEmoji.startsWith("http")) {
-                                    SubcomposeAsyncImage(
-                                        model = ImageRequest.Builder(context).data(customEmoji)
-                                            .crossfade(true).build(),
-                                        imageLoader = imageLoader,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                } else {
-                                    Text(customEmoji, fontSize = 11.sp, lineHeight = 13.sp)
-                                }
-                            }
-                            if (customText != null) {
-                                Text(
-                                    text = customText, style = MaterialTheme.typography.labelSmall,
-                                    color = Color.White.copy(alpha = 0.75f), maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis, fontSize = 9.sp
-                                )
-                            }
-                        }
-                    } else {
-                        Text(
-                            text = status.label(), style = MaterialTheme.typography.labelSmall,
-                            color = status.dotColor().copy(alpha = 0.9f), fontSize = 9.sp
-                        )
-                    }
-                }
-            }
-        }
-    }
 }

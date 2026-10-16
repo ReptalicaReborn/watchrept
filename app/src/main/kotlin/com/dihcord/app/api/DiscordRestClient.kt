@@ -24,7 +24,8 @@ private const val MAX_RATE_LIMIT_WAIT_MS = 5_000L
 /** Shared by every REST client in the process, like one browser profile. */
 private val cookieJar = MemoryCookieJar()
 
-class DiscordRestClient(private val token: String) {
+/** [baseUrl] is only changed by the screenshot tests, which point it at a closed local port. */
+class DiscordRestClient(private val token: String, private val baseUrl: String = "https://discord.com/api/v9") {
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -33,7 +34,6 @@ class DiscordRestClient(private val token: String) {
         .cookieJar(cookieJar)
         .build()
 
-    private val baseUrl = "https://discord.com/api/v9"
     private val jsonMime = "application/json; charset=utf-8".toMediaType()
 
     private fun buildRequest(path: String): Request.Builder =

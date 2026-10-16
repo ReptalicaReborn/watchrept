@@ -21,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -28,6 +29,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.em
@@ -659,6 +661,13 @@ fun ChatScreen(
                 selectedMsg = null
                 showPicker = true
             },
+            onQuickReact = { emoji ->
+                selectedMsg = null
+                scope.launch {
+                    repo.toggleReaction(channelId, msgForOptions.id, ReactionEmoji(null, emoji, false))
+                        .onFailure { sendError = "Couldn't react: ${it.message}" }
+                }
+            },
 
             onOpenThread = if (msgForOptions.threadId != null) {
                 {
@@ -854,11 +863,18 @@ fun ChatScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        ScreenScaffold(scrollState = listState) {
-            ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        // The channel's name rides on the curve next to the clock, so the list starts one row higher.
+        ScreenScaffold(
+            scrollState = listState,
+            timeText = { TitledTimeText(if (guildId != null) "#$channelName" else channelName) }
+        ) {
+            ScalingLazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp)
+            ) {
                 item(key = "channel_title") {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        ScreenTitle("#$channelName")
                         if (history.loadingOlder) {
                             Text(
                                 "Loading older messages…",
@@ -934,16 +950,18 @@ fun ChatScreen(
                                         .padding(horizontal = 6.dp, vertical = 4.dp)
                                         .size(16.dp),
                                 )
-                                Text(
-                                    "X",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                Icon(
+                                    painter = painterResource(id = R.drawable.close),
+                                    contentDescription = "Discard",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier
+                                        .clip(CircleShape)
                                         .clickable {
                                             pendingText = ""
                                             inputText = ""
                                         }
                                         .padding(4.dp)
+                                        .size(14.dp)
                                 )
                             }
                         }
@@ -1093,15 +1111,17 @@ fun ChatScreen(
                                             .clickable { replyPing = !replyPing }
                                             .padding(4.dp)
                                     )
-                                    Text(
-                                        "X",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.close),
+                                        contentDescription = "Cancel reply",
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
                                         modifier = Modifier
+                                            .clip(CircleShape)
                                             .clickable {
                                                 replyingTo = null; replyPing = true
                                             }
                                             .padding(4.dp)
+                                            .size(14.dp)
                                     )
                                 }
                             }
@@ -1134,7 +1154,7 @@ fun ChatScreen(
                                     modifier = Modifier
                                         .weight(1f)
                                         .heightIn(min = 36.dp, max = 90.dp),
-                                    placeholder = "Message #$channelName",
+                                    placeholder = if (guildId != null) "Message #$channelName" else "Message $channelName",
                                     maxLines = 4,
                                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done)
                                 )
@@ -1152,7 +1172,7 @@ fun ChatScreen(
                             }
                         } else {
                             Text(
-                                text = "You cannot send messages here",//add lock icon from /res/drawable
+                                text = "You can't send messages here",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier
@@ -1172,12 +1192,12 @@ fun ChatScreen(
                                         .fillMaxWidth()
                                         .padding(6.dp),
                                     horizontalArrangement = Arrangement.spacedBy(
-                                        space = 8.dp,
+                                        space = 6.dp,
                                         alignment = Alignment.CenterHorizontally
                                     ),
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    FilledIconButton(
+                                    FilledTonalIconButton(
                                         onClick = {
                                             reactingToMsg = null
                                             showPicker = true
@@ -1188,25 +1208,11 @@ fun ChatScreen(
                                     ) {
                                         Icon(
                                             painter = painterResource(id = R.drawable.emoji),
-                                            contentDescription = "Emoji"
+                                            contentDescription = "Emoji and stickers",
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
-                                    FilledIconButton(
-                                        colors = altIconButtonColors(),
-                                        onClick = {
-                                            reactingToMsg = null
-                                            showPicker = true
-                                            tab = 1
-                                        },
-                                        modifier = Modifier
-                                            .size(36.dp),
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(id = R.drawable.sticker),
-                                            contentDescription = "Stickers"
-                                        )
-                                    }
-                                    if (abilities.canAttach) FilledIconButton(
+                                    if (abilities.canAttach) FilledTonalIconButton(
                                         onClick = {
                                             val perm = if (android.os.Build.VERSION.SDK_INT >= 33)
                                                 Manifest.permission.READ_MEDIA_IMAGES
@@ -1226,21 +1232,22 @@ fun ChatScreen(
                                     ) {
                                         Icon(
                                             painter = painterResource(id = R.drawable.image),
-                                            contentDescription = "Upload Photo"
+                                            contentDescription = "Send a photo",
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
-                                    if (abilities.canSendVoice) FilledIconButton(
-                                        colors = altIconButtonColors(),
+                                    if (abilities.canSendVoice) FilledTonalIconButton(
                                         onClick = { startRecording() },
                                         modifier = Modifier
                                             .size(36.dp),
                                     ) {
                                         Icon(
                                             painter = painterResource(id = R.drawable.mic),
-                                            contentDescription = "Voice Message"
+                                            contentDescription = "Record a voice message",
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
-                                    FilledIconButton(
+                                    FilledTonalIconButton(
                                         onClick = { showGifPicker = true },
                                         modifier = Modifier.size(36.dp),
                                     ) {
@@ -1437,175 +1444,92 @@ fun parseInsertTextToReactionEmoji(insertText: String): ReactionEmoji? {
     return null
 }
 
+/** The reactions offered with one tap in the message menu; the emoji button opens the full picker. */
+private val QuickReactions = listOf("❤️", "😂", "👍", "😮")
+
+/**
+ * The long-press menu for a message: the message itself at the top (so it is clear which one), one-tap
+ * reactions, then the actions. Delete asks first; a slip of the finger shouldn't lose a message.
+ */
 @Composable
-private fun MessageOptionsDialog(
+internal fun MessageOptionsDialog(
     msg: DiscordMessage,
     isOwn: Boolean,
     onReply: () -> Unit,
     onCopy: () -> Unit,
-    onEdit: () -> Unit,
+    onEdit: (() -> Unit)?,
     onDelete: () -> Unit,
     onReact: () -> Unit,
+    onQuickReact: (String) -> Unit = {},
     onOpenThread: (() -> Unit)? = null,
     onCreateThread: (() -> Unit)? = null,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    confirmingDelete: Boolean = false,
 ) {
-    BackHandler(onBack = onDismiss)
-    val listState = rememberScalingLazyListState()
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-            item {
-                Text(
-                    "Message by ${msg.author.displayName}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            item {
-                Button(
-                    onClick = onReply,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp),
-                    colors = ButtonDefaults.filledTonalButtonColors()
-                ) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.reply),
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("Reply")
-                }
-            }
-            if (onOpenThread != null) {
-                item {
-                    Button(
-                        onClick = onOpenThread,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.reply),
-                            contentDescription = null,
-                            tint = Color(0xFF5865F2),
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Open Thread")
-                    }
-                }
-            }
-            if (onCreateThread != null) {
-                item {
-                    Button(
-                        onClick = onCreateThread,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.reply),
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Create Thread")
-                    }
-                }
-            }
-            item {
-                Button(
-                    onClick = onReact,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp),
-                    colors = ButtonDefaults.filledTonalButtonColors()
-                ) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.emoji),
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("React")
-                }
-            }
-            item {
-                Button(
-                    onClick = onCopy,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp),
-                    colors = ButtonDefaults.filledTonalButtonColors()
-                ) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.copy),
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("Copy Text")
-                }
-            }
-            if (isOwn) {
-                item {
-                    Button(
-                        onClick = onEdit,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.edit),
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Edit")
-                    }
-                }
-                item {
-                    Button(
-                        onClick = onDelete,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.delete),
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Delete")
-                    }
-                }
-            }
-            item {
-                Button(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp),
-                    colors = ButtonDefaults.outlinedButtonColors()
-                ) { Text("Cancel") }
-            }
-        }
+    var confirmDelete by remember(msg.id) { mutableStateOf(confirmingDelete) }
+    BackHandler { if (confirmDelete) confirmDelete = false else onDismiss() }
+    if (confirmDelete) {
+        ConfirmScreen(
+            iconRes = R.drawable.delete,
+            title = "Delete message?",
+            text = messagePreview(msg, null),
+            confirmLabel = "Delete",
+            onConfirm = onDelete,
+            onCancel = { confirmDelete = false }
+        )
+        return
     }
+    ActionMenu(
+        title = msg.author.displayName,
+        header = { UserAvatar(msg.author.displayName, msg.author.avatarUrl(64), 30.dp) },
+        belowTitle = {
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    messagePreview(msg, null),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(0.85f)
+                )
+                Row(
+                    Modifier.padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    QuickReactions.forEach { emoji ->
+                        Box(
+                            Modifier
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceContainer)
+                                .clickable { onQuickReact(emoji) },
+                            contentAlignment = Alignment.Center
+                        ) { Text(emoji, fontSize = 15.sp) }
+                    }
+                    Box(
+                        Modifier
+                            .size(30.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceContainer)
+                            .clickable(onClick = onReact),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(painterResource(R.drawable.emoji), "More reactions", Modifier.size(16.dp))
+                    }
+                }
+            }
+        },
+        actions = listOfNotNull(
+            MenuAction(R.drawable.reply, "Reply", onClick = onReply),
+            onOpenThread?.let { MenuAction(R.drawable.chat, "Thread", onClick = it) },
+            onCreateThread?.let { MenuAction(R.drawable.add, "Thread", onClick = it) },
+            MenuAction(R.drawable.copy, "Copy", onClick = onCopy).takeIf { msg.content.isNotBlank() },
+            onEdit?.let { MenuAction(R.drawable.edit, "Edit", onClick = it) }?.takeIf { isOwn },
+            MenuAction(R.drawable.delete, "Delete", destructive = true) { confirmDelete = true }.takeIf { isOwn },
+        ),
+        onDismiss = onDismiss
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -1803,12 +1727,16 @@ internal fun MessageBubble(
                     .widthIn(max = 155.dp)
                     .then(
                         if (isMentioned) {
+                            // Like Discord: a soft yellow wash with a solid bar down the left edge.
                             Modifier
                                 .background(
-                                    Color(0xFFFEE75C).copy(alpha = 0.25f),
-                                    RoundedCornerShape(4.dp)
+                                    DiscordColors.MentionHighlight.copy(alpha = 0.14f),
+                                    RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp)
                                 )
-                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                .drawBehind {
+                                    drawRect(DiscordColors.MentionHighlight, size = androidx.compose.ui.geometry.Size(2.dp.toPx(), size.height))
+                                }
+                                .padding(start = 6.dp, end = 4.dp, top = 2.dp, bottom = 2.dp)
                         } else {
                             Modifier
                         }
@@ -2858,7 +2786,8 @@ private fun DiscordAvatarWithDecoration(
 @Composable
 private fun DiscordAvatar(url: String?, displayName: String, imageLoader: ImageLoader, size: Dp) {
     val initial = displayName.firstOrNull()?.uppercaseChar()?.toString() ?: "?"
-    val blurple = androidx.compose.ui.graphics.Color(0xFF5865F2)
+    // Picture-less people each get their own colour, so a busy chat isn't a wall of blurple.
+    val blurple = avatarColor(displayName)
 
     if (url == null) {
         Box(

@@ -1,36 +1,35 @@
 package com.dihcord.app.screens
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
-import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.ScreenScaffold
+import androidx.wear.compose.material3.SurfaceTransformation
 import androidx.wear.compose.material3.Text
-import coil.compose.AsyncImage
-import coil.imageLoader
+import androidx.wear.compose.material3.lazy.rememberTransformationSpec
+import androidx.wear.compose.material3.lazy.transformedHeight
+import com.dihcord.app.R
 import com.dihcord.app.api.DiscordUser
+import com.dihcord.app.api.OnlineStatus
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.launch
 
@@ -39,101 +38,110 @@ import kotlinx.coroutines.launch
 fun NewDmScreen(onOpenDm: (channelId: String, channelName: String) -> Unit) {
     val context = LocalContext.current
     val repo = context.discordApp.repository ?: return
-    val listState = rememberScalingLazyListState()
     val scope = rememberCoroutineScope()
-    val imageLoader = context.imageLoader
+    val presences by repo.presences.collectAsState()
 
     var friends by remember { mutableStateOf<List<DiscordUser>?>(null) }
+    var loadError by remember { mutableStateOf<Throwable?>(null) }
+    var openError by remember { mutableStateOf<Throwable?>(null) }
     var query by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf("") }
     var opening by remember { mutableStateOf<String?>(null) }
+    var attempt by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(Unit) {
-        friends = repo.getFriends().getOrElse {
-            error = "Couldn't load friends: ${it.message}"
-            emptyList()
-        }.sortedBy { it.displayName.lowercase() }
+    LaunchedEffect(attempt) {
+        friends = null
+        loadError = null
+        repo.getFriends()
+            .onSuccess { list -> friends = list.sortedBy { it.displayName.lowercase() } }
+            .onFailure { loadError = it }
     }
 
     fun open(user: DiscordUser) {
         if (opening != null) return
         opening = user.id
-        error = ""
+        openError = null
         scope.launch {
             repo.openDm(user.id)
                 .onSuccess { onOpenDm(it.id, it.displayName.ifBlank { user.displayName }) }
-                .onFailure { error = "Couldn't open the DM: ${it.message}" }
+                .onFailure { openError = it }
             opening = null
         }
     }
 
+    NewDmContent(
+        friends = friends,
+        statuses = presences.mapValues { it.value.status },
+        query = query,
+        onQueryChange = { query = it.take(32) },
+        loadError = loadError,
+        openError = openError,
+        opening = opening,
+        onRetry = { attempt++ },
+        onOpen = ::open
+    )
+}
+
+/** The friend picker from plain data: null [friends] means still loading. */
+@Composable
+internal fun NewDmContent(
+    friends: List<DiscordUser>?,
+    statuses: Map<String, OnlineStatus>,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    loadError: Throwable?,
+    openError: Throwable?,
+    opening: String?,
+    onRetry: () -> Unit,
+    onOpen: (DiscordUser) -> Unit,
+) {
+    val state = rememberTransformingLazyColumnState()
+    val spec = rememberTransformationSpec()
     val q = query.trim().lowercase()
     val shown = friends.orEmpty().filter {
         q.isEmpty() || it.displayName.lowercase().contains(q) || it.username.lowercase().contains(q)
     }
-
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState) {
+    ScreenScaffold(scrollState = state) { padding ->
+        TransformingLazyColumn(state = state, contentPadding = padding) {
             item { ScreenTitle("New message") }
-            item {
-                CompactTextField(
-                    value = query,
-                    onValueChange = { query = it.take(32) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 36.dp, max = 48.dp),
-                    placeholder = "Search friends",
-                    singleLine = true
-                )
+            if (loadError == null) {
+                item {
+                    CompactTextField(
+                        value = query,
+                        onValueChange = onQueryChange,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 36.dp, max = 48.dp),
+                        placeholder = "Search friends",
+                        singleLine = true
+                    )
+                }
             }
-            if (error.isNotEmpty()) item {
+            if (openError != null) item {
                 Text(
-                    error,
+                    "Couldn't open the chat. " + friendlyError(openError),
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
                 )
             }
             when {
+                loadError != null -> item { ErrorState("Couldn't load friends", loadError, onRetry) }
                 friends == null -> item { LoadingIndicator() }
                 shown.isEmpty() -> item {
-                    Text(
-                        if (q.isEmpty()) "No friends yet. You can also message someone from their profile."
-                        else "No friends match.",
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    if (q.isEmpty()) EmptyState(R.drawable.chat, "No friends yet", "You can also message someone from their profile.")
+                    else EmptyState(R.drawable.chat, "No one matches \"$query\"")
                 }
                 else -> items(shown.size, key = { shown[it].id }) { i ->
                     val user = shown[i]
                     Button(
-                        onClick = { open(user) },
+                        onClick = { onOpen(user) },
                         enabled = opening == null,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            AsyncImage(
-                                model = user.avatarUrl(64),
-                                imageLoader = imageLoader,
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .size(24.dp)
-                                    .clip(CircleShape)
-                            )
-                            Text(
-                                if (opening == user.id) "Opening…" else user.displayName,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
+                        modifier = Modifier.fillMaxWidth().transformedHeight(this, spec),
+                        transformation = SurfaceTransformation(spec),
+                        colors = ButtonDefaults.filledTonalButtonColors(),
+                        icon = { UserAvatar(user.displayName, user.avatarUrl(64), 30.dp, ring = statuses[user.id]?.ringColor()) },
+                        label = { Text(if (opening == user.id) "Opening…" else user.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        secondaryLabel = { Text("@" + user.username, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    )
                 }
             }
         }

@@ -68,7 +68,7 @@ fun QrLoginScreen(onSetupComplete: () -> Unit, onBack: () -> Unit) {
             }
             unverifiedToken = token
             state = RemoteAuthState.Error(
-                "Couldn't verify the login (${lastError?.message ?: "network error"}). Check the connection and retry."
+                "Couldn't finish signing in. " + friendlyError(lastError)
             )
         }
     }

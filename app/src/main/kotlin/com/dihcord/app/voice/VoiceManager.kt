@@ -38,6 +38,8 @@ data class VoiceCall(
     val speaking: Set<String> = emptySet(),
     /** Discord's "voice privacy code" for the end-to-end encrypted session. */
     val privacyCode: String? = null,
+    /** When the call first connected (epoch ms), for the call timer. */
+    val connectedAt: Long? = null,
 ) {
     enum class Status { CONNECTING, CONNECTED, ENDED }
 }
@@ -201,7 +203,7 @@ object VoiceManager {
                     audio.deafened = _call.value?.deafened == true
                     engine = audio
                     audio.start()
-                    _call.update { it?.copy(status = VoiceCall.Status.CONNECTED, error = null) }
+                    _call.update { it?.copy(status = VoiceCall.Status.CONNECTED, error = null, connectedAt = it.connectedAt ?: System.currentTimeMillis()) }
                 }
 
                 override fun onClosed(code: Int, reason: String) {

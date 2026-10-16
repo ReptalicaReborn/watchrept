@@ -122,7 +122,7 @@ fun ImageViewer(url: String, contentDescription: String?, imageLoader: ImageLoad
                             ImageSaver.save(context, url)
                                 .onSuccess { Toast.makeText(context, "Saved to Pictures/Dihcord", Toast.LENGTH_SHORT).show() }
                                 .onFailure {
-                                    Toast.makeText(context, it.message ?: "Save failed", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Couldn't save the picture.", Toast.LENGTH_SHORT).show()
                                 }
                             saving = false
                         }

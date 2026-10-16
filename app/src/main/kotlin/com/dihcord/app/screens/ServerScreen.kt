@@ -46,8 +46,7 @@ import com.dihcord.app.api.orderKey
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.launch
 
-private val DiscordBlurple = Color(0xFF5865F2)
-private val MentionRed = Color(0xFFF23F43)
+private val DiscordBlurple = DiscordColors.Blurple
 private val TileSize = 48.dp
 private val TileSizeNoLabel = 54.dp
 
@@ -66,7 +65,6 @@ fun ServerScreen(
     val context = LocalContext.current
     val repo = context.discordApp.repository
     val listState = rememberScalingLazyListState()
-    val menuState = rememberScalingLazyListState()
     val scope = rememberCoroutineScope()
     val imageLoader = context.imageLoader
 
@@ -182,10 +180,10 @@ fun ServerScreen(
         val idx = entries.indexOfFirst { it.orderKey == activeMenu.id }
         ServerMenu(
             title = activeMenu.name,
+            header = { GuildIcon(activeMenu, imageLoader, size = 36.dp, shape = CircleShape) },
             isPinned = activeMenu.id in pinnedIds,
             isHidden = activeMenu.id in hiddenIds,
             isMuted = activeMenu.id in mutedIds,
-            listState = menuState,
             onTogglePin = {
                 SetupPreferences.togglePinnedServer(context, activeMenu.id)
                 pinnedIds = SetupPreferences.getPinnedServers(context)
@@ -217,7 +215,6 @@ fun ServerScreen(
         val idx = entries.indexOfFirst { it.orderKey == activeFolder.orderKey }
         ServerMenu(
             title = folderName(activeFolder),
-            listState = menuState,
             onMoveEarlier = if (idx >= 0 && ServerLayout.canMove(entries, idx, -1, pinnedIds)) {
                 { move(entries[idx], -1) }
             } else null,
@@ -274,10 +271,8 @@ fun ServerScreen(
             when {
                 loading && guilds.isEmpty() -> item { LoadingIndicator() }
                 entries.isEmpty() -> item {
-                    Text(
-                        if (folderKey == null) "No servers found." else "This folder is empty.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    if (folderKey == null) EmptyState(R.drawable.servers, "No servers yet", "Join one in the Discord app.")
+                    else EmptyState(R.drawable.servers, "This folder is empty")
                 }
                 else -> {
                     val rows = ServerLayout.honeycombRows(entries)
@@ -409,23 +404,7 @@ private fun TileFrame(
         ) {
             icon()
             overlay()
-            if (mentionCount > 0) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .defaultMinSize(minWidth = 16.dp, minHeight = 16.dp)
-                        .background(MentionRed, CircleShape)
-                        .padding(horizontal = 3.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (mentionCount > 99) "99+" else mentionCount.toString(),
-                        color = Color.White,
-                        fontSize = 8.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
+            CountBadge(mentionCount, Modifier.align(Alignment.TopEnd))
         }
         if (showName) {
             Text(
@@ -554,7 +533,7 @@ private fun GuildIcon(guild: Guild, imageLoader: ImageLoader, size: Dp, shape: S
         Box(
             modifier = Modifier
                 .size(size)
-                .background(DiscordBlurple, shape),
+                .background(avatarColor(guild.name), shape),
             contentAlignment = Alignment.Center
         ) {
             Text(
@@ -577,8 +556,8 @@ private fun initials(name: String): String =
 @Composable
 private fun ServerMenu(
     title: String,
-    listState: androidx.wear.compose.foundation.lazy.ScalingLazyListState,
     onDismiss: () -> Unit,
+    header: @Composable () -> Unit = {},
     onMoveEarlier: (() -> Unit)? = null,
     onMoveLater: (() -> Unit)? = null,
     isPinned: Boolean = false,
@@ -588,76 +567,18 @@ private fun ServerMenu(
     onToggleHidden: (() -> Unit)? = null,
     onToggleMuted: (() -> Unit)? = null,
 ) {
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-            item {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            onMoveEarlier?.let { move -> item { MoveButton("Move earlier", rotated = true, move) } }
-            onMoveLater?.let { move -> item { MoveButton("Move later", rotated = false, move) } }
-            onTogglePin?.let { item { MenuButton(if (isPinned) R.drawable.unpin else R.drawable.pin, if (isPinned) "Unpin" else "Pin to top", it) } }
-            onToggleMuted?.let { item { MenuButton(R.drawable.mute, if (isMuted) "Unmute" else "Mute notifications", it) } }
-            onToggleHidden?.let { item { MenuButton(if (isHidden) R.drawable.unhide else R.drawable.hide, if (isHidden) "Unhide" else "Hide", it) } }
-            item {
-                Button(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp),
-                    colors = ButtonDefaults.filledTonalButtonColors()
-                ) { Text("Done") }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MoveButton(label: String, rotated: Boolean, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(36.dp),
-        colors = ButtonDefaults.filledTonalButtonColors()
-    ) {
-        Icon(
-            painter = painterResource(id = R.drawable.down),
-            tint = Color.White,
-            contentDescription = null,
-            modifier = Modifier
-                .size(16.dp)
-                .rotate(if (rotated) 180f else 0f)
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(label)
-    }
-}
-
-@Composable
-private fun MenuButton(iconRes: Int, label: String, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(36.dp),
-        colors = ButtonDefaults.filledTonalButtonColors()
-    ) {
-        Icon(
-            painter = painterResource(id = iconRes),
-            tint = Color.White,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp)
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(label)
-    }
+    ActionMenu(
+        title = title,
+        header = header,
+        actions = listOfNotNull(
+            onTogglePin?.let { MenuAction(if (isPinned) R.drawable.unpin else R.drawable.pin, if (isPinned) "Unpin" else "Pin", onClick = it) },
+            onToggleMuted?.let { MenuAction(R.drawable.mute, if (isMuted) "Unmute" else "Mute", onClick = it) },
+            onToggleHidden?.let { MenuAction(if (isHidden) R.drawable.unhide else R.drawable.hide, if (isHidden) "Unhide" else "Hide", onClick = it) },
+            onMoveEarlier?.let { MenuAction(R.drawable.down, "Earlier", flipIcon = true, onClick = it) },
+            onMoveLater?.let { MenuAction(R.drawable.down, "Later", onClick = it) },
+        ),
+        onDismiss = onDismiss
+    )
 }
 
 @Composable

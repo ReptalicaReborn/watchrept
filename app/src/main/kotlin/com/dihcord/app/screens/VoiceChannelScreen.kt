@@ -6,11 +6,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -27,8 +29,8 @@ import coil.compose.AsyncImage
 import coil.imageLoader
 import com.dihcord.app.api.ServerLayout
 import androidx.core.content.ContextCompat
-import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
-import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
 import androidx.wear.compose.material3.*
 import com.dihcord.app.R
 import com.dihcord.app.discordApp
@@ -100,38 +102,6 @@ fun VoiceAvatar(
     }
 }
 
-/** A stable colour per name for avatar-less users. */
-private fun avatarColor(name: String): Color {
-    val palette = listOf(0xFF5865F2, 0xFF3BA55C, 0xFFFAA61A, 0xFFED4245, 0xFFEB459E, 0xFF747F8D)
-    return Color(palette[(name.hashCode() and 0x7FFFFFFF) % palette.size])
-}
-
-/** One person under a voice channel in the channel list: small avatar, name. */
-@Composable
-fun VoiceMemberLine(
-    name: String,
-    avatarUrl: String?,
-    speaking: Boolean,
-    muted: Boolean,
-    deafened: Boolean,
-    modifier: Modifier = Modifier
-) {
-    Row(
-        modifier = modifier.fillMaxWidth().padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        VoiceAvatar(name, avatarUrl, 22.dp, speaking, muted, deafened)
-        Text(
-            name,
-            style = MaterialTheme.typography.bodySmall,
-            color = if (speaking) Color.White else Color.White.copy(alpha = 0.75f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
-        )
-    }
-}
 
 /** A member tile on the call screen: avatar with name below, like the server icons. */
 @Composable
@@ -160,7 +130,6 @@ fun VoiceChannelScreen(
 ) {
     val context = LocalContext.current
     val repo = context.discordApp.repository ?: return
-    val listState = rememberScalingLazyListState()
     val call by VoiceManager.call.collectAsState()
     val voiceStates by repo.voiceStates.collectAsState()
     val me = repo.currentUser.collectAsState().value?.id
@@ -208,140 +177,326 @@ fun VoiceChannelScreen(
     // A call that ended with an error is shown here once; forget it when leaving the screen.
     DisposableEffect(Unit) { onDispose { VoiceManager.dismiss() } }
 
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState) {
-            item { ScreenTitle(channelName) }
+    val status = when {
+        permissionDenied -> "Dihcord needs the microphone to join voice."
+        here?.status == VoiceCall.Status.CONNECTING -> "Connecting…"
+        here?.status == VoiceCall.Status.ENDED -> here.error ?: "Disconnected."
+        incoming -> "Incoming call"
+        isCall && ringing.any { it != me } ->
+            "Ringing ${ringing.filter { it != me }.joinToString { nameOf(it) }}…"
+        elsewhere != null -> "You're in ${elsewhere.channelName}. Joining moves you here."
+        members.isEmpty() -> if (isCall) "No call right now." else "No one is here."
+        else -> null
+    }
+    val statusTone = when {
+        permissionDenied || here?.status == VoiceCall.Status.ENDED -> VoiceTone.ERROR
+        else -> VoiceTone.QUIET
+    }
+    val mode = when {
+        active -> VoiceMode.Active(muted = here!!.muted, deafened = here.deafened)
+        incoming -> VoiceMode.Incoming
+        else -> VoiceMode.Idle(
+            when {
+                !isCall -> "Join voice"
+                members.any { it.userId != me } -> "Join call"
+                else -> "Call"
+            }
+        )
+    }
+    val tiles = members.map { vs ->
+        VoiceTile(
+            userId = vs.userId,
+            name = nameOf(vs.userId, vs.nick),
+            avatarUrl = profiles[vs.userId]?.avatarUrl ?: vs.user?.avatarUrl(128),
+            speaking = here != null && (vs.userId in here.speaking || (vs.userId == me && here.selfSpeaking)),
+            muted = vs.muted,
+            deafened = vs.deafened
+        )
+    }
+
+    VoiceChannelContent(
+        channelName = channelName,
+        status = status,
+        statusTone = statusTone,
+        tiles = tiles,
+        mode = mode,
+        connectedAt = here?.connectedAt?.takeIf { here.status == VoiceCall.Status.CONNECTED },
+        privacyCode = here?.privacyCode?.takeIf { it.isNotBlank() && active },
+        onToggleMute = { VoiceManager.toggleMute() },
+        onToggleDeafen = { VoiceManager.toggleDeafen() },
+        onLeave = { VoiceManager.leave() },
+        onDecline = {
+            CallRinger.cancel(context, channelId)
+            scope.launch { repo.declineCall(channelId) }
+        },
+        onJoin = { tryJoin() }
+    )
+}
+
+/** Someone in the channel, ready to draw. */
+data class VoiceTile(
+    val userId: String,
+    val name: String,
+    val avatarUrl: String?,
+    val speaking: Boolean,
+    val muted: Boolean,
+    val deafened: Boolean,
+)
+
+/** What the buttons at the bottom do: in the call, being rung, or neither. */
+sealed interface VoiceMode {
+    data class Active(val muted: Boolean, val deafened: Boolean) : VoiceMode
+    data object Incoming : VoiceMode
+    data class Idle(val joinLabel: String) : VoiceMode
+}
+
+enum class VoiceTone { QUIET, ERROR }
+
+/**
+ * The voice screen from plain data: the people in a circle that fits the round screen (whoever talks
+ * lights up green) and who is talking under them. In a call, the call time is on the curve at the top
+ * and the controls stay pinned to the bottom, bent along the edge, so they never scroll out of reach.
+ */
+@Composable
+internal fun VoiceChannelContent(
+    channelName: String,
+    status: String?,
+    statusTone: VoiceTone,
+    tiles: List<VoiceTile>,
+    mode: VoiceMode,
+    connectedAt: Long?,
+    privacyCode: String?,
+    onToggleMute: () -> Unit,
+    onToggleDeafen: () -> Unit,
+    onLeave: () -> Unit,
+    onDecline: () -> Unit,
+    onJoin: () -> Unit,
+) {
+    val state = rememberTransformingLazyColumnState()
+    val elapsed = connectedAt?.let { callTimer(it) }
+    var showCode by remember { mutableStateOf(false) }
+    val timeText: @Composable () -> Unit = {
+        if (elapsed != null) TitledTimeText(elapsed, color = SpeakingGreen) else TitledTimeText(channelName)
+    }
+    // Room under the list for the pinned controls.
+    val controlsHeight = if (mode is VoiceMode.Idle) 0.dp else 60.dp
+    val body: @Composable BoxScope.(PaddingValues) -> Unit = { padding ->
+        TransformingLazyColumn(
+            state = state,
+            contentPadding = PaddingValues(
+                start = padding.calculateStartPadding(androidx.compose.ui.unit.LayoutDirection.Ltr),
+                end = padding.calculateEndPadding(androidx.compose.ui.unit.LayoutDirection.Ltr),
+                top = padding.calculateTopPadding() + if (mode is VoiceMode.Idle) 6.dp else 0.dp,
+                bottom = padding.calculateBottomPadding() + controlsHeight
+            )
+        ) {
+            if (tiles.isNotEmpty()) item { VoiceStage(tiles) }
 
             item {
-                val status = when {
-                    permissionDenied -> "Dihcord needs the microphone to join voice."
-                    here?.status == VoiceCall.Status.CONNECTING -> "Connecting…"
-                    here?.status == VoiceCall.Status.ENDED -> here.error ?: "Disconnected."
-                    incoming -> "Incoming call"
-                    isCall && ringing.any { it != me } ->
-                        "Ringing ${ringing.filter { it != me }.joinToString { nameOf(it) }}…"
-                    here?.status == VoiceCall.Status.CONNECTED -> "Voice connected"
-                    elsewhere != null -> "You're in ${elsewhere.channelName}. Joining moves you here."
-                    members.isEmpty() -> if (isCall) "No call right now." else "No one is here."
-                    else -> null
-                }
-                if (status != null) {
-                    Text(
-                        status,
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        color = when {
-                            permissionDenied || here?.status == VoiceCall.Status.ENDED -> MaterialTheme.colorScheme.error
-                            here?.status == VoiceCall.Status.CONNECTED -> SpeakingGreen
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-
-            val rows = ServerLayout.honeycombRows(members)
-            items(rows.size) { r ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
-                ) {
-                    rows[r].forEach { vs ->
-                        val speaking = here != null &&
-                                (vs.userId in here.speaking || (vs.userId == me && here.selfSpeaking))
-                        VoiceMemberTile(
-                            name = nameOf(vs.userId, vs.nick),
-                            avatarUrl = profiles[vs.userId]?.avatarUrl ?: vs.user?.avatarUrl(128),
-                            speaking = speaking,
-                            muted = vs.muted,
-                            deafened = vs.deafened
+                val talking = tiles.filter { it.speaking }.map { it.name }
+                Column(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    // In an encrypted call a small lock sits next to this line; tapping it swaps the line
+                    // for the privacy code (to compare with the others) and back.
+                    Row(
+                        Modifier
+                            .fillMaxWidth(0.85f)
+                            .then(if (privacyCode != null) Modifier.clickable { showCode = !showCode } else Modifier),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (privacyCode != null) {
+                            Icon(
+                                painterResource(R.drawable.lock), "Encryption code",
+                                Modifier.padding(end = 4.dp).size(12.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            when {
+                                showCode && privacyCode != null -> privacyCode.chunked(5).joinToString(" ")
+                                talking.size == 1 -> "${talking[0]} is talking"
+                                talking.size > 1 -> "${talking.size} people talking"
+                                // The name is already on the curve unless the call timer took its place.
+                                elapsed != null -> channelName
+                                tiles.isNotEmpty() -> "${tiles.size} here"
+                                else -> ""
+                            },
+                            style = if (showCode) MaterialTheme.typography.labelSmall.merge(TabularNumbers) else MaterialTheme.typography.labelMedium,
+                            color = when {
+                                showCode -> MaterialTheme.colorScheme.onSurfaceVariant
+                                talking.isNotEmpty() -> SpeakingGreen
+                                else -> MaterialTheme.colorScheme.onSurface
+                            },
+                            // The code is 30 digits: let it wrap, never cut it off.
+                            maxLines = if (showCode) 3 else 1,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                    if (status != null) {
+                        Text(
+                            status,
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            color = if (statusTone == VoiceTone.ERROR) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth(0.85f)
                         )
                     }
                 }
             }
 
-            item {
-                if (active) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally)
-                    ) {
-                        FilledIconButton(
-                            onClick = { VoiceManager.toggleMute() },
-                            colors = if (here!!.muted) altIconButtonColors() else IconButtonDefaults.filledIconButtonColors(),
-                            modifier = Modifier.size(44.dp)
-                        ) {
-                            Icon(
-                                painterResource(if (here.muted) R.drawable.mic_off else R.drawable.mic),
-                                if (here.muted) "Unmute" else "Mute"
-                            )
-                        }
-                        FilledIconButton(
-                            onClick = { VoiceManager.toggleDeafen() },
-                            colors = if (here!!.deafened) altIconButtonColors() else IconButtonDefaults.filledIconButtonColors(),
-                            modifier = Modifier.size(44.dp)
-                        ) {
-                            Icon(
-                                painterResource(if (here.deafened) R.drawable.headset_off else R.drawable.headset),
-                                if (here.deafened) "Undeafen" else "Deafen"
-                            )
-                        }
-                        FilledIconButton(
-                            onClick = { VoiceManager.leave() },
-                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = HangUpRed, contentColor = Color.White),
-                            modifier = Modifier.size(44.dp)
-                        ) {
-                            Icon(painterResource(R.drawable.call_end), "Leave")
-                        }
-                    }
-                } else if (incoming) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally)
-                    ) {
-                        FilledIconButton(
-                            onClick = {
-                                CallRinger.cancel(context, channelId)
-                                scope.launch { repo.declineCall(channelId) }
-                            },
-                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = HangUpRed, contentColor = Color.White),
-                            modifier = Modifier.size(48.dp)
-                        ) { Icon(painterResource(R.drawable.call_end), "Decline") }
-                        FilledIconButton(
-                            onClick = { tryJoin() },
-                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = SpeakingGreen, contentColor = Color.White),
-                            modifier = Modifier.size(48.dp)
-                        ) { Icon(painterResource(R.drawable.speaker), "Accept") }
-                    }
-                } else {
-                    Button(
-                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = SpeakingGreen, contentColor = Color.White),
-                        icon = { Icon(painterResource(R.drawable.speaker), null, Modifier.size(18.dp)) },
-                        label = {
-                            Text(
-                                when {
-                                    !isCall -> "Join voice"
-                                    members.any { it.userId != me } -> "Join call"
-                                    else -> "Call"
-                                }
-                            )
-                        },
-                        onClick = { tryJoin() }
+        }
+
+        when (mode) {
+            is VoiceMode.Active -> CallControls(Modifier.align(Alignment.BottomCenter)) {
+                FilledIconButton(
+                    onClick = onToggleMute,
+                    colors = if (mode.muted) altIconButtonColors() else IconButtonDefaults.filledTonalIconButtonColors(),
+                    modifier = Modifier.padding(bottom = 10.dp).size(44.dp)
+                ) {
+                    Icon(
+                        painterResource(if (mode.muted) R.drawable.mic_off else R.drawable.mic),
+                        if (mode.muted) "Unmute" else "Mute"
+                    )
+                }
+                FilledIconButton(
+                    onClick = onLeave,
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = HangUpRed, contentColor = Color.White),
+                    modifier = Modifier.size(width = 56.dp, height = 44.dp)
+                ) {
+                    Icon(painterResource(R.drawable.call_end), "Leave")
+                }
+                FilledIconButton(
+                    onClick = onToggleDeafen,
+                    colors = if (mode.deafened) altIconButtonColors() else IconButtonDefaults.filledTonalIconButtonColors(),
+                    modifier = Modifier.padding(bottom = 10.dp).size(44.dp)
+                ) {
+                    Icon(
+                        painterResource(if (mode.deafened) R.drawable.headset_off else R.drawable.headset),
+                        if (mode.deafened) "Undeafen" else "Deafen"
                     )
                 }
             }
+            VoiceMode.Incoming -> CallControls(Modifier.align(Alignment.BottomCenter), gap = 18.dp) {
+                FilledIconButton(
+                    onClick = onDecline,
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = HangUpRed, contentColor = Color.White),
+                    modifier = Modifier.size(50.dp)
+                ) { Icon(painterResource(R.drawable.call_end), "Decline") }
+                FilledIconButton(
+                    onClick = onJoin,
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = SpeakingGreen, contentColor = Color.White),
+                    modifier = Modifier.size(50.dp)
+                ) { Icon(painterResource(R.drawable.speaker), "Accept") }
+            }
+            is VoiceMode.Idle -> {}
+        }
+    }
 
-            here?.privacyCode?.takeIf { it.isNotBlank() && active }?.let { code ->
-                item {
-                    Text(
-                        "End-to-end encrypted\n${code.chunked(5).joinToString(" ")}",
-                        style = MaterialTheme.typography.labelSmall,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-                    )
+    if (mode is VoiceMode.Idle) {
+        ScreenScaffold(
+            scrollState = state,
+            timeText = timeText,
+            edgeButton = {
+                EdgeButton(
+                    onClick = onJoin,
+                    colors = ButtonDefaults.buttonColors(containerColor = SpeakingGreen, contentColor = Color.White)
+                ) {
+                    Icon(painterResource(R.drawable.speaker), null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(mode.joinLabel)
                 }
+            },
+            content = { body(it) }
+        )
+    } else {
+        ScreenScaffold(scrollState = state, timeText = timeText, content = { body(it) })
+    }
+}
+
+/** The call buttons, bottom-aligned in a row so the raised outer ones follow the round edge. */
+@Composable
+private fun CallControls(modifier: Modifier, gap: Dp = 6.dp, content: @Composable RowScope.() -> Unit) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Brush.verticalGradient(0f to Color.Transparent, 0.18f to Color.Black))
+            .padding(top = 4.dp, bottom = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(gap, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.Bottom,
+        content = content
+    )
+}
+
+/** "04:12", counting up once a second from [since]. */
+@Composable
+private fun callTimer(since: Long): String {
+    val now by produceState(System.currentTimeMillis(), since) {
+        while (true) {
+            value = System.currentTimeMillis()
+            kotlinx.coroutines.delay(1_000)
+        }
+    }
+    val secs = ((now - since) / 1000).coerceAtLeast(0)
+    return if (secs >= 3600) "%d:%02d:%02d".format(secs / 3600, secs / 60 % 60, secs % 60)
+    else "%02d:%02d".format(secs / 60, secs % 60)
+}
+
+/**
+ * Up to seven people placed evenly around a circle (one alone sits in the middle, two side by side),
+ * sized so the ring fits the round screen. More than that falls back to rows of tiles with names.
+ */
+@Composable
+private fun VoiceStage(tiles: List<VoiceTile>) {
+    if (tiles.size > 7) {
+        val rows = ServerLayout.honeycombRows(tiles)
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            rows.forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
+                ) {
+                    row.forEach { VoiceMemberTile(it.name, it.avatarUrl, it.speaking, it.muted, it.deafened) }
+                }
+            }
+        }
+        return
+    }
+    val n = tiles.size
+    val (avatar, radius) = when (n) {
+        1 -> 64.dp to 0.dp
+        2 -> 50.dp to 32.dp
+        in 3..5 -> 40.dp to 32.dp
+        else -> 32.dp to 36.dp
+    }
+    // From three people on, the top of the circle is a person and the bottom falls between two, so
+    // the ring needs (1 + cos(180°/n)) radii of height rather than two.
+    val above = if (n >= 3) radius else 0.dp
+    val below = if (n >= 3) radius * kotlin.math.cos(Math.PI / n).toFloat() else 0.dp
+    val height = above + below + avatar + 4.dp
+    androidx.compose.ui.layout.Layout(
+        modifier = Modifier.fillMaxWidth().height(height),
+        content = {
+            tiles.forEach { VoiceAvatar(it.name, it.avatarUrl, avatar, it.speaking, it.muted, it.deafened) }
+        }
+    ) { measurables, constraints ->
+        val placeables = measurables.map { it.measure(androidx.compose.ui.unit.Constraints()) }
+        val w = constraints.maxWidth
+        val r = radius.toPx()
+        val cx = w / 2f
+        val cy = above.toPx() + avatar.toPx() / 2 + 2.dp.toPx()
+        layout(w, height.roundToPx()) {
+            placeables.forEachIndexed { i, p ->
+                val (dx, dy) = when (n) {
+                    1 -> 0f to 0f
+                    2 -> (if (i == 0) -r else r) to 0f
+                    else -> {
+                        val angle = -Math.PI / 2 + 2 * Math.PI * i / n
+                        (r * kotlin.math.cos(angle)).toFloat() to (r * kotlin.math.sin(angle)).toFloat()
+                    }
+                }
+                p.place((cx + dx - p.width / 2f).toInt(), (cy + dy - p.height / 2f).toInt())
             }
         }
     }

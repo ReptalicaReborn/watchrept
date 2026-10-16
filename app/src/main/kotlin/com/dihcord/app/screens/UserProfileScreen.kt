@@ -22,6 +22,8 @@ import androidx.compose.ui.unit.sp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
+import androidx.compose.ui.res.painterResource
+import com.dihcord.app.R
 import coil.ImageLoader
 import coil.imageLoader
 import coil.compose.AsyncImage
@@ -72,18 +74,44 @@ fun UserProfileScreen(
         }
     }
 
-    ScreenScaffold(scrollState = listState) {
+    // Message anyone you can see, e.g. from a server's member list, not just existing DMs.
+    val canMessage = repo != null && userId != repo.currentUser.value?.id
+    val openDm: () -> Unit = {
+        if (!openingDm && repo != null) {
+            openingDm = true
+            error = ""
+            dmScope.launch {
+                repo.openDm(userId)
+                    .onSuccess { onNavigateToChat(it.id, it.displayName) }
+                    .onFailure { error = "Couldn't open the chat. " + friendlyError(it) }
+                openingDm = false
+            }
+        }
+    }
+    ScreenScaffold(
+        scrollState = listState,
+        edgeButton = {
+            if (canMessage) {
+                EdgeButton(onClick = openDm) {
+                    Icon(painterResource(R.drawable.chat), null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (openingDm) "Opening…" else "Message")
+                }
+            }
+        }
+    ) {
         ScalingLazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize()
         ) {
             item {
                 val u = user
-                Column(modifier = Modifier.fillMaxWidth()) {
+                Box(modifier = Modifier.fillMaxWidth().height(96.dp)) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(70.dp)
+                            .clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
                     ) {
                         val bannerUrl = u?.bannerUrl(480)
                         if (bannerUrl != null) {
@@ -107,16 +135,16 @@ fun UserProfileScreen(
                             )
                         }
                     }
-                    Row(
+                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 12.dp, top = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .align(Alignment.BottomCenter)
+                            .background(Color.Black, CircleShape)
+                            .padding(3.dp)
                     ) {
                         ProfileAvatar(
                             user = u,
                             imageLoader = imageLoader,
-                            size = 44,
+                            size = 50,
                             presence = presence,
                             guildId = guildId,
                             guildMember = guildMember
@@ -130,17 +158,20 @@ fun UserProfileScreen(
                 if (loading) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp))
                 } else if (u != null) {
-                    Column(modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
                                 text = u.displayName,
-                                style = MaterialTheme.typography.titleSmall,
+                                style = MaterialTheme.typography.titleMedium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f, fill = false)
@@ -182,8 +213,7 @@ fun UserProfileScreen(
                             Text(
                                 text = "@${u.username}",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 10.sp
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         val pronouns = u.pronouns
@@ -192,8 +222,7 @@ fun UserProfileScreen(
                             Text(
                                 text = pronouns,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontSize = 10.sp
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
@@ -207,7 +236,7 @@ fun UserProfileScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
                     ) {
                         StatusDot(status = presence.status, size = 8)
                         val statusLabel = when (presence.status) {
@@ -233,7 +262,7 @@ fun UserProfileScreen(
                                 .fillMaxWidth()
                                 .padding(horizontal = 12.dp, vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally)
                         ) {
                             if (customEmoji != null) {
                                 if (customEmoji.startsWith("http")) {
@@ -267,7 +296,7 @@ fun UserProfileScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         badges.forEach { badgeUrl ->
@@ -293,9 +322,8 @@ fun UserProfileScreen(
                             .padding(horizontal = 12.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = "ROLES",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 9.sp,
+                            text = "Roles",
+                            style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(2.dp))
@@ -314,8 +342,7 @@ fun UserProfileScreen(
                                     Text(
                                         text = role.name,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = roleColor,
-                                        fontSize = 9.sp
+                                        color = roleColor
                                     )
                                 }
                             }
@@ -333,14 +360,13 @@ fun UserProfileScreen(
                             .padding(horizontal = 12.dp, vertical = 4.dp)
                             .background(
                                 MaterialTheme.colorScheme.surfaceContainer,
-                                RoundedCornerShape(8.dp)
+                                RoundedCornerShape(16.dp)
                             )
-                            .padding(8.dp)
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         Text(
-                            text = "ABOUT ME",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 9.sp,
+                            text = "About me",
+                            style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(3.dp))
@@ -364,29 +390,6 @@ fun UserProfileScreen(
                 }
             }
 
-            // Message anyone you can see, e.g. from a server's member list, not just existing DMs.
-            if (repo != null && userId != repo.currentUser.value?.id) {
-                item {
-                    Button(
-                        onClick = {
-                            if (openingDm) return@Button
-                            openingDm = true
-                            error = ""
-                            dmScope.launch {
-                                repo.openDm(userId)
-                                    .onSuccess { onNavigateToChat(it.id, it.displayName) }
-                                    .onFailure { error = "Couldn't open a DM: ${it.message}" }
-                                openingDm = false
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp)
-                    ) { Text(if (openingDm) "Opening…" else "Message") }
-                }
-            }
-
-            item { Spacer(Modifier.height(16.dp)) }
         }
     }
 }
@@ -493,7 +496,7 @@ private fun ProfileAvatar(
     guildMember: GuildMember? = null
 ) {
     val sizeDp = size.dp
-    val blurple = Color(0xFF5865F2)
+    val blurple = avatarColor(user?.displayName ?: "")
     val initial = user?.displayName?.firstOrNull()?.uppercaseChar()?.toString() ?: "?"
     val avatarUrl = guildMember?.avatarUrl(guildId ?: "", 128) ?: user?.avatarUrl(128)
     val decorUrl = guildMember?.avatarDecorationUrl() ?: user?.avatarDecorationUrl()

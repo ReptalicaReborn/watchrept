@@ -35,6 +35,7 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
+import com.dihcord.app.R
 import com.dihcord.app.api.Gif
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.delay
@@ -52,11 +53,12 @@ fun GifPickerScreen(onGifPicked: (Gif) -> Unit) {
     var tab by remember { mutableStateOf(GifTab.FAVORITES) }
     var query by remember { mutableStateOf("") }
     var gifs by remember { mutableStateOf<List<Gif>?>(null) }
-    var error by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<Throwable?>(null) }
+    var attempt by remember { mutableStateOf(0) }
 
     val q = query.trim()
-    LaunchedEffect(q, tab) {
-        error = ""
+    LaunchedEffect(q, tab, attempt) {
+        error = null
         if (rest == null) { gifs = emptyList(); return@LaunchedEffect }
         if (q.isNotEmpty()) delay(500) // wait for typing to settle
         gifs = null
@@ -66,7 +68,7 @@ fun GifPickerScreen(onGifPicked: (Gif) -> Unit) {
             else -> rest.trendingGifs()
         }
         gifs = result.getOrElse {
-            error = "Couldn't load GIFs: ${it.message}"
+            error = it
             emptyList()
         }
     }
@@ -87,45 +89,20 @@ fun GifPickerScreen(onGifPicked: (Gif) -> Unit) {
             }
             if (q.isEmpty()) {
                 item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally)
-                    ) {
-                        GifTab.values().forEach { t ->
-                            Button(
-                                onClick = { tab = t },
-                                modifier = Modifier.height(32.dp),
-                                colors = if (t == tab) ButtonDefaults.buttonColors()
-                                else ButtonDefaults.filledTonalButtonColors()
-                            ) { Text(t.label, style = MaterialTheme.typography.labelSmall) }
-                        }
-                    }
+                    PickerTabs(GifTab.entries.map { it.label }, tab.ordinal) { tab = GifTab.entries[it] }
                 }
             }
 
             val list = gifs
             when {
                 list == null -> item { LoadingIndicator() }
-                error.isNotEmpty() -> item {
-                    Text(
-                        error,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                error != null -> item { ErrorState("Couldn't load GIFs", error) { attempt++ } }
                 list.isEmpty() -> item {
-                    Text(
-                        when {
-                            q.isNotEmpty() -> "No GIFs found."
-                            tab == GifTab.FAVORITES -> "No favourite GIFs yet. Star some in the Discord app."
-                            else -> "Nothing trending right now."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    when {
+                        q.isNotEmpty() -> EmptyState(R.drawable.image, "No GIFs found", "Try another word.")
+                        tab == GifTab.FAVORITES -> EmptyState(R.drawable.image, "No favourites yet", "Star GIFs in the Discord app.")
+                        else -> EmptyState(R.drawable.image, "Nothing trending right now")
+                    }
                 }
                 else -> {
                     val rows = list.chunked(2)
@@ -149,8 +126,8 @@ private fun GifCell(gif: Gif, imageLoader: ImageLoader, onClick: () -> Unit) {
     var model by remember(gif) { mutableStateOf(gif.preview) }
     Box(
         modifier = Modifier
-            .size(width = 74.dp, height = 56.dp)
-            .clip(RoundedCornerShape(6.dp))
+            .size(width = 76.dp, height = 58.dp)
+            .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surfaceContainer)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
@@ -167,7 +144,7 @@ private fun GifCell(gif: Gif, imageLoader: ImageLoader, onClick: () -> Unit) {
                 onError = { if (model == gif.preview) model = gif.fallback },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
+                    .height(58.dp)
             )
         }
     }

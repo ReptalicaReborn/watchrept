@@ -2,6 +2,8 @@ package com.dihcord.app.screens
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -69,7 +71,15 @@ fun EmojiStickerScreen(
     val repo = context.discordApp.repository
     val listState = rememberScalingLazyListState()
     val imageLoader = context.imageLoader
-    val showStickers = tab == 1 && !reactMode
+    // The picker opens on [tab]; the switch at the top flips between emoji and stickers.
+    var current by remember { mutableStateOf(if (reactMode) 0 else tab) }
+    val showStickers = current == 1 && !reactMode
+    var recent by remember { mutableStateOf(com.dihcord.app.SetupPreferences.getRecentEmoji(context)) }
+    val pickUnicode: (String) -> Unit = { emoji ->
+        com.dihcord.app.SetupPreferences.addRecentEmoji(context, emoji)
+        recent = com.dihcord.app.SetupPreferences.getRecentEmoji(context)
+        onUnicodeEmojiPicked(emoji)
+    }
 
     var emojiSets by remember { mutableStateOf<List<GuildSet<GuildEmoji>>?>(null) }
     var stickerSets by remember { mutableStateOf<List<GuildSet<StickerItem>>?>(null) }
@@ -97,7 +107,8 @@ fun EmojiStickerScreen(
     ScreenScaffold(scrollState = listState) {
         ScalingLazyColumn(state = listState) {
             item {
-                ScreenTitle(if (reactMode) "React" else if (showStickers) "Stickers" else "Emojis")
+                if (reactMode) ScreenTitle("React")
+                else PickerTabs(listOf("Emoji", "Stickers"), current) { current = it }
             }
             item {
                 CompactTextField(
@@ -133,19 +144,14 @@ fun EmojiStickerScreen(
                     }
                 }
             } else {
+                if (q.isEmpty() && recent.isNotEmpty()) {
+                    item(key = "recent") { SectionHeader("Recent") }
+                    gridRows(recent, perRow = 5) { emoji -> UnicodeCell(emoji, pickUnicode) }
+                    item(key = "all") { SectionHeader("All") }
+                }
                 val unicode = COMMON_UNICODE_EMOJI.filter { (_, words) -> q.isEmpty() || words.contains(q) }
                 if (unicode.isNotEmpty()) {
-                    gridRows(unicode, perRow = 5) { (emoji, _) ->
-                        Text(
-                            text = emoji,
-                            fontSize = 19.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clickable { onUnicodeEmojiPicked(emoji) }
-                                .wrapContentSize()
-                        )
-                    }
+                    gridRows(unicode, perRow = 5) { (emoji, _) -> UnicodeCell(emoji, pickUnicode) }
                 }
 
                 val sets = emojiSets
@@ -187,11 +193,56 @@ private fun <T> ScalingLazyListScope.gridRows(items: List<T>, perRow: Int, cell:
     }
 }
 
+/** A two-way switch as one pill: the picked side filled with the accent colour. */
+@Composable
+internal fun PickerTabs(labels: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth(0.8f)
+            .height(32.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .padding(3.dp)
+    ) {
+        labels.forEachIndexed { i, label ->
+            val on = i == selected
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(13.dp))
+                    .background(if (on) MaterialTheme.colorScheme.primary else androidx.compose.ui.graphics.Color.Transparent)
+                    .clickable { onSelect(i) },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (on) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UnicodeCell(emoji: String, onPicked: (String) -> Unit) {
+    Box(
+        Modifier
+            .size(34.dp)
+            .clip(androidx.compose.foundation.shape.CircleShape)
+            .clickable { onPicked(emoji) },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(emoji, fontSize = 20.sp, textAlign = TextAlign.Center)
+    }
+}
+
 @Composable
 private fun SectionHeader(name: String) {
     Text(
         name,
-        style = MaterialTheme.typography.labelSmall,
+        style = MaterialTheme.typography.labelMedium,
         color = MaterialTheme.colorScheme.primary,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
@@ -222,7 +273,8 @@ private fun EmojiCell(
     val context = LocalContext.current
     Box(
         modifier = Modifier
-            .size(32.dp)
+            .size(34.dp)
+            .clip(androidx.compose.foundation.shape.CircleShape)
             .clickable(enabled = use != EmojiUse.LOCKED) { onPicked(emoji, use == EmojiUse.AS_LINK) },
         contentAlignment = Alignment.Center
     ) {
@@ -255,7 +307,8 @@ private fun StickerCell(
     val context = LocalContext.current
     Box(
         modifier = Modifier
-            .size(46.dp)
+            .size(48.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
             .clickable(enabled = use != EmojiUse.LOCKED) { onPicked(sticker, use == EmojiUse.AS_LINK) },
         contentAlignment = Alignment.Center
     ) {

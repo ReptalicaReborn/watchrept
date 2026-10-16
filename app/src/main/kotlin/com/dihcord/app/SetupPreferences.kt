@@ -293,6 +293,21 @@ object SetupPreferences {
         return hidden
     }
 
+    private const val KEY_RECENT_EMOJI = "recent_emoji"
+
+    /** The last few emoji picked (newest first), for the "Recent" row in the picker. */
+    fun getRecentEmoji(context: Context): List<String> =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_RECENT_EMOJI, null)
+            ?.split('\u0000')?.filter { it.isNotEmpty() }
+            .orEmpty()
+
+    fun addRecentEmoji(context: Context, emoji: String) {
+        val updated = (listOf(emoji) + getRecentEmoji(context).filter { it != emoji }).take(10)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit { putString(KEY_RECENT_EMOJI, updated.joinToString("\u0000")) }
+    }
+
     private const val KEY_HIDDEN_DMS = "hidden_dms"
 
     fun getHiddenDms(context: Context): Set<String> =

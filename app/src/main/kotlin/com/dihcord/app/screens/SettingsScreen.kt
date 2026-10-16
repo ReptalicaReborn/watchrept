@@ -16,6 +16,8 @@ import androidx.compose.ui.unit.dp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
+import androidx.compose.ui.res.painterResource
+import com.dihcord.app.R
 import com.dihcord.app.BuildConfig
 import com.dihcord.app.AppTheme
 import com.dihcord.app.NotificationService
@@ -91,56 +93,22 @@ fun SettingsScreen(
     BackHandler(enabled = showLogoutConfirm) { showLogoutConfirm = false }
 
     if (showLogoutConfirm) {
-        ScreenScaffold(scrollState = rememberScalingLazyListState()) {
-            ScalingLazyColumn(modifier = Modifier.fillMaxSize()) {
-                item {
-                    Text(
-                        "Log out?",
-                        style = MaterialTheme.typography.titleMedium,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+        ConfirmScreen(
+            iconRes = R.drawable.logout,
+            title = "Log out?",
+            text = "Your token will be cleared from this watch.",
+            confirmLabel = "Log out",
+            onConfirm = {
+                scope.launch {
+                    runCatching { repo?.rest?.logout() }
+                    repo?.disconnect()
+                    SetupPreferences.clearAll(context)
+                    context.discordApp.clearRepository()
+                    onLogOut()
                 }
-                item {
-                    Text(
-                        "Your token will be cleared from this device.",
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp)
-                    )
-                }
-                item {
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                runCatching { repo?.rest?.logout() }
-                                repo?.disconnect()
-                                SetupPreferences.clearAll(context)
-                                context.discordApp.clearRepository()
-                                onLogOut()
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error
-                        )
-                    ) { Text("Log Out") }
-                }
-                item {
-                    Button(
-                        onClick = { showLogoutConfirm = false },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) { Text("Cancel") }
-                }
-            }
-        }
+            },
+            onCancel = { showLogoutConfirm = false }
+        )
         return
     }
 
@@ -552,11 +520,15 @@ fun SettingsScreen(
             item {
                 Button(
                     onClick = { showLogoutConfirm = true },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp),
-                    colors = ButtonDefaults.filledTonalButtonColors()
-                ) { Text("Log Out") }
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        iconColor = MaterialTheme.colorScheme.onErrorContainer
+                    ),
+                    icon = { Icon(painterResource(R.drawable.logout), null, Modifier.size(18.dp)) },
+                    label = { Text("Log out") }
+                )
             }
 
             item {

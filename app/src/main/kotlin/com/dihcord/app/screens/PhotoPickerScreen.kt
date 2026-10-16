@@ -262,11 +262,12 @@ fun PhotoPickerScreen(
                 .padding(bottom = 8.dp),
             contentAlignment = Alignment.BottomCenter
         ) {
-            CompactButton(
-                onClick = onDismiss,
-                colors = ButtonDefaults.filledTonalButtonColors()
-            ) {
-                Text("X", fontSize = 12.sp)
+            FilledTonalIconButton(onClick = onDismiss, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    painter = androidx.compose.ui.res.painterResource(com.dihcord.app.R.drawable.close),
+                    contentDescription = "Close",
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
     }
