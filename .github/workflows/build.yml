@@ -15,6 +15,24 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
+      - name: Set up Rust for Android
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/voice
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Build voice library (DAVE + Opus)
+        working-directory: native/voice
+        run: |
+          export CMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+          export ANDROID_PLATFORM=android-30
+          for abi in arm64-v8a armeabi-v7a; do
+            ANDROID_ABI=$abi cargo ndk -t $abi -P 30 -o ../../app/build/rustJniLibs build --release
+          done
+          ls -la ../../app/build/rustJniLibs/*
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest --stacktrace
       - name: Decode signing keystore (if configured)

@@ -162,6 +162,19 @@ class DiscordGateway(private val token: String) {
         )
     }
 
+    /** Joins ([channelId] set) or leaves (null) voice, or changes our mute/deafen flags (op 4). */
+    fun updateVoiceState(guildId: String?, channelId: String?, selfMute: Boolean, selfDeaf: Boolean) {
+        send(
+            4,
+            JSONObject()
+                .put("guild_id", guildId ?: JSONObject.NULL)
+                .put("channel_id", channelId ?: JSONObject.NULL)
+                .put("self_mute", selfMute)
+                .put("self_deaf", selfDeaf)
+                .put("self_video", false)
+        )
+    }
+
     fun selectChannel(channelId: String, guildId: String?) {
         if (guildId != null) {
             val sub = JSONObject()
@@ -346,10 +359,16 @@ class DiscordGateway(private val token: String) {
                 // User-account READY carries every guild's emojis and stickers; keep them for the picker.
                 val guildEmojis = mutableMapOf<String, List<GuildEmoji>>()
                 val guildStickers = mutableMapOf<String, List<StickerItem>>()
+                val voiceStates = mutableListOf<VoiceState>()
                 d.optJSONArray("guilds")?.let { arr ->
                     for (i in 0 until arr.length()) {
                         val g = arr.optJSONObject(i) ?: continue
                         val gid = g.optString("id").takeIf { it.isNotEmpty() } ?: continue
+                        g.optJSONArray("voice_states")?.let { vs ->
+                            for (j in 0 until vs.length()) {
+                                vs.optJSONObject(j)?.let { VoiceState.fromJson(it, gid) }?.let(voiceStates::add)
+                            }
+                        }
                         g.optJSONArray("emojis")?.let { guildEmojis[gid] = GuildEmoji.listFromJson(it) }
                         g.optJSONArray("stickers")?.let { st ->
                             guildStickers[gid] = (0 until st.length()).mapNotNull {
@@ -359,7 +378,7 @@ class DiscordGateway(private val token: String) {
                     }
                 }
                 if (user != null) {
-                    GatewayEvent.Ready(user, readState, presences, folders, guildEmojis, guildStickers)
+                    GatewayEvent.Ready(user, readState, presences, folders, guildEmojis, guildStickers, voiceStates)
                 } else null
             }
 
@@ -472,6 +491,15 @@ class DiscordGateway(private val token: String) {
                 GatewayEvent.MembersChunk(d.optString("nonce").takeIf { it.isNotEmpty() }, members)
             }.getOrNull()
 
+            "VOICE_STATE_UPDATE" -> VoiceState.fromJson(d, null)?.let { GatewayEvent.VoiceStateUpdate(it) }
+
+            "VOICE_SERVER_UPDATE" -> GatewayEvent.VoiceServerUpdate(
+                token = d.optString("token"),
+                guildId = d.optString("guild_id").takeIf { it.isNotEmpty() && it != "null" },
+                channelId = d.optString("channel_id").takeIf { it.isNotEmpty() && it != "null" },
+                endpoint = d.optString("endpoint").takeIf { it.isNotEmpty() && it != "null" },
+            )
+
             "PRESENCE_UPDATE" -> runCatching {
                 GatewayEvent.PresenceUpdate(UserPresence.fromJson(d))
             }.getOrNull()
@@ -520,7 +548,17 @@ sealed class GatewayEvent {
         val presences: List<UserPresence> = emptyList(),
         val folders: List<GuildFolder> = emptyList(),
         val guildEmojis: Map<String, List<GuildEmoji>> = emptyMap(),
-        val guildStickers: Map<String, List<StickerItem>> = emptyMap()
+        val guildStickers: Map<String, List<StickerItem>> = emptyMap(),
+        val voiceStates: List<VoiceState> = emptyList()
+    ) : GatewayEvent()
+
+    data class VoiceStateUpdate(val state: VoiceState) : GatewayEvent()
+    data class VoiceServerUpdate(
+        val token: String,
+        val guildId: String?,
+        val channelId: String?,
+        /** Null while Discord is still picking a server; another update follows. */
+        val endpoint: String?
     ) : GatewayEvent()
 
     data class MessageCreate(
@@ -577,4 +615,42 @@ sealed class GatewayEvent {
     data class MembersChunk(val nonce: String?, val members: List<MentionCandidate>) : GatewayEvent()
     object InvalidToken : GatewayEvent()
     data class Unknown(val name: String) : GatewayEvent()
+}
+
+/** Someone's voice connection: which channel they're in and their mute/deafen flags. */
+data class VoiceState(
+    val userId: String,
+    val guildId: String?,
+    /** Null when they left voice. */
+    val channelId: String?,
+    val sessionId: String,
+    val selfMute: Boolean,
+    val selfDeaf: Boolean,
+    val serverMute: Boolean,
+    val serverDeaf: Boolean,
+    /** From the member object, when the event carries one. */
+    val user: DiscordUser? = null,
+    val nick: String? = null
+) {
+    val muted: Boolean get() = selfMute || serverMute
+    val deafened: Boolean get() = selfDeaf || serverDeaf
+
+    companion object {
+        fun fromJson(o: JSONObject, guildId: String?): VoiceState? {
+            val userId = o.optString("user_id").takeIf { it.isNotEmpty() } ?: return null
+            val member = o.optJSONObject("member")
+            return VoiceState(
+                userId = userId,
+                guildId = guildId ?: o.optString("guild_id").takeIf { it.isNotEmpty() && it != "null" },
+                channelId = o.optString("channel_id").takeIf { it.isNotEmpty() && it != "null" },
+                sessionId = o.optString("session_id"),
+                selfMute = o.optBoolean("self_mute"),
+                selfDeaf = o.optBoolean("self_deaf"),
+                serverMute = o.optBoolean("mute"),
+                serverDeaf = o.optBoolean("deaf"),
+                user = member?.optJSONObject("user")?.let { runCatching { DiscordUser.fromJson(it) }.getOrNull() },
+                nick = member?.optString("nick")?.takeIf { it.isNotEmpty() && it != "null" }
+            )
+        }
+    }
 }

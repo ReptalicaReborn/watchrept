@@ -37,6 +37,13 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
+    // Voice (DAVE + Opus) native library, cross-compiled from native/voice by CI (see build.yml).
+    sourceSets {
+        main {
+            jniLibs.srcDirs += 'build/rustJniLibs'
+        }
+    }
+
     kotlinOptions {
         jvmTarget = "17"
         freeCompilerArgs += ["-opt-in=androidx.compose.foundation.layout.ExperimentalLayoutApi"]

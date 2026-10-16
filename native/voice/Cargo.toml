@@ -1,0 +1,22 @@
+[package]
+name = "dihcord_voice"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "JNI bridge for Dihcord voice chat: Discord DAVE end-to-end encryption (davey) and Opus (libopus)"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+davey = "0.1.4"
+jni = "0.21"
+# Vendored libopus, built with CMake (no DNN models: keeps the library small).
+opus-head-sys = { version = "0.3.3", default-features = false }
+
+[profile.release]
+strip = true
+opt-level = "s"
+lto = true
+codegen-units = 1

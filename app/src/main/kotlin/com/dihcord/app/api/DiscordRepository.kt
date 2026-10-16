@@ -167,6 +167,22 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     private val userDisplayNames = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val myRolesByGuild = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
     private val channelCache = java.util.concurrent.ConcurrentHashMap<String, Channel>()
+    /** Everyone's voice connection, keyed by "guildId|userId" ("dm|userId" for calls). */
+    private val _voiceStates = MutableStateFlow<Map<String, VoiceState>>(emptyMap())
+    val voiceStates: StateFlow<Map<String, VoiceState>> = _voiceStates.asStateFlow()
+
+    /** Voice events for the voice call manager (our own state, voice server handoff). */
+    private val _voiceEvents = MutableSharedFlow<GatewayEvent>(extraBufferCapacity = 16)
+    val voiceEvents: SharedFlow<GatewayEvent> = _voiceEvents
+
+    /** Set while in a voice call: the gateway must stay connected or Discord drops us from the channel. */
+    @Volatile var keepConnected = false
+
+    fun updateVoiceState(guildId: String?, channelId: String?, selfMute: Boolean, selfDeaf: Boolean) =
+        gateway.updateVoiceState(guildId, channelId, selfMute, selfDeaf)
+
+    private fun voiceKey(state: VoiceState) = "${state.guildId ?: "dm"}|${state.userId}"
+
     private val _presences = MutableStateFlow<Map<String, UserPresence>>(emptyMap())
     val presences: StateFlow<Map<String, UserPresence>> = _presences.asStateFlow()
 
@@ -245,6 +261,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
     /** Drops the gateway connection to save battery while the app is idle in the background. */
     fun pauseConnection() {
+        if (keepConnected) return
         paused = true
         gateway.pause()
     }
@@ -900,6 +917,17 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                         _isTokenInvalid.value = true
                     }
 
+                    is GatewayEvent.VoiceStateUpdate -> {
+                        val vs = event.state
+                        vs.user?.let { userDisplayNames[it.id] = vs.nick ?: it.displayName }
+                        _voiceStates.update { current ->
+                            if (vs.channelId == null) current - voiceKey(vs) else current + (voiceKey(vs) to vs)
+                        }
+                        _voiceEvents.tryEmit(event)
+                    }
+
+                    is GatewayEvent.VoiceServerUpdate -> _voiceEvents.tryEmit(event)
+
                     is GatewayEvent.MembersChunk -> {
                         event.members.forEach { userDisplayNames[it.id] = it.displayName }
                         memberChunks.tryEmit(event)
@@ -908,6 +936,8 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                     is GatewayEvent.Ready -> {
                         _currentUser.value = event.user
                         currentUserId = event.user.id
+                        _voiceStates.value = event.voiceStates.filter { it.channelId != null }.associateBy(::voiceKey)
+                        event.voiceStates.forEach { vs -> vs.user?.let { userDisplayNames[it.id] = it.displayName } }
                         if (event.folders.isNotEmpty()) _guildFolders.value = event.folders
                         emojiCache.putAll(event.guildEmojis)
                         stickerCache.putAll(event.guildStickers)
