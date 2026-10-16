@@ -242,24 +242,34 @@ class FeatureModelsTest {
 
     // ---- Failed mark-read rollback ----
 
+    private fun furthestOf(vararg acks: ChannelUnreadState): ChannelUnreadState? =
+        acks.fold(null as ChannelUnreadState?) { acc, a -> furtherAck(acc, a) }
+
     @Test fun rollbackWithNoOtherReadGoesBack() {
         val before = ChannelUnreadState("100", 2)
-        assertEquals(Rollback(before, null), rollbackFor(ChannelUnreadState("300", 0), before, emptyList()))
-        assertEquals(Rollback(null, null), rollbackFor(ChannelUnreadState("300", 0), null, emptyList()))
+        assertEquals(Rollback(before, null), rollbackFor(ChannelUnreadState("300", 0), before, null))
+        assertEquals(Rollback(null, null), rollbackFor(ChannelUnreadState("300", 0), null, null))
     }
 
     @Test fun aReadThatCoversOursStands() {
         val set = ChannelUnreadState("300", 0)
-        assertNull(rollbackFor(set, ChannelUnreadState("100"), listOf(ChannelUnreadState("300", 0))))
-        // A stale read arriving after the covering one doesn't undo it.
-        assertNull(rollbackFor(set, ChannelUnreadState("100"), listOf(ChannelUnreadState("300", 0), ChannelUnreadState("200", 1))))
+        assertNull(rollbackFor(set, ChannelUnreadState("100"), furthestOf(ChannelUnreadState("300", 0))))
+        // Any number of stale reads after the covering one don't undo it.
+        val stale = Array(20) { ChannelUnreadState("200", 1) }
+        assertNull(rollbackFor(set, ChannelUnreadState("100"), furthestOf(ChannelUnreadState("300", 0), *stale)))
     }
 
     @Test fun aShorterReadKeepsItsMentions() {
-        val back = rollbackFor(ChannelUnreadState("300", 0), ChannelUnreadState("100", 2), listOf(ChannelUnreadState("200", 1)))
+        val back = rollbackFor(ChannelUnreadState("300", 0), ChannelUnreadState("100", 2), furthestOf(ChannelUnreadState("200", 1)))
         assertEquals(Rollback(ChannelUnreadState("200", 1), "200"), back)
         // A read older than where we were before doesn't move us back further.
-        val stale = rollbackFor(ChannelUnreadState("300", 0), ChannelUnreadState("150", 1), listOf(ChannelUnreadState("120", 0)))
+        val stale = rollbackFor(ChannelUnreadState("300", 0), ChannelUnreadState("150", 1), furthestOf(ChannelUnreadState("120", 0)))
         assertEquals(Rollback(ChannelUnreadState("150", 1), "120"), stale)
+    }
+
+    @Test fun theNewerReportOfTheSameMessageWins() {
+        val furthest = furthestOf(ChannelUnreadState("200", 2), ChannelUnreadState("200", 1))
+        assertEquals(ChannelUnreadState("200", 1), furthest)
+        assertEquals(Rollback(ChannelUnreadState("200", 1), "200"), rollbackFor(ChannelUnreadState("300", 0), ChannelUnreadState("100", 2), furthest))
     }
 }
