@@ -267,6 +267,11 @@ class FeatureModelsTest {
         assertEquals(Rollback(ChannelUnreadState("150", 1), "120"), stale)
     }
 
+    @Test fun aReportAtTheOldMarkerUpdatesItsMentions() {
+        val back = rollbackFor(ChannelUnreadState("300", 0), ChannelUnreadState("200", 2), furthestOf(ChannelUnreadState("200", 1)))
+        assertEquals(Rollback(ChannelUnreadState("200", 1), "200"), back)
+    }
+
     @Test fun theNewerReportOfTheSameMessageWins() {
         val furthest = furthestOf(ChannelUnreadState("200", 2), ChannelUnreadState("200", 1))
         assertEquals(ChannelUnreadState("200", 1), furthest)

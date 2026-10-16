@@ -1797,7 +1797,8 @@ internal fun furtherAck(old: ChannelUnreadState?, new: ChannelUnreadState): Chan
  */
 internal fun rollbackFor(set: ChannelUnreadState, before: ChannelUnreadState?, furthest: ChannelUnreadState?): Rollback? {
     if (furthest != null && compareSnowflakes(furthest.lastMessageId, set.lastMessageId) >= 0) return null
-    val state = if (furthest != null && (before == null || compareSnowflakes(furthest.lastMessageId, before.lastMessageId) > 0)) furthest else before
+    // At the same message as before, the report is newer, so its mention count wins.
+    val state = if (furthest != null && (before == null || compareSnowflakes(furthest.lastMessageId, before.lastMessageId) >= 0)) furthest else before
     return Rollback(state, furthest?.lastMessageId)
 }
 
