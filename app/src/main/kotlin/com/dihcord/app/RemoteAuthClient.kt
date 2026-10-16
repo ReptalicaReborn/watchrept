@@ -2,6 +2,9 @@ package com.dihcord.app
 
 import com.dihcord.app.captcha.CaptchaBroker
 import com.dihcord.app.captcha.CaptchaChallenge
+import com.dihcord.app.api.ClientIdentity
+import com.dihcord.app.api.ClientIdentity.discordHeaders
+import com.dihcord.app.api.MemoryCookieJar
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -22,28 +25,6 @@ import javax.crypto.spec.OAEPParameterSpec
 import javax.crypto.spec.PSource
 
 private const val MAX_CAPTCHA_TRIES = 3
-
-private const val DISCORD_UA =
-    "Mozilla/5.0 (Wayland; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.2.0.2 Firefox/156.0.1"
-private val SUPER_PROPERTIES: String by lazy {
-    val json = JSONObject()
-        .put("os", "Linux") //Android is based of Linux so make it as close as possible
-        .put("browser", "Chrome")
-        .put("device", "WearOS")
-        .put("system_locale", "en-US")
-        .put("browser_user_agent", DISCORD_UA)
-        .put("browser_version", "151.2.0.2")
-        .put("os_version", "")
-        .put("referrer", "")
-        .put("referring_domain", "")
-        .put("referrer_current", "")
-        .put("referring_domain_current", "")
-        .put("release_channel", "stable")
-        .put("client_build_number", "621195")
-        .put("client_event_source", JSONObject.NULL)
-        .toString()
-    Base64.encodeToString(json.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-}
 
 sealed class RemoteAuthState {
     object Connecting : RemoteAuthState()
@@ -98,7 +79,31 @@ class RemoteAuthClient(
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
+        .cookieJar(MemoryCookieJar())
         .build()
+
+    /** Discord's browser fingerprint for this login, fetched (with its cookies) before the ticket is exchanged. */
+    @Volatile private var fingerprint: String? = null
+
+    /**
+     * Gets the fingerprint and cookies Discord's login page would have, so the ticket exchange looks like a normal
+     * browser login; without them Discord is much more likely to ask for a captcha (and then cancel the ticket).
+     */
+    private fun prepareBrowserSession() {
+        if (fingerprint != null) return
+        runCatching {
+            val request = Request.Builder()
+                .url("https://discord.com/api/v9/experiments")
+                .discordHeaders()
+                .header("Referer", "https://discord.com/login")
+                .build()
+            http.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                fingerprint = runCatching { JSONObject(body).optString("fingerprint") }.getOrNull()
+                    ?.takeIf { it.isNotEmpty() }
+            }
+        }.onFailure { log("Couldn't prepare the login session: ${it.message}") }
+    }
 
     private val oaepSpec = OAEPParameterSpec(
         "SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT
@@ -123,11 +128,13 @@ class RemoteAuthClient(
 
     fun connect() {
         setState(RemoteAuthState.Connecting)
+        // Warm up the browser-like session while the user scans, so the ticket exchange doesn't wait for it.
+        ioScope.launch { prepareBrowserSession() }
         log("Opening WebSocket…")
         val request = Request.Builder()
             .url("wss://remote-auth-gateway.discord.gg/?v=2")
             .header("Origin", "https://discord.com")
-            .header("User-Agent", DISCORD_UA)
+            .header("User-Agent", ClientIdentity.USER_AGENT)
             .build()
 
         ws = http.newWebSocket(request, object : WebSocketListener() {
@@ -285,11 +292,24 @@ class RemoteAuthClient(
             var challenge: CaptchaChallenge? = null
             var key: String? = null
             var tries = 0
+            withContext(Dispatchers.IO) { prepareBrowserSession() }
             while (true) {
                 val (code, responseBody) = postTicket(ticket, challenge, key)
                 log("Ticket exchange HTTP $code")
                 val next = if (code == 400) CaptchaChallenge.parse(responseBody) else null
                 if (next == null) {
+                    if (code == 404 && responseBody.contains("20042")) {
+                        // Discord withdrew the login ticket. After a captcha it does that on purpose (the captcha
+                        // flagged the attempt), so a fresh QR code is the only way forward.
+                        finished = true
+                        log("Discord cancelled the login ticket.")
+                        setState(
+                            if (key != null) RemoteAuthState.CaptchaRequired(
+                                "Discord cancelled this login after the captcha."
+                            ) else RemoteAuthState.Error("This login expired before it finished. Scan a new code.")
+                        )
+                        return
+                    }
                     if (code !in 200..299) throw Exception("HTTP $code: $responseBody")
                     val encryptedToken = JSONObject(responseBody).getString("encrypted_token")
                     val token = decryptBytes(Base64.decode(encryptedToken, Base64.DEFAULT))
@@ -338,10 +358,9 @@ class RemoteAuthClient(
             .url("https://discord.com/api/v9/users/@me/remote-auth/login")
             .post(jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
             .header("Content-Type", "application/json")
-            .header("User-Agent", DISCORD_UA)
-            .header("X-Super-Properties", SUPER_PROPERTIES)
-            .header("Origin", "https://discord.com")
+            .discordHeaders()
             .header("Referer", "https://discord.com/login")
+            .apply { fingerprint?.let { header("X-Fingerprint", it) } }
             .apply { if (challenge != null && key != null) challenge.answerHeaders(key).forEach { (k, v) -> header(k, v) } }
             .build()
         return withContext(Dispatchers.IO) {

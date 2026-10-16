@@ -7,6 +7,7 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import com.dihcord.app.api.ClientIdentity.discordHeaders
 import com.dihcord.app.captcha.CaptchaBroker
 import com.dihcord.app.captcha.CaptchaChallenge
 import org.json.JSONArray
@@ -20,12 +21,16 @@ private const val MAX_CAPTCHA_TRIES = 3
 /** Longest rate-limit wait (ms) worth sitting through before giving up on a request. */
 private const val MAX_RATE_LIMIT_WAIT_MS = 5_000L
 
+/** Shared by every REST client in the process, like one browser profile. */
+private val cookieJar = MemoryCookieJar()
+
 class DiscordRestClient(private val token: String) {
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
+        .cookieJar(cookieJar)
         .build()
 
     private val baseUrl = "https://discord.com/api/v9"
@@ -35,7 +40,7 @@ class DiscordRestClient(private val token: String) {
         Request.Builder()
             .url("$baseUrl$path")
             .header("Authorization", token)
-            .header("User-Agent", "Dihcord/1.0 (WearOS)")
+            .discordHeaders()
 
     private class RawResponse(val code: Int, val body: String, val ok: Boolean, val retryAfter: String? = null)
 

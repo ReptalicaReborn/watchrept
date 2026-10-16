@@ -73,7 +73,10 @@ class DiscordGateway(private val token: String) {
         if (ws != null) return // already connected or connecting
         // resume_gateway_url comes without the version/encoding query, so add it like the default URL has.
         val url = (resumeUrl?.trimEnd('/') ?: "wss://gateway.discord.gg") + "/?v=10&encoding=json"
-        val request = Request.Builder().url(url).build()
+        val request = Request.Builder().url(url)
+            .header("User-Agent", ClientIdentity.USER_AGENT)
+            .header("Origin", "https://discord.com")
+            .build()
         ws = http.newWebSocket(request, Listener())
     }
 
@@ -191,21 +194,7 @@ class DiscordGateway(private val token: String) {
     private fun sendIdentify() {
         val d = JSONObject()
             .put("token", token)
-            .put(
-                "properties", JSONObject()
-                    .put("os", "Linux")
-                    .put("browser", "Chrome")
-                    .put("device", "WearOS")
-                    .put("system_locale", "en-US")
-                    .put(
-                        "browser_user_agent",
-                        "Mozilla/5.0 (Wayland; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.2.0.2 Firefox/156.0.1"
-                    )
-                    .put("browser_version", "151.2.0.2")
-                    .put("os_version", "")
-                    .put("release_channel", "stable")
-                    .put("client_build_number", 621195)
-            )
+            .put("properties", ClientIdentity.properties())
         send(Op.IDENTIFY, d)
     }
 

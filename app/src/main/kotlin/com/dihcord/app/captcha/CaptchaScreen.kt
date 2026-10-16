@@ -5,7 +5,14 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.graphics.asImageBitmap
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -77,7 +84,7 @@ fun CaptchaScreen(pending: CaptchaBroker.Pending) {
             item { Text("Captcha required", style = MaterialTheme.typography.titleMedium) }
             item {
                 Text(
-                    if (received) "Got it, continuing…" else "Open this on your phone (same Wi-Fi) and solve it:",
+                    if (received) "Got it, continuing…" else "Scan with your phone (same Wi-Fi) and solve it quickly:",
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
@@ -94,6 +101,20 @@ fun CaptchaScreen(pending: CaptchaBroker.Pending) {
                     )
                 }
             } else {
+                val firstUrl = "http://${addresses.first()}:${server.boundPort.takeIf { it > 0 } ?: 8081}/${server.code}"
+                item {
+                    // Scanning is much faster than typing the address, and Discord only waits so long.
+                    val qr = remember(firstUrl) { qrBitmap(firstUrl, 240) }
+                    if (qr != null) {
+                        Image(
+                            bitmap = qr.asImageBitmap(),
+                            contentDescription = "QR code for the captcha page",
+                            modifier = Modifier
+                                .size(96.dp)
+                                .background(androidx.compose.ui.graphics.Color.White)
+                        )
+                    }
+                }
                 addresses.forEach { addr ->
                     item {
                         Text(
@@ -159,3 +180,11 @@ private class WifiRequest(context: Context) {
         callback = null
     }
 }
+
+private fun qrBitmap(content: String, size: Int): Bitmap? = runCatching {
+    val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, size, size, mapOf(EncodeHintType.MARGIN to 1))
+    val pixels = IntArray(size * size) { i ->
+        if (matrix[i % size, i / size]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+    }
+    Bitmap.createBitmap(pixels, size, size, Bitmap.Config.RGB_565)
+}.getOrNull()
