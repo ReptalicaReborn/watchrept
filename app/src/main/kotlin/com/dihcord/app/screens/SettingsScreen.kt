@@ -474,25 +474,15 @@ fun SettingsScreen(
             item {
                 SwitchButton(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
+                        .fillMaxWidth(),
                     checked = spoilerRevealOnTap,
                     onCheckedChange = {
                         spoilerRevealOnTap = it
                         SetupPreferences.setSpoilerRevealOnTap(context, it)
                     },
-                    label = {
-                        Column {
-                            Text(
-                                "Spoiler reveal on tap",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Text(
-                                "||spoiler|| text hidden until tapped",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                    label = { Text("Spoiler reveal on tap", style = MaterialTheme.typography.bodySmall) },
+                    secondaryLabel = {
+                        Text("||spoiler|| text hidden until tapped", style = MaterialTheme.typography.labelSmall)
                     }
                 )
             }
@@ -518,8 +508,7 @@ fun SettingsScreen(
             item {
                 SwitchButton(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
+                        .fillMaxWidth(),
                     checked = sendAnimatedAsGif,
                     onCheckedChange = {
                         sendAnimatedAsGif = it
