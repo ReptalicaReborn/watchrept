@@ -63,7 +63,15 @@ object VoiceManager {
 
     val isInCall: Boolean get() = _call.value?.status.let { it == VoiceCall.Status.CONNECTING || it == VoiceCall.Status.CONNECTED }
 
-    fun join(context: Context, repository: DiscordRepository, guildId: String?, channelId: String, channelName: String) {
+    /** Joins a voice channel, or a DM/group call ([guildId] null); [ring] rings the others once connected. */
+    fun join(
+        context: Context,
+        repository: DiscordRepository,
+        guildId: String?,
+        channelId: String,
+        channelName: String,
+        ring: Boolean = false,
+    ) {
         if (_call.value?.channelId == channelId && isInCall) return
         leave()
         val ctx = context.applicationContext
@@ -139,6 +147,8 @@ object VoiceManager {
                 end("Discord didn't let us join. You may lack permission, or the channel is full.")
                 return@launch
             }
+            // Starting a DM/group call: the call exists now, so ring everyone else.
+            if (ring) launch { repository.ringCall(channelId).onFailure { Log.w(TAG, "ring failed", it) } }
 
             // Speaking rings: anyone heard in the last 400 ms.
             while (isActive) {

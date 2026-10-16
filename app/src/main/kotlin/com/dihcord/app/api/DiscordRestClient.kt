@@ -288,6 +288,18 @@ class DiscordRestClient(private val token: String) {
         Channel.fromJson(JSONObject(post("/users/@me/channels", JSONObject().put("recipients", JSONArray().put(userId)))))
     }
 
+    /** Rings [recipients] (everyone else when null) in the DM/group call of [channelId]. */
+    suspend fun ringCall(channelId: String, recipients: List<String>? = null): Result<Unit> = runCatching {
+        post("/channels/$channelId/call/ring", JSONObject().put("recipients", recipients?.let { JSONArray(it) } ?: JSONObject.NULL))
+        Unit
+    }
+
+    /** Stops ringing [recipients] (e.g. ourselves, to decline). */
+    suspend fun stopRinging(channelId: String, recipients: List<String>): Result<Unit> = runCatching {
+        post("/channels/$channelId/call/stop-ringing", JSONObject().put("recipients", JSONArray(recipients)))
+        Unit
+    }
+
     /** People on the friends list (relationship type 1). */
     suspend fun getFriends(): Result<List<DiscordUser>> = runCatching {
         val arr = JSONArray(get("/users/@me/relationships"))

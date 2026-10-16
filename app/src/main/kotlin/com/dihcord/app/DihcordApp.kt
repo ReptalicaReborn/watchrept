@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -54,6 +55,7 @@ class DihcordApp : Application(), ImageLoaderFactory {
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var summaryJob: Job? = null
+    private var callScope: CoroutineScope? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -78,6 +80,10 @@ class DihcordApp : Application(), ImageLoaderFactory {
         val repo = DiscordRepository(token, context = this)
         repo.connect()
         _repositoryFlow.value = repo
+        callScope?.cancel()
+        callScope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also {
+            com.dihcord.app.voice.CallRinger.watch(this, repo, it)
+        }
         summaryJob?.cancel()
         summaryJob = appScope.launch {
             combine(repo.readState, repo.dmChannels) { read, dms ->
@@ -98,6 +104,9 @@ class DihcordApp : Application(), ImageLoaderFactory {
 
     fun clearRepository() {
         summaryJob?.cancel()
+        callScope?.cancel()
+        callScope = null
+        com.dihcord.app.voice.VoiceManager.leave()
         UnreadSummary.reset(this)
         NotificationService.stop(this)
         repository?.close()

@@ -49,6 +49,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import com.dihcord.app.screens.VoiceChannelScreen
+import com.dihcord.app.voice.CallRinger
 import com.dihcord.app.voice.VoiceCall
 import com.dihcord.app.voice.VoiceCallService
 import com.dihcord.app.voice.VoiceManager
@@ -67,10 +68,22 @@ class MainActivity : ComponentActivity() {
     /** Set by tapping the voice call notification. */
     private var pendingVoice by mutableStateOf(false)
 
+    /** An incoming call to show (and maybe answer), from its notification. */
+    private data class CallTarget(val channelId: String, val name: String, val answer: Boolean)
+    private var pendingCall by mutableStateOf<CallTarget?>(null)
+
     private fun readChatTarget(intent: Intent?) {
         if (intent?.getBooleanExtra(VoiceCallService.EXTRA_OPEN_VOICE, false) == true) {
             intent.removeExtra(VoiceCallService.EXTRA_OPEN_VOICE)
             pendingVoice = true
+        }
+        intent?.getStringExtra(CallRinger.EXTRA_CALL_CHANNEL)?.let { channelId ->
+            pendingCall = CallTarget(
+                channelId,
+                intent.getStringExtra(CallRinger.EXTRA_CALL_NAME) ?: "Call",
+                intent.getBooleanExtra(CallRinger.EXTRA_ANSWER, false)
+            )
+            intent.removeExtra(CallRinger.EXTRA_CALL_CHANNEL)
         }
         val channelId = intent?.getStringExtra(Notifier.EXTRA_CHANNEL_ID) ?: return
         // Route segments can't contain these characters.
@@ -139,6 +152,29 @@ class MainActivity : ComponentActivity() {
                         val call = VoiceManager.call.value
                         if (openVoice && call != null) navController.navigate(voiceRoute(call)) { launchSingleTop = true }
                         pendingVoice = false
+                    }
+                    val callTarget = pendingCall
+                    androidx.compose.runtime.LaunchedEffect(callTarget) {
+                        if (callTarget != null) {
+                            val name = Uri.encode(callTarget.name.replace(Regex("[/?#%]"), " "))
+                            navController.navigate("voice/dm/${callTarget.channelId}/$name?answer=${callTarget.answer}") {
+                                launchSingleTop = true
+                            }
+                        }
+                        pendingCall = null
+                    }
+                    // A call ringing us while the app is open: show it straight away.
+                    val incomingCalls by CallRinger.incoming.collectAsState()
+                    val seenCalls = remember { mutableSetOf<String>() }
+                    androidx.compose.runtime.LaunchedEffect(incomingCalls) {
+                        seenCalls.retainAll(incomingCalls)
+                        val fresh = incomingCalls.firstOrNull { it !in seenCalls } ?: return@LaunchedEffect
+                        seenCalls.addAll(incomingCalls)
+                        if (!AppState.inForeground) return@LaunchedEffect
+                        val name = repo?.dmChannels?.value?.firstOrNull { it.id == fresh }?.displayName ?: "Call"
+                        navController.navigate("voice/dm/$fresh/${Uri.encode(name.replace(Regex("[/?#%]"), " "))}") {
+                            launchSingleTop = true
+                        }
                     }
                     SwipeDismissableNavHost(
                         navController = navController,
@@ -243,6 +279,9 @@ class MainActivity : ComponentActivity() {
                                         val encoded = java.net.URLEncoder.encode(channelName, "UTF-8")
                                         navController.navigate("threads/$channelId/$encoded/${guildIdArg ?: "dm"}/channel")
                                     },
+                                    onCall = {
+                                        navController.navigate("voice/dm/$channelId/${Uri.encode(channelName)}") { launchSingleTop = true }
+                                    },
                                     onBack = { navController.popBackStack() }
                                 )
                             }
@@ -305,12 +344,23 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        composable("voice/{guildId}/{channelId}/{channelName}") { back ->
+                        composable(
+                            "voice/{guildId}/{channelId}/{channelName}?answer={answer}",
+                            arguments = listOf(navArgument("answer") {
+                                type = NavType.BoolType
+                                defaultValue = false
+                            })
+                        ) { back ->
                             val chId = back.arguments?.getString("channelId") ?: return@composable
                             val gId = back.arguments?.getString("guildId")?.takeIf { it != "dm" }
                             val chName = back.arguments?.getString("channelName") ?: chId
                             activeChannelId = null
-                            VoiceChannelScreen(guildId = gId, channelId = chId, channelName = chName)
+                            VoiceChannelScreen(
+                                guildId = gId,
+                                channelId = chId,
+                                channelName = chName,
+                                answer = back.arguments?.getBoolean("answer") == true
+                            )
                         }
 
                         // Threads of a text channel, or posts of a forum channel ("forum"/"channel").

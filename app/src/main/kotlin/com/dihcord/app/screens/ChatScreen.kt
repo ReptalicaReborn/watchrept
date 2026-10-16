@@ -98,6 +98,8 @@ fun ChatScreen(
     onNavigateToProfile: ((userId: String, user: DiscordUser?) -> Unit)? = null,
     onNavigateToThread: ((threadId: String, threadName: String) -> Unit)? = null,
     onOpenThreads: (() -> Unit)? = null,
+    /** Opens the voice call screen of this DM/group. */
+    onCall: (() -> Unit)? = null,
     onBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -868,6 +870,19 @@ fun ChatScreen(
                                 "This is the start of #$channelName",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (onCall != null && guildId == null && repo != null) {
+                            val voiceStates by repo.voiceStates.collectAsState()
+                            val callActive = voiceStates.values.any { it.guildId == null && it.channelId == channelId }
+                            Text(
+                                if (callActive) "Join call ›" else "Call ›",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (callActive) androidx.compose.ui.graphics.Color(0xFF23A55A) else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { onCall() }
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
                             )
                         }
                         if (onOpenThreads != null && guildId != null) {

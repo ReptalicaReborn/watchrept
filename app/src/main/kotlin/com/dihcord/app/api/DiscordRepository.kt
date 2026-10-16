@@ -183,6 +183,19 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
     private fun voiceKey(state: VoiceState) = "${state.guildId ?: "dm"}|${state.userId}"
 
+    /** DM/group calls in progress, by channel id: who is being rung. */
+    private val _calls = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
+    val calls: StateFlow<Map<String, Set<String>>> = _calls.asStateFlow()
+
+    suspend fun ringCall(channelId: String) = rest.ringCall(channelId)
+
+    /** Declines an incoming call: stop ringing us. */
+    suspend fun declineCall(channelId: String) {
+        val me = currentUserId ?: _currentUser.value?.id ?: return
+        _calls.update { c -> c[channelId]?.let { c + (channelId to (it - me)) } ?: c }
+        rest.stopRinging(channelId, listOf(me))
+    }
+
     private val _presences = MutableStateFlow<Map<String, UserPresence>>(emptyMap())
     val presences: StateFlow<Map<String, UserPresence>> = _presences.asStateFlow()
 
@@ -927,6 +940,20 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                     }
 
                     is GatewayEvent.VoiceServerUpdate -> _voiceEvents.tryEmit(event)
+
+                    is GatewayEvent.CallUpdate -> {
+                        _calls.update { it + (event.channelId to event.ringing) }
+                        event.voiceStates?.let { states ->
+                            _voiceStates.update { current ->
+                                current + states.filter { it.channelId != null }.associateBy(::voiceKey)
+                            }
+                        }
+                    }
+
+                    is GatewayEvent.CallDelete -> {
+                        _calls.update { it - event.channelId }
+                        _voiceStates.update { current -> current.filterValues { it.guildId != null || it.channelId != event.channelId } }
+                    }
 
                     is GatewayEvent.MembersChunk -> {
                         event.members.forEach { userDisplayNames[it.id] = it.displayName }

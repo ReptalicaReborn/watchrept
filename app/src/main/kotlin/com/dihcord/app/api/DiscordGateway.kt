@@ -493,6 +493,19 @@ class DiscordGateway(private val token: String) {
 
             "VOICE_STATE_UPDATE" -> VoiceState.fromJson(d, null)?.let { GatewayEvent.VoiceStateUpdate(it) }
 
+            "CALL_CREATE", "CALL_UPDATE" -> d.optString("channel_id").takeIf { it.isNotEmpty() }?.let { channelId ->
+                val ringing = d.optJSONArray("ringing")
+                val states = d.optJSONArray("voice_states")
+                GatewayEvent.CallUpdate(
+                    channelId = channelId,
+                    ringing = (0 until (ringing?.length() ?: 0)).mapNotNull { ringing?.optString(it)?.takeIf { id -> id.isNotEmpty() } }.toSet(),
+                    // CALL_UPDATE leaves voice states out; null keeps the ones we have.
+                    voiceStates = states?.let { arr -> (0 until arr.length()).mapNotNull { VoiceState.fromJson(arr.getJSONObject(it), null) } }
+                )
+            }
+
+            "CALL_DELETE" -> d.optString("channel_id").takeIf { it.isNotEmpty() }?.let { GatewayEvent.CallDelete(it) }
+
             "VOICE_SERVER_UPDATE" -> GatewayEvent.VoiceServerUpdate(
                 token = d.optString("token"),
                 guildId = d.optString("guild_id").takeIf { it.isNotEmpty() && it != "null" },
@@ -553,6 +566,9 @@ sealed class GatewayEvent {
     ) : GatewayEvent()
 
     data class VoiceStateUpdate(val state: VoiceState) : GatewayEvent()
+    /** A DM/group call started or changed; [ringing] is who is being rung right now. */
+    data class CallUpdate(val channelId: String, val ringing: Set<String>, val voiceStates: List<VoiceState>?) : GatewayEvent()
+    data class CallDelete(val channelId: String) : GatewayEvent()
     data class VoiceServerUpdate(
         val token: String,
         val guildId: String?,

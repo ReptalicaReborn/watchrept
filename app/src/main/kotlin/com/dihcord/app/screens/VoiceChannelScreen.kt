@@ -23,7 +23,9 @@ import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
 import com.dihcord.app.R
 import com.dihcord.app.discordApp
+import com.dihcord.app.voice.CallRinger
 import com.dihcord.app.voice.VoiceCall
+import kotlinx.coroutines.launch
 import com.dihcord.app.voice.VoiceManager
 
 private val SpeakingGreen = Color(0xFF23A55A)
@@ -68,13 +70,28 @@ fun VoiceMemberLine(
 }
 
 @Composable
-fun VoiceChannelScreen(guildId: String?, channelId: String, channelName: String) {
+fun VoiceChannelScreen(
+    guildId: String?,
+    channelId: String,
+    channelName: String,
+    /** Answer the incoming call straight away (from the notification's Accept button). */
+    answer: Boolean = false,
+) {
     val context = LocalContext.current
     val repo = context.discordApp.repository ?: return
     val listState = rememberScalingLazyListState()
     val call by VoiceManager.call.collectAsState()
     val voiceStates by repo.voiceStates.collectAsState()
     val me = repo.currentUser.collectAsState().value?.id
+    val calls by repo.calls.collectAsState()
+    val dmChannels by repo.dmChannels.collectAsState()
+    val isCall = guildId == null
+    val recipients = remember(dmChannels, channelId) { dmChannels.firstOrNull { it.id == channelId }?.recipients.orEmpty() }
+    val ringing = calls[channelId].orEmpty()
+    val incoming = isCall && me != null && me in ringing
+    fun nameOf(userId: String, nick: String? = null): String =
+        nick ?: repo.getDisplayName(userId) ?: recipients.firstOrNull { it.id == userId }?.displayName
+        ?: repo.currentUser.value?.takeIf { it.id == userId }?.displayName ?: "Someone"
 
     val here = call?.takeIf { it.channelId == channelId }
     val active = here != null && here.status != VoiceCall.Status.ENDED
@@ -83,11 +100,26 @@ fun VoiceChannelScreen(guildId: String?, channelId: String, channelName: String)
         voiceStates.values.filter { it.channelId == channelId }.sortedBy { it.userId != me }
     }
     var permissionDenied by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
-    val join = { VoiceManager.join(context, repo, guildId, channelId, channelName) }
+    val join = {
+        // Starting a DM/group call (no one else in it yet) rings the others.
+        val ring = isCall && members.none { it.userId != me }
+        VoiceManager.join(context, repo, guildId, channelId, channelName, ring = ring)
+    }
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         permissionDenied = !granted
         if (granted) join()
+    }
+
+    val tryJoin = {
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        if (granted) join() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+    }
+    LaunchedEffect(Unit) {
+        if (answer && !active) tryJoin()
+        if (incoming || answer) CallRinger.cancel(context, channelId)
     }
 
     // A call that ended with an error is shown here once; forget it when leaving the screen.
@@ -101,10 +133,13 @@ fun VoiceChannelScreen(guildId: String?, channelId: String, channelName: String)
                 val status = when {
                     permissionDenied -> "Dihcord needs the microphone to join voice."
                     here?.status == VoiceCall.Status.CONNECTING -> "Connecting…"
-                    here?.status == VoiceCall.Status.CONNECTED -> "Voice connected"
                     here?.status == VoiceCall.Status.ENDED -> here.error ?: "Disconnected."
+                    incoming -> "Incoming call"
+                    isCall && ringing.any { it != me } ->
+                        "Ringing ${ringing.filter { it != me }.joinToString { nameOf(it) }}…"
+                    here?.status == VoiceCall.Status.CONNECTED -> "Voice connected"
                     elsewhere != null -> "You're in ${elsewhere.channelName}. Joining moves you here."
-                    members.isEmpty() -> "No one is here."
+                    members.isEmpty() -> if (isCall) "No call right now." else "No one is here."
                     else -> null
                 }
                 if (status != null) {
@@ -127,7 +162,7 @@ fun VoiceChannelScreen(guildId: String?, channelId: String, channelName: String)
                 val speaking = here != null &&
                         (vs.userId in here.speaking || (vs.userId == me && here.selfSpeaking))
                 VoiceMemberLine(
-                    name = vs.nick ?: repo.getDisplayName(vs.userId) ?: vs.user?.displayName ?: "Someone",
+                    name = nameOf(vs.userId, vs.nick ?: vs.user?.displayName),
                     speaking = speaking,
                     muted = vs.muted,
                     deafened = vs.deafened
@@ -168,17 +203,40 @@ fun VoiceChannelScreen(guildId: String?, channelId: String, channelName: String)
                             Icon(painterResource(R.drawable.call_end), "Leave")
                         }
                     }
+                } else if (incoming) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally)
+                    ) {
+                        FilledIconButton(
+                            onClick = {
+                                CallRinger.cancel(context, channelId)
+                                scope.launch { repo.declineCall(channelId) }
+                            },
+                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = HangUpRed, contentColor = Color.White),
+                            modifier = Modifier.size(48.dp)
+                        ) { Icon(painterResource(R.drawable.call_end), "Decline") }
+                        FilledIconButton(
+                            onClick = { tryJoin() },
+                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = SpeakingGreen, contentColor = Color.White),
+                            modifier = Modifier.size(48.dp)
+                        ) { Icon(painterResource(R.drawable.speaker), "Accept") }
+                    }
                 } else {
                     Button(
                         modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = SpeakingGreen, contentColor = Color.White),
                         icon = { Icon(painterResource(R.drawable.speaker), null, Modifier.size(18.dp)) },
-                        label = { Text("Join voice") },
-                        onClick = {
-                            val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-                                    PackageManager.PERMISSION_GRANTED
-                            if (granted) join() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                        }
+                        label = {
+                            Text(
+                                when {
+                                    !isCall -> "Join voice"
+                                    members.any { it.userId != me } -> "Join call"
+                                    else -> "Call"
+                                }
+                            )
+                        },
+                        onClick = { tryJoin() }
                     )
                 }
             }
