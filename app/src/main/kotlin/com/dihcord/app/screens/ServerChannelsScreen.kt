@@ -169,7 +169,11 @@ fun ServerChannels(
                 if (active.unread || active.mentionCount > 0) MenuAction(R.drawable.check, "Mark read") {
                     menuRow = null
                     val last = repo.unread.lastMessageId(active.id) ?: readState[active.id]?.lastMessageId
-                    if (last != null) repo.markChannelRead(active.id, last)
+                    if (last != null) scope.launch {
+                        repo.markChannelReadChecked(active.id, last).onFailure {
+                            android.widget.Toast.makeText(context, "Couldn't mark it read. " + friendlyError(it), android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 } else null,
                 MenuAction(if (active.muted) R.drawable.bell else R.drawable.mute, if (active.muted) "Muted" else "Mute") { muteMenu = true },
             ),

@@ -2,37 +2,49 @@ package com.dihcord.app.voice
 
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.os.Handler
+import android.os.Looper
 
-/** Plays soundboard sounds others trigger in our voice call, mixed into the call's audio. */
+/**
+ * Plays soundboard sounds others trigger in our voice call, mixed into the call's audio. Everything to do
+ * with the player (start, stop, its callbacks) runs on the main thread, one step after another, as
+ * MediaPlayer needs; so a stop (deafen, leave) can never land between a check and a start.
+ */
 object SoundboardPlayer {
-    private var player: MediaPlayer? = null
-    /** Starting and stopping take turns, so a stop (deafen, leave) can't land between a check and a start. */
-    private val lock = Any()
+    private val main = Handler(Looper.getMainLooper())
+    private var player: MediaPlayer? = null // Main thread only.
 
-    /** Plays [url] if [allowed] still says so once it's this call's turn. */
-    fun play(url: String, volume: Double, allowed: () -> Boolean = { true }) = synchronized(lock) {
-        if (!allowed()) return@synchronized
-        runCatching {
-            player?.release()
-            player = MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                )
-                setDataSource(url)
-                val v = volume.toFloat().coerceIn(0f, 1f)
-                setVolume(v, v)
-                setOnPreparedListener { it.start() }
-                setOnCompletionListener { synchronized(lock) { it.release(); if (player === it) player = null } }
-                setOnErrorListener { mp, _, _ -> synchronized(lock) { mp.release(); if (player === mp) player = null }; true }
-                prepareAsync()
-            }
+    /** Plays [url] if [allowed] still says so when its turn comes. */
+    fun play(url: String, volume: Double, allowed: () -> Boolean = { true }) {
+        main.post {
+            if (!allowed()) return@post
+            release()
+            runCatching {
+                player = MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    )
+                    setDataSource(url)
+                    val v = volume.toFloat().coerceIn(0f, 1f)
+                    setVolume(v, v)
+                    // A newer sound or a stop may have replaced this one while it loaded.
+                    setOnPreparedListener { mp -> if (player === mp && allowed()) mp.start() }
+                    setOnCompletionListener { mp -> if (player === mp) release() }
+                    setOnErrorListener { mp, _, _ -> if (player === mp) release() else runCatching { mp.release() }; true }
+                    prepareAsync()
+                }
+            }.onFailure { release() }
         }
     }
 
-    fun stop() = synchronized(lock) {
+    fun stop() {
+        main.post { release() }
+    }
+
+    private fun release() {
         runCatching { player?.release() }
         player = null
     }

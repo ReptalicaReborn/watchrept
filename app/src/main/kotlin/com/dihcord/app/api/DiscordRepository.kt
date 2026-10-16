@@ -898,6 +898,10 @@ class DiscordRepository(
         return ackLocallyAndRemotely(reads)
     }
 
+    /** Marks one channel read up to [messageId], here and on Discord; undone here if Discord doesn't take it. */
+    suspend fun markChannelReadChecked(channelId: String, messageId: String): Result<Unit> =
+        ackLocallyAndRemotely(listOf(channelId to messageId))
+
     /** Marks everything read: every server's unread channels and every DM. */
     suspend fun markAllRead(): Result<Unit> {
         val rs = _readState.value
