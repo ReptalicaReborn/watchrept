@@ -499,20 +499,26 @@ private fun FolderTile(
         onClick = onClick,
         onLongClick = onLongClick
     ) {
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(RoundedCornerShape(16.dp))
                 .background(accent.copy(alpha = 0.3f))
                 .border(1.5.dp, accent.copy(alpha = 0.8f), RoundedCornerShape(16.dp))
-                .padding(5.dp)
+                .padding(5.dp),
+            contentAlignment = Alignment.Center
         ) {
-            // 2x2 preview of the first servers in the folder
+            // 2x2 preview of the first servers in the folder, sized to fill the tile and centred in it
             val preview = entry.guilds.take(4)
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            val gap = 3.dp
+            val iconSize = (minOf(maxWidth, maxHeight) - gap) / 2
+            Column(
+                verticalArrangement = Arrangement.spacedBy(gap),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 preview.chunked(2).forEach { pair ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        pair.forEach { GuildIcon(it, imageLoader, size = 17.dp, shape = CircleShape) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+                        pair.forEach { GuildIcon(it, imageLoader, size = iconSize, shape = CircleShape) }
                     }
                 }
             }
