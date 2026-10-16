@@ -100,10 +100,18 @@ class UnreadTracker {
 
     private fun hasUnread(guildId: String, readState: Map<String, ChannelUnreadState>) = unreadChannels(guildId, readState, stopAtFirst = true).isNotEmpty()
 
-    /** (channel id, newest message id) for each unread channel of [guildId]. */
-    fun unreadChannels(guildId: String, readState: Map<String, ChannelUnreadState>, stopAtFirst: Boolean = false): List<Pair<String, String>> {
+    /**
+     * (channel id, newest message id) for each unread channel of [guildId]. Muted ones don't count for the dot,
+     * but [includeMuted] lists them too, for marking everything read.
+     */
+    fun unreadChannels(
+        guildId: String,
+        readState: Map<String, ChannelUnreadState>,
+        stopAtFirst: Boolean = false,
+        includeMuted: Boolean = false,
+    ): List<Pair<String, String>> {
         val info = guilds[guildId] ?: return emptyList()
-        val guildSettings = settings[guildId]
+        val guildSettings = settings[guildId].takeUnless { includeMuted }
         if (guildSettings?.mutedNow() == true) return emptyList()
         val out = mutableListOf<Pair<String, String>>()
         for (ch in info.channels.values) {

@@ -792,8 +792,10 @@ class DiscordRepository(
 
         val pageSize = com.dihcord.app.Perf.messagePageSize
         // Show the saved copy straight away (and when offline); the live page replaces it below.
+        var cachedIds: Set<String> = emptySet()
         if (_messages.value[channelId].isNullOrEmpty()) {
             messageCache.load(channelId)?.let { saved ->
+                cachedIds = saved.mapTo(HashSet()) { it.id }
                 _messages.update { it + (channelId to saved) }
                 _fromCache.update { it + channelId }
             }
@@ -801,18 +803,17 @@ class DiscordRepository(
         rest.getMessagesRaw(channelId, limit = pageSize).mapCatching { raw ->
             DiscordMessage.listFromJson(JSONArray(raw)).also { messageCache.save(channelId, raw) }
         }.onSuccess { fetched ->
-            val wasCached = channelId in _fromCache.value
             _fromCache.update { it - channelId }
             val fetchedList = fetched.reversed()
             fetchedList.forEach { userDisplayNames[it.author.id] = it.author.displayName }
             if (fetched.size < pageSize) reachedStart.add(channelId)
             _messages.update { current ->
                 val held = current[channelId].orEmpty()
-                // The live page is the truth: a saved copy (or an emptied channel) may hold messages since deleted.
-                // Only messages that arrived live after the page are kept.
+                // The live page is the truth: the saved copy (or an emptied channel) may hold messages since deleted.
+                // Of the saved copy, only messages that arrived live while it loaded stay.
                 val existing = when {
                     fetchedList.isEmpty() -> emptyList()
-                    wasCached -> held.filter { compareSnowflakes(it.id, fetchedList.last().id) > 0 }
+                    cachedIds.isNotEmpty() -> held.filter { it.id !in cachedIds }
                     else -> held
                 }
                 val merged = mergeLatestPage(existing, fetchedList)
@@ -881,7 +882,7 @@ class DiscordRepository(
     /** Marks every unread channel of [guildId] read (mentions too), here and on Discord. */
     suspend fun markGuildRead(guildId: String): Result<Unit> {
         val rs = _readState.value
-        val reads = unread.unreadChannels(guildId, rs).toMutableList()
+        val reads = unread.unreadChannels(guildId, rs, includeMuted = true).toMutableList()
         rs.forEach { (channelId, state) ->
             if (state.mentionCount > 0 && channelGuildCache[channelId] == guildId && reads.none { it.first == channelId }) {
                 (unread.lastMessageId(channelId) ?: state.lastMessageId).let { reads += channelId to it }
@@ -894,7 +895,7 @@ class DiscordRepository(
     suspend fun markAllRead(): Result<Unit> {
         val rs = _readState.value
         val reads = mutableListOf<Pair<String, String>>()
-        _guilds.value.forEach { g -> reads += unread.unreadChannels(g.id, rs) }
+        _guilds.value.forEach { g -> reads += unread.unreadChannels(g.id, rs, includeMuted = true) }
         _dmChannels.value.forEach { dm ->
             val last = dm.lastMessageId ?: return@forEach
             val state = rs[dm.id]
@@ -1599,10 +1600,14 @@ class DiscordRepository(
         val raw = event.raw
         val full = event.message
         if (full != null) {
-            // Updates carry no reactions, and a poll only when it changed: keep the ones we have.
+            // Updates carry no reactions, and other fields only when they changed: keep the ones we have.
             return full.copy(
                 reactions = if (raw.has("reactions")) full.reactions else old.reactions,
                 poll = if (raw.has("poll")) full.poll else old.poll,
+                embeds = if (raw.has("embeds")) full.embeds else old.embeds,
+                components = if (raw.has("components")) full.components else old.components,
+                pinned = if (raw.has("pinned")) full.pinned else old.pinned,
+                flags = if (raw.has("flags")) full.flags else old.flags,
             )
         }
         // Partial update: link previews arriving after the message was sent, a bot changing its buttons, a pin.

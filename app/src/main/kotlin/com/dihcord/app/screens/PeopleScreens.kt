@@ -89,10 +89,12 @@ internal fun MembersContent(title: String, subtitle: String?, sections: List<Peo
             when {
                 sections == null -> item { LoadingIndicator() }
                 sections.isEmpty() -> item { EmptyState(R.drawable.people, "No one to show") }
-                else -> sections.forEach { section ->
-                    item(key = "h" + section.title) { SectionHeader(section.title) }
-                    items(section.people.size, key = { section.title + section.people[it].user.id }) { i ->
-                        val p = section.people[i]
+                // Keys by position: two roles can share a name, and the list can briefly hold someone twice.
+                else -> sections.forEachIndexed { si, section ->
+                    val people = section.people.distinctBy { it.user.id }
+                    item(key = "h$si") { SectionHeader(section.title) }
+                    items(people.size, key = { "$si:" + people[it].user.id }) { i ->
+                        val p = people[i]
                         Button(
                             onClick = { onOpen(p.user) },
                             modifier = Modifier.fillMaxWidth().transformedHeight(this, spec),

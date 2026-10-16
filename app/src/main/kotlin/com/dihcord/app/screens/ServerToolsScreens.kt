@@ -26,6 +26,7 @@ import com.dihcord.app.FeaturePreferences
 import com.dihcord.app.R
 import com.dihcord.app.api.*
 import com.dihcord.app.discordApp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 // ---------------------------------------------------------------- Invites
@@ -43,8 +44,10 @@ fun InviteScreen(initialCode: String?, onOpenServer: (guildId: String, name: Str
     var error by remember { mutableStateOf<Throwable?>(null) }
     var joining by remember { mutableStateOf(false) }
     LaunchedEffect(code) {
-        preview = null; error = null
+        preview = null; error = null; loading = false
         if (code == null) return@LaunchedEffect
+        // Typed codes: look up once typing settles, not every half-typed code on the way.
+        if (code != InvitePreview.codeFrom(initialCode.orEmpty())) delay(800)
         loading = true
         repo.invitePreview(code).onSuccess { preview = it }.onFailure { error = it }
         loading = false

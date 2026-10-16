@@ -29,7 +29,10 @@ import com.dihcord.app.discordApp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** A message in a list (pins, search, saved): who and when, then a two-line preview, and where. */
+/**
+ * A message in a list (pins, search, saved): who and when, then a two-line preview, and where. When the
+ * preview is cut off, the first tap shows all of it (a message far back may not open in the chat).
+ */
 @Composable
 internal fun TransformingLazyColumnItemScope.MessageListCard(
     author: String,
@@ -40,8 +43,10 @@ internal fun TransformingLazyColumnItemScope.MessageListCard(
     spec: TransformationSpec,
     onClick: () -> Unit,
 ) {
+    var expanded by remember(preview) { mutableStateOf(false) }
+    var cutOff by remember(preview) { mutableStateOf(false) }
     Card(
-        onClick = onClick,
+        onClick = { if (cutOff && !expanded) expanded = true else onClick() },
         modifier = Modifier.fillMaxWidth().transformedHeight(this, spec),
         transformation = SurfaceTransformation(spec),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
@@ -59,9 +64,18 @@ internal fun TransformingLazyColumnItemScope.MessageListCard(
                         Text(" · " + shortAgo(it), style = MaterialTheme.typography.labelSmall.merge(TabularNumbers), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                Text(preview, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(
+                    preview,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = if (expanded) Int.MAX_VALUE else 2,
+                    overflow = TextOverflow.Ellipsis,
+                    onTextLayout = { if (!expanded) cutOff = it.hasVisualOverflow }
+                )
                 if (place != null) {
                     Text(place, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (expanded) {
+                    Text("Tap again to open in the chat", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 }
             }
         }
@@ -419,7 +433,12 @@ internal fun CommandSuggestions(commands: List<ApplicationCommand>, query: Strin
 /** Fills in a command's options and runs it. Values: text for strings, numbers, true/false. */
 @Composable
 internal fun CommandFormScreen(command: ApplicationCommand, running: Boolean, error: Throwable?, onRun: (Map<String, Any>) -> Unit) {
-    val values = remember(command.id) { mutableStateMapOf<String, Any>() }
+    // A required yes/no shows "No", so it starts as a real "No" answer rather than unanswered.
+    val values = remember(command.id) {
+        mutableStateMapOf<String, Any>().apply {
+            command.options.filter { it.supported && it.required && it.type == 5 && it.choices.isEmpty() }.forEach { put(it.name, false) }
+        }
+    }
     // What's typed in number fields, kept as typed: "-" or "2." aren't numbers yet but are on the way to one.
     val typed = remember(command.id) { mutableStateMapOf<String, String>() }
     val options = command.options.filter { it.supported }
@@ -495,7 +514,8 @@ internal fun CommandFormScreen(command: ApplicationCommand, running: Boolean, er
 internal fun SelectMenuScreen(select: MessageComponent.Select, sending: Boolean, onSubmit: (List<String>) -> Unit) {
     val picked = remember(select.customId) { mutableStateListOf<String>().apply { addAll(select.options.filter { it.default }.map { it.value }) } }
     val multi = select.maxValues > 1
-    val ok = picked.size >= select.minValues.coerceAtLeast(if (multi) 0 else 1) && picked.size <= select.maxValues
+    // Discord's own rules: at least min_values (0 lets the user clear the choice), at most max_values.
+    val ok = picked.size >= select.minValues.coerceAtLeast(0) && picked.size <= select.maxValues
     val state = rememberTransformingLazyColumnState()
     val spec = rememberTransformationSpec()
     ScreenScaffold(
@@ -511,6 +531,7 @@ internal fun SelectMenuScreen(select: MessageComponent.Select, sending: Boolean,
                 Button(
                     onClick = {
                         if (multi) { if (on) picked.remove(o.value) else if (picked.size < select.maxValues) picked.add(o.value) }
+                        else if (on && select.minValues == 0) picked.clear()
                         else { picked.clear(); picked.add(o.value) }
                     },
                     modifier = Modifier.fillMaxWidth().transformedHeight(this, spec),
