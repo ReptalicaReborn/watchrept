@@ -922,9 +922,9 @@ class DiscordRepository(
         return ackLocallyAndRemotely(reads.distinctBy { it.first })
     }
 
-    /** Counts MESSAGE_ACK events; [ackSeenAt] has, per channel, the count and message of its latest one. */
+    /** Counts MESSAGE_ACK events; [ackHistory] keeps each channel's last few, with their count. */
     private val ackEvents = java.util.concurrent.atomic.AtomicLong()
-    private val ackSeenAt = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
+    private val ackHistory = java.util.concurrent.ConcurrentHashMap<String, List<Pair<Long, ChannelUnreadState>>>()
 
     private suspend fun ackLocallyAndRemotely(reads: List<Pair<String, String>>): Result<Unit> {
         if (reads.isEmpty()) return Result.success(Unit)
@@ -950,20 +950,10 @@ class DiscordRepository(
                 rolledBack.clear()
                 marked.forEach { (channelId, set) ->
                     if (out[channelId] != set) return@forEach // Changed since (read in the chat, a new message).
-                    // Discord said it's read (another device) while we waited, at least as far as we marked it,
-                    // even if to the same message: that read stands. A shorter one doesn't cover ours.
-                    val seen = ackSeenAt[channelId]
-                    if (seen != null && seen.first > startedAt && compareSnowflakes(seen.second, set.lastMessageId) >= 0) return@forEach
-                    // Back to where Discord has it: as before, or a shorter read from another device meanwhile.
-                    val partial = seen?.takeIf { it.first > startedAt }?.second
-                    val old = before[channelId]
-                    when {
-                        partial != null && (old == null || compareSnowflakes(partial, old.lastMessageId) > 0) ->
-                            out[channelId] = ChannelUnreadState(partial, 0)
-                        old != null -> out[channelId] = old
-                        else -> out.remove(channelId)
-                    }
-                    rolledBack[channelId] = partial
+                    val during = ackHistory[channelId].orEmpty().filter { it.first > startedAt }.map { it.second }
+                    val back = rollbackFor(set, before[channelId], during) ?: return@forEach
+                    if (back.state != null) out[channelId] = back.state else out.remove(channelId)
+                    rolledBack[channelId] = back.pingFloor
                 }
                 out
             }
@@ -1405,7 +1395,10 @@ class DiscordRepository(
                     }
 
                     is GatewayEvent.MessageAck -> {
-                        ackSeenAt[event.channelId] = ackEvents.incrementAndGet() to event.messageId
+                        val seq = ackEvents.incrementAndGet()
+                        ackHistory.compute(event.channelId) { _, old ->
+                            (old.orEmpty() + (seq to ChannelUnreadState(event.messageId, event.mentionCount))).takeLast(8)
+                        }
                         _readState.update { current ->
                             val old = current[event.channelId]
                             if (old != null && compareSnowflakes(event.messageId, old.lastMessageId) < 0) current
@@ -1781,6 +1774,21 @@ class DiscordRepository(
  * replaced by the page (so deletions while away disappear), older and newer ones are kept. Returns null if
  * [held] doesn't reach the page (more than a page was missed), in which case the caller should start over.
  */
+/** Where a failed mark-read goes back to: [state] (null: no read state), keeping pings up to [pingFloor] cleared. */
+internal data class Rollback(val state: ChannelUnreadState?, val pingFloor: String?)
+
+/**
+ * Undoing an optimistic mark-read to [set] that Discord refused. [before] is the state before it, [acksDuring]
+ * the reads Discord reported (other devices) meanwhile. Null when one of those already covers [set]: it stands.
+ * Otherwise back to the furthest of [before] and those reads, with that read's own mention count.
+ */
+internal fun rollbackFor(set: ChannelUnreadState, before: ChannelUnreadState?, acksDuring: List<ChannelUnreadState>): Rollback? {
+    val furthest = acksDuring.maxWithOrNull { a, b -> compareSnowflakes(a.lastMessageId, b.lastMessageId) }
+    if (furthest != null && compareSnowflakes(furthest.lastMessageId, set.lastMessageId) >= 0) return null
+    val state = if (furthest != null && (before == null || compareSnowflakes(furthest.lastMessageId, before.lastMessageId) > 0)) furthest else before
+    return Rollback(state, furthest?.lastMessageId)
+}
+
 /** Message flag for "@silent": shown, but no push or watch notification. */
 private const val SUPPRESS_NOTIFICATIONS_FLAG = 1 shl 12
 

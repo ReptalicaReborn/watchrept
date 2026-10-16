@@ -239,4 +239,27 @@ class FeatureModelsTest {
         t.onMessage("live", "9", read, guildId = "g")
         assertEquals(setOf("th", "live"), t.unreadThreads("g", read).map { it.first }.toSet())
     }
+
+    // ---- Failed mark-read rollback ----
+
+    @Test fun rollbackWithNoOtherReadGoesBack() {
+        val before = ChannelUnreadState("100", 2)
+        assertEquals(Rollback(before, null), rollbackFor(ChannelUnreadState("300", 0), before, emptyList()))
+        assertEquals(Rollback(null, null), rollbackFor(ChannelUnreadState("300", 0), null, emptyList()))
+    }
+
+    @Test fun aReadThatCoversOursStands() {
+        val set = ChannelUnreadState("300", 0)
+        assertNull(rollbackFor(set, ChannelUnreadState("100"), listOf(ChannelUnreadState("300", 0))))
+        // A stale read arriving after the covering one doesn't undo it.
+        assertNull(rollbackFor(set, ChannelUnreadState("100"), listOf(ChannelUnreadState("300", 0), ChannelUnreadState("200", 1))))
+    }
+
+    @Test fun aShorterReadKeepsItsMentions() {
+        val back = rollbackFor(ChannelUnreadState("300", 0), ChannelUnreadState("100", 2), listOf(ChannelUnreadState("200", 1)))
+        assertEquals(Rollback(ChannelUnreadState("200", 1), "200"), back)
+        // A read older than where we were before doesn't move us back further.
+        val stale = rollbackFor(ChannelUnreadState("300", 0), ChannelUnreadState("150", 1), listOf(ChannelUnreadState("120", 0)))
+        assertEquals(Rollback(ChannelUnreadState("150", 1), "120"), stale)
+    }
 }
