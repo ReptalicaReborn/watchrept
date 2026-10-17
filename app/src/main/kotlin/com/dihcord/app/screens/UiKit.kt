@@ -73,8 +73,9 @@ fun ScreenSubtitle(text: String, modifier: Modifier = Modifier) {
 @Composable
 fun SectionHeader(text: String, modifier: Modifier = Modifier) {
     Text(
-        text = text.uppercase(),
-        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, letterSpacing = 1.sp),
+        // Sentence case: small all-caps labels are hard to read at watch size.
+        text = text.lowercase().replaceFirstChar { it.uppercase() },
+        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
         color = if (AppTheme.preset.isPride) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
         textAlign = TextAlign.Center,
         maxLines = 1,

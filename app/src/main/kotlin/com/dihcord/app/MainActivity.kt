@@ -176,6 +176,18 @@ class MainActivity : ComponentActivity() {
                             launchSingleTop = true
                         }
                     }
+                    val linkHandler = remember(navController) {
+                        LinkHandler(
+                            this@MainActivity,
+                            openChat = { chId, gId, msgId ->
+                                val name = repo?.getChannelNames()?.get(chId) ?: "Chat"
+                                val jump = msgId?.let { "?jump=${Uri.encode(it)}" }.orEmpty()
+                                navController.navigate("chatscreen/$chId/${Uri.encode(name)}/${gId ?: "dm"}$jump")
+                            },
+                            openInvite = { code -> navController.navigate("invite?code=${Uri.encode(code)}") }
+                        )
+                    }
+                    androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalUriHandler provides linkHandler) {
                     SwipeDismissableNavHost(
                         navController = navController,
                         startDestination = if (token != null) "home" else "Welcome"
@@ -187,6 +199,7 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToServers = { navController.navigate("servers") },
                                 onNavigateToWelcome = { navController.navigate("Welcome") },
                                 onNavigateToSettings = { navController.navigate("settings") },
+                                onOpenSaved = { navController.navigate("saved") },
                                 onNavigateToChat = { chId, chName, guildId, jumpTo ->
                                     val guildSeg = guildId ?: "dm"
                                     val jump = jumpTo?.let { "?jump=${Uri.encode(it)}" }.orEmpty()
@@ -232,6 +245,7 @@ class MainActivity : ComponentActivity() {
 
                         composable("settings") {
                             SettingsScreen(
+                                onOpenSaved = { navController.navigate("saved") },
                                 onLogOut = {
                                     navController.navigate("Welcome") {
                                         popUpTo(0) { inclusive = true }
@@ -282,9 +296,98 @@ class MainActivity : ComponentActivity() {
                                     onCall = {
                                         navController.navigate("voice/dm/$channelId/${Uri.encode(channelName)}") { launchSingleTop = true }
                                     },
+                                    onOpenPins = { navController.navigate("pins/$channelId/${Uri.encode(channelName)}/${guildIdArg ?: "dm"}") },
+                                    onOpenSearch = { navController.navigate("search/$channelId/${Uri.encode(channelName)}/${guildIdArg ?: "dm"}") },
+                                    onOpenMembers = if (guildId != null || repo?.dmChannels?.value?.firstOrNull { it.id == channelId }?.recipients.orEmpty().size > 1) ({
+                                        navController.navigate("members/$channelId/${Uri.encode(channelName)}/${guildIdArg ?: "dm"}")
+                                    }) else null,
+                                    onForward = { msg -> PendingNav.forward = msg; navController.navigate("forward") },
+                                    onCreatePoll = { navController.navigate("poll/$channelId") },
                                     onBack = { navController.popBackStack() }
                                 )
                             }
+                        }
+
+                        // Pins, search and saved messages open the chat at the message, replacing the chat behind.
+                        val openAt: (String, String, String?, String) -> Unit = { chId, chName, gId, msgId ->
+                            navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/${gId ?: "dm"}?jump=${Uri.encode(msgId)}") {
+                                popUpTo("chatscreen/{channelId}/{channelName}/{guildId}?jump={jump}") { inclusive = true }
+                            }
+                        }
+
+                        composable("pins/{channelId}/{channelName}/{guildId}") { back ->
+                            val chId = back.arguments?.getString("channelId") ?: return@composable
+                            val chName = back.arguments?.getString("channelName") ?: chId
+                            val gId = back.arguments?.getString("guildId")?.takeIf { it != "dm" }
+                            PinnedScreen(chId, chName) { msgId -> openAt(chId, chName, gId, msgId) }
+                        }
+
+                        composable("search/{channelId}/{channelName}/{guildId}") { back ->
+                            val chId = back.arguments?.getString("channelId") ?: return@composable
+                            val chName = back.arguments?.getString("channelName") ?: chId
+                            val gId = back.arguments?.getString("guildId")?.takeIf { it != "dm" }
+                            SearchScreen(chId, gId, chName) { msgId -> openAt(chId, chName, gId, msgId) }
+                        }
+
+                        composable("members/{channelId}/{channelName}/{guildId}") { back ->
+                            val chId = back.arguments?.getString("channelId") ?: return@composable
+                            val chName = back.arguments?.getString("channelName") ?: chId
+                            val gIdArg = back.arguments?.getString("guildId") ?: "dm"
+                            MembersScreen(gIdArg.takeIf { it != "dm" }, chId, chName) { user ->
+                                navController.navigate("userprofile/${user.id}/${Uri.encode(user.displayName)}/$gIdArg")
+                            }
+                        }
+
+                        composable("forward") {
+                            val msg = PendingNav.forward
+                            if (msg == null) { navController.popBackStack(); return@composable }
+                            ForwardScreen(msg) { PendingNav.forward = null; navController.popBackStack() }
+                        }
+
+                        composable("poll/{channelId}") { back ->
+                            val chId = back.arguments?.getString("channelId") ?: return@composable
+                            CreatePollScreen(chId) { navController.popBackStack() }
+                        }
+
+                        composable("saved") {
+                            SavedScreen { m -> openAt(m.channelId, m.channelName, m.guildId, m.messageId) }
+                        }
+
+                        composable("friends") {
+                            val scope = androidx.compose.runtime.rememberCoroutineScope()
+                            FriendsScreen { user ->
+                                scope.launch {
+                                    repo?.openDm(user.id)?.onSuccess { ch ->
+                                        navController.navigate("chatscreen/${ch.id}/${Uri.encode(ch.displayName.ifBlank { user.displayName })}/dm")
+                                    }
+                                }
+                            }
+                        }
+
+                        composable(
+                            "invite?code={code}",
+                            arguments = listOf(navArgument("code") { type = NavType.StringType; nullable = true; defaultValue = null })
+                        ) { back ->
+                            InviteScreen(back.arguments?.getString("code")) { gId, gName ->
+                                navController.navigate("ServerChannels/$gId/${Uri.encode(gName)}") {
+                                    popUpTo("invite?code={code}") { inclusive = true }
+                                }
+                            }
+                        }
+
+                        composable("nickname/{guildId}/{guildName}") { back ->
+                            val gId = back.arguments?.getString("guildId") ?: return@composable
+                            NicknameScreen(gId, back.arguments?.getString("guildName") ?: "") { navController.popBackStack() }
+                        }
+
+                        composable("alerts/{guildId}/{guildName}") { back ->
+                            val gId = back.arguments?.getString("guildId") ?: return@composable
+                            AlertLevelScreen(gId, back.arguments?.getString("guildName") ?: "")
+                        }
+
+                        composable("soundboard/{guildId}/{channelId}") { back ->
+                            val chId = back.arguments?.getString("channelId") ?: return@composable
+                            SoundboardScreen(back.arguments?.getString("guildId")?.takeIf { it != "dm" }, chId)
                         }
 
                         composable("thread/{threadId}/{threadName}/{guildId}") { back ->
@@ -359,7 +462,8 @@ class MainActivity : ComponentActivity() {
                                 guildId = gId,
                                 channelId = chId,
                                 channelName = chName,
-                                answer = back.arguments?.getBoolean("answer") == true
+                                answer = back.arguments?.getBoolean("answer") == true,
+                                onOpenSoundboard = { navController.navigate("soundboard/${gId ?: "dm"}/$chId") }
                             )
                         }
 
@@ -388,16 +492,26 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToChatScreen = { chId, chName ->
                                     navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/dm")
                                 },
-                                onNewDm = { navController.navigate("newdm") }
+                                onNewDm = { navController.navigate("newdm") },
+                                onFriends = { navController.navigate("friends") },
+                                onAddPeople = { chId -> navController.navigate("newdm?addTo=$chId") },
+                                onMembers = { chId, name -> navController.navigate("members/$chId/${Uri.encode(name)}/dm") }
                             )
                         }
 
-                        composable("newdm") {
-                            NewDmScreen(onOpenDm = { chId, chName ->
-                                navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/dm") {
-                                    popUpTo("newdm") { inclusive = true }
-                                }
-                            })
+                        composable(
+                            "newdm?addTo={addTo}",
+                            arguments = listOf(navArgument("addTo") { type = NavType.StringType; nullable = true; defaultValue = null })
+                        ) { back ->
+                            NewDmScreen(
+                                addToGroup = back.arguments?.getString("addTo"),
+                                onOpenDm = { chId, chName ->
+                                    navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/dm") {
+                                        popUpTo("newdm?addTo={addTo}") { inclusive = true }
+                                    }
+                                },
+                                onDone = { navController.popBackStack() }
+                            )
                         }
 
                         composable("servers") {
@@ -406,6 +520,9 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToChannels = { gId, gName ->
                                     navController.navigate("ServerChannels/$gId/${Uri.encode(gName)}")
                                 },
+                                onJoinServer = { navController.navigate("invite") },
+                                onNickname = { gId, gName -> navController.navigate("nickname/$gId/${Uri.encode(gName)}") },
+                                onAlerts = { gId, gName -> navController.navigate("alerts/$gId/${Uri.encode(gName)}") },
                                 onOpenFolder = { folder -> navController.navigate("servers/folder/${Uri.encode(folder)}") },
                                 onNavigateToChat = { chId, chName, gId, jumpTo ->
                                     navController.navigate(
@@ -421,10 +538,14 @@ class MainActivity : ComponentActivity() {
                                 folderKey = back.arguments?.getString("folderKey"),
                                 onNavigateToChannels = { gId, gName ->
                                     navController.navigate("ServerChannels/$gId/${Uri.encode(gName)}")
-                                }
+                                },
+                                onNickname = { gId, gName -> navController.navigate("nickname/$gId/${Uri.encode(gName)}") },
+                                onAlerts = { gId, gName -> navController.navigate("alerts/$gId/${Uri.encode(gName)}") }
                             )
                         }
                     }
+
+                    } // LocalUriHandler
 
                     val captcha by com.dihcord.app.captcha.CaptchaBroker.pending.collectAsState()
                     captcha?.let { com.dihcord.app.captcha.CaptchaScreen(it) }
@@ -508,4 +629,10 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         discordApp.repository?.refreshOnResume(activeChannelId)
     }
+}
+
+
+/** Things too big for a route argument, handed from one screen to the next. */
+object PendingNav {
+    @Volatile var forward: com.dihcord.app.api.DiscordMessage? = null
 }

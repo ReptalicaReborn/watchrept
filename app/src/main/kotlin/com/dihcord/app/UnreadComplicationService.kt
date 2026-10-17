@@ -4,6 +4,8 @@ import android.app.PendingIntent
 import android.content.Intent
 import androidx.wear.watchface.complications.data.ComplicationData
 import androidx.wear.watchface.complications.data.ComplicationType
+import androidx.wear.watchface.complications.data.MonochromaticImage
+import android.graphics.drawable.Icon
 import androidx.wear.watchface.complications.data.PlainComplicationText
 import androidx.wear.watchface.complications.data.ShortTextComplicationData
 import androidx.wear.watchface.complications.datasource.ComplicationRequest
@@ -29,7 +31,13 @@ class UnreadComplicationService : SuspendingComplicationDataSourceService() {
         )
         return ShortTextComplicationData.Builder(
             PlainComplicationText.Builder(count.toString()).build(),
-            PlainComplicationText.Builder("$count unread mentions").build()
-        ).setTapAction(open).build()
+            PlainComplicationText.Builder(if (count == 1) "1 unread mention" else "$count unread mentions").build()
+        )
+            // A small chat bubble next to the number, so it reads as "Discord" on a busy watch face.
+            .setMonochromaticImage(
+                MonochromaticImage.Builder(Icon.createWithResource(this, R.drawable.chat)).build()
+            )
+            .setTapAction(open)
+            .build()
     }
 }

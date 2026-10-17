@@ -5,7 +5,8 @@ import android.content.Context
 
 /**
  * "Lite mode" for weaker watch chips (e.g. Snapdragon Wear 4100/W5 Gen 1 class, Exynos W920/9110).
- * Decided once at startup; changing the setting takes effect after the app restarts.
+ * Decided at startup; on Auto it also follows battery saver (see [refresh]). Changing the setting
+ * takes effect after the app restarts.
  */
 object Perf {
     enum class Mode { AUTO, ON, OFF }
@@ -17,13 +18,25 @@ object Perf {
     /** Messages fetched per channel load. Fewer means less JSON parsing and less to lay out. */
     val messagePageSize: Int get() = if (lite) 25 else 50
 
+    /** Whether Auto turned lite mode on only because battery saver is on. */
+    @Volatile
+    var liteForBatterySaver: Boolean = false
+        private set
+
     fun init(context: Context) {
+        val weak = isWeakDevice(context)
+        val saver = FeaturePreferences.liteWithBatterySaver(context) &&
+            context.getSystemService(android.os.PowerManager::class.java)?.isPowerSaveMode == true
         lite = when (SetupPreferences.getPerfMode(context)) {
             Mode.ON -> true
             Mode.OFF -> false
-            Mode.AUTO -> isWeakDevice(context)
+            Mode.AUTO -> weak || saver
         }
+        liteForBatterySaver = lite && !weak && SetupPreferences.getPerfMode(context) == Mode.AUTO
     }
+
+    /** Re-decides after battery saver turned on or off; screens opened afterwards use the new value. */
+    fun refresh(context: Context) = init(context)
 
     /** What the hardware looks like to the app; shown in Settings so a wrong Auto decision can be diagnosed. */
     data class Hardware(val cores: Int, val totalMemBytes: Long, val lowRamFlag: Boolean) {

@@ -38,6 +38,8 @@ data class VoiceCall(
     val speaking: Set<String> = emptySet(),
     /** Discord's "voice privacy code" for the end-to-end encrypted session. */
     val privacyCode: String? = null,
+    /** When the call first connected (epoch ms), for the call timer. */
+    val connectedAt: Long? = null,
 ) {
     enum class Status { CONNECTING, CONNECTED, ENDED }
 }
@@ -149,6 +151,17 @@ object VoiceManager {
             }
             // Starting a DM/group call: the call exists now, so ring everyone else.
             if (ring) launch { repository.ringCall(channelId).onFailure { Log.w(TAG, "ring failed", it) } }
+            // Soundboard sounds played in this channel are heard here too (not while deafened).
+            launch {
+                repository.soundboardPlays.collect { e ->
+                    if (e.userId == myId) return@collect
+                    // Checked again inside the player's turn: deafen or leave may land in between.
+                    SoundboardPlayer.play("https://cdn.discordapp.com/soundboard-sounds/${e.soundId}", e.volume) {
+                        val c = _call.value
+                        c != null && c.status != VoiceCall.Status.ENDED && e.channelId == c.channelId && !c.deafened
+                    }
+                }
+            }
 
             // Speaking rings: anyone heard in the last 400 ms.
             while (isActive) {
@@ -201,7 +214,7 @@ object VoiceManager {
                     audio.deafened = _call.value?.deafened == true
                     engine = audio
                     audio.start()
-                    _call.update { it?.copy(status = VoiceCall.Status.CONNECTED, error = null) }
+                    _call.update { it?.copy(status = VoiceCall.Status.CONNECTED, error = null, connectedAt = it.connectedAt ?: System.currentTimeMillis()) }
                 }
 
                 override fun onClosed(code: Int, reason: String) {
@@ -242,6 +255,7 @@ object VoiceManager {
         _call.value = call.copy(muted = muted, deafened = deafened)
         engine?.muted = muted
         engine?.deafened = deafened
+        if (deafened) SoundboardPlayer.stop() // Deafened means hearing nothing, a sound already playing too.
         repo?.updateVoiceState(call.guildId, call.channelId, muted, deafened)
         appContext?.let { VoiceCallService.refresh(it) }
     }
@@ -254,6 +268,7 @@ object VoiceManager {
         }
         teardown()
         _call.value = null
+        SoundboardPlayer.stop() // After the call is gone, so no sound can start after it.
     }
 
     /** Forgets a call that ended (after the user saw why). */
@@ -267,6 +282,7 @@ object VoiceManager {
         if (call != null) repo?.updateVoiceState(call.guildId, null, selfMute = false, selfDeaf = false)
         teardown()
         _call.update { it?.copy(status = VoiceCall.Status.ENDED, error = reason, speaking = emptySet(), selfSpeaking = false) }
+        SoundboardPlayer.stop()
     }
 
     private fun teardown() {

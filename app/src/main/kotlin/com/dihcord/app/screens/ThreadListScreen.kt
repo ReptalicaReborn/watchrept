@@ -2,26 +2,33 @@ package com.dihcord.app.screens
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
-import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
-import androidx.wear.compose.material3.CircularProgressIndicator
+import androidx.wear.compose.material3.CompactButton
+import androidx.wear.compose.material3.Icon
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.ScreenScaffold
+import androidx.wear.compose.material3.SurfaceTransformation
 import androidx.wear.compose.material3.Text
+import androidx.wear.compose.material3.lazy.rememberTransformationSpec
+import androidx.wear.compose.material3.lazy.transformedHeight
+import com.dihcord.app.R
 import com.dihcord.app.api.ThreadSummary
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.launch
@@ -39,79 +46,99 @@ fun ThreadListScreen(
 ) {
     val context = LocalContext.current
     val repo = context.discordApp.repository ?: return
-    val listState = rememberScalingLazyListState()
     val scope = rememberCoroutineScope()
 
     var active by remember(channelId) { mutableStateOf<List<ThreadSummary>?>(null) }
     var archived by remember(channelId) { mutableStateOf<List<ThreadSummary>?>(null) }
     var loadingArchived by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<Throwable?>(null) }
+    var attempt by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(channelId) {
+    LaunchedEffect(channelId, attempt) {
+        active = null
+        error = null
         repo.rest.getChannelThreads(channelId, guildId, archived = false)
             .onSuccess { active = it }
-            .onFailure { active = emptyList(); error = it.message ?: "Couldn't load" }
+            .onFailure { error = it }
     }
 
-    val noun = if (isForum) "post" else "thread"
-
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState) {
-            item {
-                ScreenTitle(if (isForum) channelName else "Threads")
-            }
-            if (!isForum) {
-                item {
-                    ScreenSubtitle("#$channelName")
+    ThreadListContent(
+        title = if (isForum) channelName else "Threads",
+        subtitle = if (isForum) null else "#$channelName",
+        noun = if (isForum) "post" else "thread",
+        active = active,
+        archived = archived,
+        error = error,
+        loadingArchived = loadingArchived,
+        onRetry = { attempt++ },
+        onLoadOlder = {
+            val current = active.orEmpty()
+            if (!loadingArchived) {
+                loadingArchived = true
+                scope.launch {
+                    archived = repo.rest.getChannelThreads(channelId, guildId, archived = true)
+                        .getOrDefault(emptyList())
+                        .filter { a -> current.none { it.id == a.id } }
+                    loadingArchived = false
                 }
             }
+        },
+        onOpenThread = onOpenThread
+    )
+}
 
-            val current = active
+/** The thread/post list from plain data: null [active] means still loading. */
+@Composable
+internal fun ThreadListContent(
+    title: String,
+    subtitle: String?,
+    noun: String,
+    active: List<ThreadSummary>?,
+    archived: List<ThreadSummary>?,
+    error: Throwable?,
+    loadingArchived: Boolean,
+    onRetry: () -> Unit,
+    onLoadOlder: () -> Unit,
+    onOpenThread: (String, String) -> Unit,
+) {
+    val state = rememberTransformingLazyColumnState()
+    val spec = rememberTransformationSpec()
+    ScreenScaffold(scrollState = state) { padding ->
+        TransformingLazyColumn(state = state, contentPadding = padding) {
+            item { ScreenTitle(title) }
+            if (subtitle != null) item { ScreenSubtitle(subtitle) }
+
             when {
-                current == null -> item { LoadingIndicator() }
-                current.isEmpty() && archived.isNullOrEmpty() -> item {
-                    Text(
-                        error.ifEmpty { "No active ${noun}s." },
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)
-                    )
+                error != null -> item { ErrorState("Couldn't load ${noun}s", error, onRetry) }
+                active == null -> item { LoadingIndicator() }
+                active.isEmpty() && archived.isNullOrEmpty() -> item {
+                    EmptyState(R.drawable.chat, "No active ${noun}s", if (archived == null) "Older ones may be below." else null)
                 }
             }
 
-            current.orEmpty().forEach { t -> item(key = "a" + t.id) { ThreadRow(t, onOpenThread) } }
+            active.orEmpty().forEach { t ->
+                item(key = "a" + t.id) {
+                    ThreadRow(t, Modifier.transformedHeight(this, spec), SurfaceTransformation(spec), onOpenThread)
+                }
+            }
 
             archived?.let { old ->
-                if (old.isNotEmpty()) {
-                    item {
-                        Text(
-                            "OLDER",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp)
-                        )
+                if (old.isNotEmpty()) item { SectionHeader("Older") }
+                old.forEach { t ->
+                    item(key = "o" + t.id) {
+                        ThreadRow(t, Modifier.transformedHeight(this, spec), SurfaceTransformation(spec), onOpenThread)
                     }
                 }
-                old.forEach { t -> item(key = "o" + t.id) { ThreadRow(t, onOpenThread) } }
             }
 
-            if (archived == null && current != null) {
+            if (archived == null && active != null && error == null) {
                 item {
-                    Button(
-                        onClick = {
-                            if (!loadingArchived) {
-                                loadingArchived = true
-                                scope.launch {
-                                    archived = repo.rest.getChannelThreads(channelId, guildId, archived = true)
-                                        .getOrDefault(emptyList())
-                                        .filter { a -> current.none { it.id == a.id } }
-                                    loadingArchived = false
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) { Text(if (loadingArchived) "Loading…" else "Show older ${noun}s") }
+                    CompactButton(
+                        onClick = onLoadOlder,
+                        label = { Text(if (loadingArchived) "Loading…" else "Show older ${noun}s") },
+                        colors = ButtonDefaults.filledTonalButtonColors(),
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
             }
         }
@@ -119,17 +146,29 @@ fun ThreadListScreen(
 }
 
 @Composable
-private fun ThreadRow(thread: ThreadSummary, onOpenThread: (String, String) -> Unit) {
+private fun ThreadRow(
+    thread: ThreadSummary,
+    modifier: Modifier,
+    transformation: SurfaceTransformation,
+    onOpenThread: (String, String) -> Unit
+) {
     val details = buildList {
         add(if (thread.messageCount == 1) "1 message" else "${thread.messageCount} messages")
+        snowflakeMillis(thread.lastMessageId)?.let { add(shortAgo(it)) }
         if (thread.locked) add("locked") else if (thread.archived) add("archived")
     }.joinToString(" · ")
     Button(
         onClick = { onOpenThread(thread.id, thread.name) },
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
+        transformation = transformation,
         colors = ButtonDefaults.filledTonalButtonColors(),
-        secondaryLabel = { Text(details, style = MaterialTheme.typography.labelSmall, maxLines = 1) }
-    ) {
-        Text(thread.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
-    }
+        icon = {
+            Icon(
+                painterResource(if (thread.locked) R.drawable.lock else R.drawable.chat), null,
+                Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        label = { Text(thread.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        secondaryLabel = { Text(details, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+    )
 }

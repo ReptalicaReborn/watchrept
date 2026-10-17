@@ -2,33 +2,37 @@ package com.dihcord.app.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
-import androidx.wear.compose.foundation.lazy.items
-import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
+import androidx.wear.compose.material3.Button
+import androidx.wear.compose.material3.ButtonDefaults
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.ScreenScaffold
+import androidx.wear.compose.material3.SurfaceTransformation
 import androidx.wear.compose.material3.Text
+import androidx.wear.compose.material3.lazy.rememberTransformationSpec
+import androidx.wear.compose.material3.lazy.transformedHeight
 import coil.ImageLoader
 import coil.compose.AsyncImage
+import com.dihcord.app.R
 import com.dihcord.app.api.DiscordUser
 import com.dihcord.app.api.Reaction
 import com.dihcord.app.discordApp
@@ -45,61 +49,69 @@ fun ReactorsScreen(
     BackHandler { onDismiss() }
     val repo = LocalContext.current.discordApp.repository
     var users by remember { mutableStateOf<List<DiscordUser>?>(null) }
-    var error by remember { mutableStateOf("") }
-    LaunchedEffect(messageId, reaction.emoji.apiKey) {
-        val result = repo?.reactionUsers(channelId, messageId, reaction)
-        users = result?.getOrNull() ?: emptyList()
-        if (result == null || result.isFailure) error = "Couldn't load reactions"
+    var error by remember { mutableStateOf<Throwable?>(null) }
+    var attempt by remember { mutableIntStateOf(0) }
+    LaunchedEffect(messageId, reaction.emoji.apiKey, attempt) {
+        users = null
+        error = null
+        val result = repo?.reactionUsers(channelId, messageId, reaction) ?: return@LaunchedEffect
+        result.onSuccess { users = it }.onFailure { error = it }
     }
+    ReactorsContent(reaction, users, error, imageLoader, onRetry = { attempt++ })
+}
 
-    val listState = rememberScalingLazyListState()
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+/** The reactors list from plain data: null [users] means still loading. */
+@Composable
+internal fun ReactorsContent(
+    reaction: Reaction,
+    users: List<DiscordUser>?,
+    error: Throwable?,
+    imageLoader: ImageLoader,
+    onRetry: () -> Unit,
+) {
+    val state = rememberTransformingLazyColumnState()
+    val spec = rememberTransformationSpec()
+    ScreenScaffold(scrollState = state) { padding ->
+        TransformingLazyColumn(state = state, contentPadding = padding) {
             item {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                     val url = reaction.emoji.imageUrl
                     if (url != null) {
                         AsyncImage(
-                            model = url.replace("size=16", "size=48"),
+                            model = url.replace("size=16", "size=64"),
                             imageLoader = imageLoader,
                             contentDescription = reaction.emoji.name,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(32.dp)
                         )
                     } else {
-                        Text(reaction.emoji.name, fontSize = 20.sp)
+                        Text(reaction.emoji.name, fontSize = 28.sp)
                     }
-                    Text("${reaction.count}", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (reaction.count == 1) "1 reaction" else "${reaction.count} reactions",
+                        style = MaterialTheme.typography.labelMedium.merge(TabularNumbers),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
+                    )
                 }
             }
-            val list = users
             when {
-                list == null -> item { LoadingIndicator() }
-                error.isNotEmpty() && list.isEmpty() -> item {
-                    Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                }
-                else -> items(list, key = { it.id }) { user ->
+                error != null -> item { ErrorState("Couldn't load who reacted", error, onRetry) }
+                users == null -> item { LoadingIndicator() }
+                users.isEmpty() -> item { EmptyState(R.drawable.emoji, "No one to show", "They may have removed it.") }
+                else -> items(users.size, key = { users[it].id }) { i ->
+                    val user = users[i]
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier
+                        Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 2.dp)
+                            .transformedHeight(this, spec)
+                            .padding(horizontal = 14.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        AsyncImage(
-                            model = user.avatarUrl(48),
-                            imageLoader = imageLoader,
-                            contentDescription = null,
-                            modifier = Modifier
-                                .size(24.dp)
-                                .clip(CircleShape)
-                        )
+                        UserAvatar(user.displayName, user.avatarUrl(64), 28.dp)
                         Text(
                             user.displayName,
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.labelMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )

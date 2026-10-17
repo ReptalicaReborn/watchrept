@@ -11,6 +11,8 @@ android {
     testOptions {
         // org.json / android.util are stubs in JVM tests; let untouched calls return defaults.
         unitTests.returnDefaultValues = true
+        // Robolectric screenshot tests (UiScreenshotTest) render real resources.
+        unitTests.includeAndroidResources = true
     }
 
     lint { //stupid lint keeps crashing 3:<
@@ -62,6 +64,9 @@ android {
     }
     buildTypes {
         release {
+            // Watches are ARM (the voice library is built for ARM only too). Leaving out the x86 copies of the
+            // translation library saves ~35 MB; debug builds keep them for the emulator.
+            ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
             // Without a release keystore, sign with the debug key so the optimized (R8, non-debuggable)
             // build is still installable. Debug builds are several times slower in Compose.
             signingConfig signingConfigs.findByName("release") ?: signingConfigs.debug
@@ -72,10 +77,25 @@ android {
     }
 }
 
+// The debug-only tile renderer brings full Guava, which already holds ListenableFuture; the small
+// "listenablefuture" jar the tiles library uses would then be a duplicate in debug builds.
+configurations.matching { it.name in ['debugRuntimeClasspath', 'debugUnitTestRuntimeClasspath'] }.configureEach {
+    exclude group: 'com.google.guava', module: 'listenablefuture'
+}
+
 dependencies {
     testImplementation libs.junit
     testImplementation libs.kotlinx.coroutines.test
     testImplementation 'org.json:json:20240303' // real org.json for parsing tests (android.jar only has stubs)
+    testImplementation libs.robolectric
+    // Draws the tile in TileShotTest. Debug-only: unit tests only see a library's resources if the
+    // app variant has it. Release builds don't include it.
+    debugImplementation(libs.wear.tiles.renderer) {
+        // It would swap in Guava's empty "listenablefuture" stub, hiding ListenableFuture from the tile code.
+        exclude group: 'com.google.guava', module: 'listenablefuture'
+    }
+    testImplementation libs.compose.ui.test.junit4
+    debugImplementation libs.compose.ui.test.manifest
 
     implementation libs.androidx.core.ktx
     implementation libs.androidx.activity.compose
@@ -95,4 +115,8 @@ dependencies {
     implementation libs.wear.protolayout
     implementation libs.wear.complications.source
     implementation libs.concurrent.futures
+    implementation libs.wear.remote.interactions // open links on the paired phone
+    implementation libs.wear.ongoing // a voice call shows on the watch face
+    implementation libs.mlkit.translate // on-device message translation
+    implementation libs.mlkit.language.id
 }

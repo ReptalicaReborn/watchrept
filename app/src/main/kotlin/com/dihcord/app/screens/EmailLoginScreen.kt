@@ -88,7 +88,7 @@ fun EmailLoginScreen(onSetupComplete: () -> Unit, onBack: () -> Unit) {
         val wifi = WifiRequest(context)
         wifi.acquire()
         server.start { e ->
-            scope.launch { error = "Couldn't start the sign-in page: ${e.message ?: "port $LOGIN_PORT is busy"}" }
+            scope.launch { error = "Couldn't start the sign-in page. Port $LOGIN_PORT may be in use." }
         }
         onDispose {
             server.stop()
@@ -111,7 +111,7 @@ fun EmailLoginScreen(onSetupComplete: () -> Unit, onBack: () -> Unit) {
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            item { Text("Email & Password", style = MaterialTheme.typography.titleMedium) }
+            item { Text("Email & password", style = MaterialTheme.typography.titleMedium) }
             item {
                 Text(
                     status,

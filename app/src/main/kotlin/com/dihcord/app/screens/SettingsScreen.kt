@@ -13,9 +13,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.*
+import androidx.compose.ui.res.painterResource
+import com.dihcord.app.R
 import com.dihcord.app.BuildConfig
 import com.dihcord.app.AppTheme
 import com.dihcord.app.NotificationService
@@ -27,10 +28,15 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(
-    onLogOut: () -> Unit = {}
+    onLogOut: () -> Unit = {},
+    onOpenSaved: () -> Unit = {},
 ) {
     val context = LocalContext.current
-    val listState = rememberScalingLazyListState()
+    val listState = androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState()
+    val spec = androidx.wear.compose.material3.lazy.rememberTransformationSpec()
+    var quickReplies by remember { mutableStateOf(com.dihcord.app.FeaturePreferences.quickRepliesOn(context)) }
+    var linksOnPhone by remember { mutableStateOf(com.dihcord.app.FeaturePreferences.linksOnPhone(context)) }
+    var liteWithSaver by remember { mutableStateOf(com.dihcord.app.FeaturePreferences.liteWithBatterySaver(context)) }
     val scope = rememberCoroutineScope()
     val repo = context.discordApp.repository
     var showThemes by remember { mutableStateOf(false) }
@@ -73,7 +79,8 @@ fun SettingsScreen(
     var quietEnd by remember { mutableStateOf(SetupPreferences.getQuietEndHour(context)) }
     var mutedCount by remember {
         mutableStateOf(
-            SetupPreferences.getMutedChannels(context).size + SetupPreferences.getMutedServers(context).size
+            (SetupPreferences.getMutedChannels(context) + com.dihcord.app.FeaturePreferences.mutedUntil(context).keys).size +
+                SetupPreferences.getMutedServers(context).size
         )
     }
     val initialPerfMode = remember { SetupPreferences.getPerfMode(context) }
@@ -91,61 +98,27 @@ fun SettingsScreen(
     BackHandler(enabled = showLogoutConfirm) { showLogoutConfirm = false }
 
     if (showLogoutConfirm) {
-        ScreenScaffold(scrollState = rememberScalingLazyListState()) {
-            ScalingLazyColumn(modifier = Modifier.fillMaxSize()) {
-                item {
-                    Text(
-                        "Log out?",
-                        style = MaterialTheme.typography.titleMedium,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+        ConfirmScreen(
+            iconRes = R.drawable.logout,
+            title = "Log out?",
+            text = "Your token will be cleared from this watch.",
+            confirmLabel = "Log out",
+            onConfirm = {
+                scope.launch {
+                    runCatching { repo?.rest?.logout() }
+                    repo?.disconnect()
+                    SetupPreferences.clearAll(context)
+                    context.discordApp.clearRepository()
+                    onLogOut()
                 }
-                item {
-                    Text(
-                        "Your token will be cleared from this device.",
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp)
-                    )
-                }
-                item {
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                runCatching { repo?.rest?.logout() }
-                                repo?.disconnect()
-                                SetupPreferences.clearAll(context)
-                                context.discordApp.clearRepository()
-                                onLogOut()
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error
-                        )
-                    ) { Text("Log Out") }
-                }
-                item {
-                    Button(
-                        onClick = { showLogoutConfirm = false },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) { Text("Cancel") }
-                }
-            }
-        }
+            },
+            onCancel = { showLogoutConfirm = false }
+        )
         return
     }
 
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+    ScreenScaffold(scrollState = listState) { padding ->
+        androidx.wear.compose.foundation.lazy.TransformingLazyColumn(state = listState, contentPadding = padding, modifier = Modifier.fillMaxSize()) {
 
             item {
                 ScreenTitle("Settings")
@@ -157,6 +130,7 @@ fun SettingsScreen(
 
             item {
                 Button(
+                    transformation = SurfaceTransformation(spec),
                     onClick = { showStatuses = !showStatuses },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.filledTonalButtonColors(),
@@ -175,6 +149,7 @@ fun SettingsScreen(
                 STATUS_LABELS.forEach { (key, label) ->
                     item {
                         Button(
+                            transformation = SurfaceTransformation(spec),
                             onClick = {
                                 status = key
                                 showStatuses = false
@@ -235,6 +210,7 @@ fun SettingsScreen(
 
             item {
                 Button(
+                    transformation = SurfaceTransformation(spec),
                     onClick = {
                         perfMode = Perf.Mode.values()[(perfMode.ordinal + 1) % Perf.Mode.values().size]
                         SetupPreferences.setPerfMode(context, perfMode)
@@ -289,6 +265,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier.fillMaxWidth(),
                     checked = notificationsEnabled,
                     onCheckedChange = { enabled ->
@@ -321,6 +298,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier.fillMaxWidth(),
                     checked = quietEnabled,
                     onCheckedChange = {
@@ -340,6 +318,7 @@ fun SettingsScreen(
             if (quietEnabled) {
                 item {
                     Button(
+                        transformation = SurfaceTransformation(spec),
                         onClick = {
                             quietStart = (quietStart + 1) % 24
                             SetupPreferences.setQuietHours(context, quietStart, quietEnd)
@@ -351,6 +330,7 @@ fun SettingsScreen(
                 }
                 item {
                     Button(
+                        transformation = SurfaceTransformation(spec),
                         onClick = {
                             quietEnd = (quietEnd + 1) % 24
                             SetupPreferences.setQuietHours(context, quietStart, quietEnd)
@@ -365,8 +345,9 @@ fun SettingsScreen(
             if (mutedCount > 0) {
                 item {
                     Button(
+                        transformation = SurfaceTransformation(spec),
                         onClick = {
-                            SetupPreferences.clearMutedChannels(context)
+                            com.dihcord.app.FeaturePreferences.unmuteAllChats(context)
                             SetupPreferences.clearMutedServers(context)
                             mutedCount = 0
                         },
@@ -383,6 +364,7 @@ fun SettingsScreen(
 
             item {
                 Button(
+                    transformation = SurfaceTransformation(spec),
                     onClick = { showThemes = !showThemes },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.filledTonalButtonColors(),
@@ -438,6 +420,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier.fillMaxWidth(),
                     checked = AppTheme.amoled,
                     onCheckedChange = { AppTheme.setAmoled(context, it) },
@@ -454,6 +437,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(40.dp),
@@ -473,6 +457,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier
                         .fillMaxWidth(),
                     checked = spoilerRevealOnTap,
@@ -489,6 +474,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(40.dp),
@@ -507,6 +493,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier
                         .fillMaxWidth(),
                     checked = sendAnimatedAsGif,
@@ -528,6 +515,7 @@ fun SettingsScreen(
 
             item {
                 SwitchButton(
+                    transformation = SurfaceTransformation(spec),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(40.dp),
@@ -545,18 +533,80 @@ fun SettingsScreen(
                 )
             }
 
+            item { SectionHeader("Extras") }
+
+            item {
+                SwitchButton(
+                    transformation = SurfaceTransformation(spec),
+                    checked = quickReplies,
+                    onCheckedChange = {
+                        quickReplies = it
+                        com.dihcord.app.FeaturePreferences.setQuickRepliesOn(context, it)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Quick replies", style = MaterialTheme.typography.bodySmall) },
+                    secondaryLabel = { Text("One-tap \"ok\", \"on my way\"…", style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+
+            item {
+                SwitchButton(
+                    transformation = SurfaceTransformation(spec),
+                    checked = linksOnPhone,
+                    onCheckedChange = {
+                        linksOnPhone = it
+                        com.dihcord.app.FeaturePreferences.setLinksOnPhone(context, it)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Open links on phone", style = MaterialTheme.typography.bodySmall) },
+                    secondaryLabel = { Text(if (linksOnPhone) "Web links open on your phone" else "Web links open on the watch", style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+
+            item {
+                SwitchButton(
+                    transformation = SurfaceTransformation(spec),
+                    checked = liteWithSaver,
+                    onCheckedChange = {
+                        liteWithSaver = it
+                        com.dihcord.app.FeaturePreferences.setLiteWithBatterySaver(context, it)
+                        Perf.refresh(context)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Lite with battery saver", style = MaterialTheme.typography.bodySmall) },
+                    secondaryLabel = { Text("When lite mode is Auto", style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+
+            item {
+                Button(
+                    transformation = SurfaceTransformation(spec),
+                    onClick = onOpenSaved,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.filledTonalButtonColors(),
+                    icon = { Icon(painterResource(R.drawable.bookmark), null, Modifier.size(18.dp)) },
+                    label = { Text("Saved messages") },
+                    secondaryLabel = { Text("${com.dihcord.app.FeaturePreferences.saved(context).size} saved", style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+
             item {
                 SectionHeader("Account")
             }
 
             item {
                 Button(
+                    transformation = SurfaceTransformation(spec),
                     onClick = { showLogoutConfirm = true },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp),
-                    colors = ButtonDefaults.filledTonalButtonColors()
-                ) { Text("Log Out") }
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        iconColor = MaterialTheme.colorScheme.onErrorContainer
+                    ),
+                    icon = { Icon(painterResource(R.drawable.logout), null, Modifier.size(18.dp)) },
+                    label = { Text("Log out") }
+                )
             }
 
             item {

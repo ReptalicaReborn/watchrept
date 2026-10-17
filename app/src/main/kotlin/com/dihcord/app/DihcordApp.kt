@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 class DihcordApp : Application(), ImageLoaderFactory {
@@ -55,11 +57,23 @@ class DihcordApp : Application(), ImageLoaderFactory {
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var summaryJob: Job? = null
+    private var recentDmsJob: Job? = null
     private var callScope: CoroutineScope? = null
 
     override fun onCreate() {
         super.onCreate()
         Perf.init(this)
+        // The voice tile follows the call: joined, muted, left.
+        appScope.launch {
+            com.dihcord.app.voice.VoiceManager.call
+                .map { c -> c?.let { Triple(it.status, it.muted, it.channelName) } }
+                .distinctUntilChanged()
+                .collect { runCatching { androidx.wear.tiles.TileService.getUpdater(this@DihcordApp).requestUpdate(VoiceTileService::class.java) } }
+        }
+        // Lite mode on Auto follows battery saver.
+        androidx.core.content.ContextCompat.registerReceiver(this, object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: android.content.Context, intent: android.content.Intent) = Perf.refresh(context)
+        }, android.content.IntentFilter(android.os.PowerManager.ACTION_POWER_SAVE_MODE_CHANGED), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
         AppTheme.init(this)
         val screenFilter = android.content.IntentFilter().apply {
             addAction(android.content.Intent.ACTION_SCREEN_OFF)
@@ -95,6 +109,27 @@ class DihcordApp : Application(), ImageLoaderFactory {
                 )
             }.collect { UnreadSummary.publish(this@DihcordApp, it) }
         }
+        recentDmsJob?.cancel()
+        val tileGeneration = RecentDmsSummary.generation
+        recentDmsJob = appScope.launch {
+            // The Recent DMs tile reads this snapshot, so it draws without the app or a connection.
+            combine(repo.readState, repo.dmChannels, SetupPreferences.hiddenDmsChanges) { read, dms, _ ->
+                val hidden = SetupPreferences.getHiddenDms(this@DihcordApp)
+                dms.filter { it.id !in hidden }
+                    .sortedByDescending { it.lastMessageId?.toLongOrNull() ?: 0L }
+                    .take(4)
+                    .map { dm ->
+                        val rs = read[dm.id]
+                        RecentDmsSummary.Entry(
+                            channelId = dm.id,
+                            name = dm.displayName,
+                            mentions = rs?.mentionCount ?: 0,
+                            unread = dm.lastMessageId != null && rs != null &&
+                                com.dihcord.app.api.compareSnowflakes(dm.lastMessageId, rs.lastMessageId) > 0
+                        )
+                    }
+            }.collect { RecentDmsSummary.publish(this@DihcordApp, it, tileGeneration) }
+        }
         // Logging in again (or a token change) must bring notifications back if the user wants them;
         // the service re-reads the repository on every start.
         if (SetupPreferences.getNotificationsEnabled(this)) {
@@ -102,13 +137,24 @@ class DihcordApp : Application(), ImageLoaderFactory {
         }
     }
 
+    /** Puts a ready-made repository in place without connecting anything, for the screenshot tests. */
+    internal fun useRepositoryForTests(repo: DiscordRepository?) {
+        _repositoryFlow.value = repo
+    }
+
     fun clearRepository() {
         summaryJob?.cancel()
+        recentDmsJob?.cancel()
         callScope?.cancel()
         callScope = null
         com.dihcord.app.voice.VoiceManager.leave()
         UnreadSummary.reset(this)
+        RecentDmsSummary.reset(this)
+        ReadAloud.stop() // A private message being read out loud ends with the account.
         NotificationService.stop(this)
+        // Saved chats, bookmarks, mutes and alert levels belong to the account that's leaving.
+        repository?.clearOfflineCache()
+        FeaturePreferences.clearAccountData(this)
         repository?.close()
         _repositoryFlow.value = null
     }

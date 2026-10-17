@@ -293,15 +293,34 @@ object SetupPreferences {
         return hidden
     }
 
+    private const val KEY_RECENT_EMOJI = "recent_emoji"
+
+    /** The last few emoji picked (newest first), for the "Recent" row in the picker. */
+    fun getRecentEmoji(context: Context): List<String> =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_RECENT_EMOJI, null)
+            ?.split('\u0000')?.filter { it.isNotEmpty() }
+            .orEmpty()
+
+    fun addRecentEmoji(context: Context, emoji: String) {
+        val updated = (listOf(emoji) + getRecentEmoji(context).filter { it != emoji }).take(10)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit { putString(KEY_RECENT_EMOJI, updated.joinToString("\u0000")) }
+    }
+
     private const val KEY_HIDDEN_DMS = "hidden_dms"
 
     fun getHiddenDms(context: Context): Set<String> =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getStringSet(KEY_HIDDEN_DMS, emptySet()) ?: emptySet()
 
+    /** Goes up on every change to the hidden DMs, so the Recent DMs tile can redraw without them. */
+    val hiddenDmsChanges = kotlinx.coroutines.flow.MutableStateFlow(0)
+
     fun setHiddenDms(context: Context, ids: Set<String>) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit { putStringSet(KEY_HIDDEN_DMS, ids) }
+        hiddenDmsChanges.value++
     }
 
     fun toggleHiddenDm(context: Context, channelId: String): Boolean {
@@ -323,5 +342,7 @@ object SetupPreferences {
     fun clearAll(context: Context) {
         clearToken(context)
         clearDiscordCache(context)
+        FeaturePreferences.clear(context)
+        com.dihcord.app.api.MessageCache(com.dihcord.app.api.MessageCache.dirFor(context)).clear()
     }
 }

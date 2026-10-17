@@ -18,10 +18,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.dihcord.app.SetupPreferences
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -37,14 +39,18 @@ data class NotificationInfo(
     val channelName: String = "",
 )
 
-class DiscordRepository(token: String, private val context: Context? = null) {
+class DiscordRepository(
+    token: String,
+    private val context: Context? = null,
+    apiBase: String = "https://discord.com/api/v9",
+) {
 
     // An unexpected error in one background job must not take the whole app down.
     val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.IO +
             CoroutineExceptionHandler { _, e -> android.util.Log.e("DiscordRepository", "Background job failed", e) }
     )
-    val rest = DiscordRestClient(token)
+    val rest = DiscordRestClient(token, apiBase)
     private val gateway = DiscordGateway(token)
 
     private val prefs: SharedPreferences? =
@@ -102,6 +108,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
             cacheChannelNames(groups)
             saveChannels(guildId, groups)
             _guildChannelsMap.update { current -> current + (guildId to groups) }
+            unread.onChannels(guildId, groups.flatMap { it.channels }, _readState.value)
         }.onFailure { handleApiError(it) }
     }
 
@@ -111,8 +118,65 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     private val _typing = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
     val typing: StateFlow<Map<String, Set<String>>> = _typing.asStateFlow()
 
+    /** The newest message of each DM we know of, for the previews in the DM list and on Home. */
+    private val _lastMessages = MutableStateFlow<Map<String, DiscordMessage>>(emptyMap())
+    val lastMessages: StateFlow<Map<String, DiscordMessage>> = _lastMessages.asStateFlow()
+    /** "channel/message" keys whose preview is settled (fetched, or its message was deleted). */
+    private val previewSettled: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val previewInFlight: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val previewFailures = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** Keeps a held preview in step with an edit, or drops it when its message is deleted. */
+    private fun syncPreview(channelId: String, deleted: Set<String> = emptySet(), edited: ((DiscordMessage) -> DiscordMessage)? = null) {
+        _lastMessages.update { current ->
+            val held = current[channelId] ?: return@update current
+            when {
+                held.id in deleted -> {
+                    // Don't fetch it again: the channel's "last message" still points at the deleted one.
+                    previewSettled.add("$channelId/${held.id}")
+                    current - channelId
+                }
+                edited != null -> current + (channelId to edited(held))
+                else -> current
+            }
+        }
+    }
+
     private val _pings = MutableStateFlow<List<Ping>>(emptyList())
     val pings: StateFlow<List<Ping>> = _pings.asStateFlow()
+
+    /** Unread servers and channels (white dots), from READY and live messages. */
+    val unread = UnreadTracker()
+    val unreadGuilds: StateFlow<Set<String>> get() = unread.unreadGuilds
+
+    private val memberListStore = MemberListStore()
+    /** Server member lists by guild id, filled after [subscribeMemberList]. */
+    val memberLists: StateFlow<Map<String, MemberList>> get() = memberListStore.lists
+
+    private val relationshipStore = RelationshipStore()
+    /** Friends, blocks and requests by user id. */
+    val relationships: StateFlow<Map<String, Relationship>> get() = relationshipStore.all
+    fun isBlocked(userId: String): Boolean = relationshipStore.isBlocked(userId)
+
+    private val _notifySettings = MutableStateFlow<Map<String, NotifySettings>>(emptyMap())
+    /** Discord's own per-server notification settings ("" for DMs). */
+    val notifySettings: StateFlow<Map<String, NotifySettings>> = _notifySettings.asStateFlow()
+
+    /** Whether live data is flowing; false shows chats from the offline cache. */
+    val online: StateFlow<Boolean> get() = gateway.online
+
+    private val messageCache = MessageCache(context?.let { MessageCache.dirFor(it) })
+    private val _fromCache = MutableStateFlow<Set<String>>(emptySet())
+    /** Channels whose messages are, for now, the saved copy from disk. */
+    val fromCache: StateFlow<Set<String>> = _fromCache.asStateFlow()
+
+    private val _interactionResults = MutableSharedFlow<GatewayEvent.InteractionResult>(extraBufferCapacity = 8)
+    /** Answers to bot buttons and slash commands, by nonce. */
+    val interactionResults: SharedFlow<GatewayEvent.InteractionResult> = _interactionResults.asSharedFlow()
+
+    private val _soundboardPlays = MutableSharedFlow<GatewayEvent.SoundboardPlay>(extraBufferCapacity = 8)
+    /** Soundboard sounds played in voice channels, for the call to play aloud. */
+    val soundboardPlays: SharedFlow<GatewayEvent.SoundboardPlay> = _soundboardPlays.asSharedFlow()
 
     private val _readState = MutableStateFlow<Map<String, ChannelUnreadState>>(emptyMap())
     val readState: StateFlow<Map<String, ChannelUnreadState>> = _readState.asStateFlow()
@@ -363,15 +427,37 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     val newMessages: SharedFlow<DiscordMessage> = _newMessages.asSharedFlow()
 
     /**
+     * How loud [channelId] in [guildId] should be: the user's choice on this watch, or else Discord's own
+     * settings (a muted server or channel says nothing; "default" means mentions only).
+     */
+    fun alertLevelFor(guildId: String?, channelId: String, local: com.dihcord.app.FeaturePreferences.AlertLevel): com.dihcord.app.FeaturePreferences.AlertLevel {
+        if (local != com.dihcord.app.FeaturePreferences.AlertLevel.DISCORD) return local
+        val settings = _notifySettings.value[guildId ?: ""]
+        val channel = settings?.channels?.get(channelId)
+        // Channels never opened aren't in channelCache; READY's server data still knows their category.
+        val parent = (channelCache[channelId]?.parentId ?: unread.parentOf(channelId))?.let { settings?.channels?.get(it) }
+        if (settings?.mutedNow() == true || channel?.mutedNow() == true || parent?.mutedNow() == true) return com.dihcord.app.FeaturePreferences.AlertLevel.NOTHING
+        val level = channel?.level?.takeIf { it != 3 } ?: parent?.level?.takeIf { it != 3 } ?: settings?.level?.takeIf { it != 3 }
+        return when (level) {
+            0 -> com.dihcord.app.FeaturePreferences.AlertLevel.ALL
+            2 -> com.dihcord.app.FeaturePreferences.AlertLevel.NOTHING
+            else -> com.dihcord.app.FeaturePreferences.AlertLevel.MENTIONS
+        }
+    }
+
+    /**
      * Decides whether [msg] deserves a notification (a DM, or a mention of the user / their roles / @everyone,
      * never their own messages) and builds its text. Null when it should stay silent.
      */
-    suspend fun notificationFor(msg: DiscordMessage): NotificationInfo? {
+    suspend fun notificationFor(msg: DiscordMessage, notifyAll: Boolean = false): NotificationInfo? {
         val myId = currentUserId ?: return null
         if (msg.author.id == myId) return null
+        // Like Discord: nothing from people you blocked, and "@silent" messages never buzz.
+        if (relationshipStore.isBlocked(msg.author.id)) return null
+        if (msg.flags and SUPPRESS_NOTIFICATIONS_FLAG != 0) return null
         val isDm = _dmChannels.value.any { it.id == msg.channelId }
         val guildId = msg.guildId ?: channelGuildCache[msg.channelId]
-        val mentioned = if (isDm) true else {
+        val mentioned = if (isDm || notifyAll) true else {
             val roles = if (guildId != null && msg.mentionedRoleIds.isNotEmpty()) {
                 myRolesByGuild[guildId]
                     ?: rest.getGuildMemberRoles(guildId, myId).getOrNull()?.also { myRolesByGuild[guildId] = it }
@@ -415,6 +501,8 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         )
     }
     fun selectChannel(channelId: String, guildId: String?) {
+        // This also subscribes to the channel's member list (op 14).
+        if (guildId != null) noteMemberListChannel(guildId, channelId)
         gateway.selectChannel(channelId, guildId)
     }
 
@@ -454,6 +542,37 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     }
 
     suspend fun getFriends(): Result<List<DiscordUser>> = rest.getFriends()
+
+    /**
+     * Fetches the newest message of each DM in [channelIds] whose preview we don't have yet (one small
+     * request each, a moment apart, once per message). Opened chats and live messages fill it for free.
+     */
+    suspend fun loadLastMessages(channelIds: List<String>) {
+        for (id in channelIds) {
+            val want = _dmChannels.value.firstOrNull { it.id == id }?.lastMessageId ?: continue
+            if (_lastMessages.value[id]?.id == want) continue
+            val held = _messages.value[id]?.lastOrNull()
+            if (held?.id == want) {
+                _lastMessages.update { it + (id to held) }
+                continue
+            }
+            val key = "$id/$want"
+            if (key in previewSettled || (previewFailures[key] ?: 0) >= 3 || !previewInFlight.add(key)) continue
+            try {
+                rest.getMessages(id, limit = 1).onSuccess { page ->
+                    previewSettled.add(key)
+                    page.firstOrNull()?.let { msg -> _lastMessages.update { it + (id to msg) } }
+                }.onFailure {
+                    previewFailures.merge(key, 1, Int::plus)
+                    handleApiError(it)
+                }
+            } finally {
+                // Also on cancellation (the list closed mid-fetch), so the next visit can try again.
+                previewInFlight.remove(key)
+            }
+            kotlinx.coroutines.delay(150)
+        }
+    }
 
     /** The DM with [userId], opening one on Discord if there isn't one yet. */
     suspend fun openDm(userId: String): Result<Channel> {
@@ -679,12 +798,32 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         }
 
         val pageSize = com.dihcord.app.Perf.messagePageSize
-        rest.getMessages(channelId, limit = pageSize).onSuccess { fetched ->
+        // Show the saved copy straight away (and when offline); the live page replaces it below.
+        if (_messages.value[channelId].isNullOrEmpty()) {
+            messageCache.load(channelId)?.let { saved ->
+                // Remembered until a live page replaces them, even across failed (offline) tries.
+                cachedIdsByChannel[channelId] = saved.mapTo(HashSet()) { it.id }
+                _messages.update { it + (channelId to saved) }
+                _fromCache.update { it + channelId }
+            }
+        }
+        rest.getMessagesRaw(channelId, limit = pageSize).mapCatching { raw ->
+            DiscordMessage.listFromJson(JSONArray(raw)).also { messageCache.save(channelId, raw) }
+        }.onSuccess { fetched ->
+            _fromCache.update { it - channelId }
+            val cachedIds = cachedIdsByChannel.remove(channelId).orEmpty()
             val fetchedList = fetched.reversed()
             fetchedList.forEach { userDisplayNames[it.author.id] = it.author.displayName }
             if (fetched.size < pageSize) reachedStart.add(channelId)
             _messages.update { current ->
-                val existing = current[channelId].orEmpty()
+                val held = current[channelId].orEmpty()
+                // The live page is the truth: the saved copy (or an emptied channel) may hold messages since deleted.
+                // Of the saved copy, only messages that arrived live while it loaded stay.
+                val existing = when {
+                    fetchedList.isEmpty() -> emptyList()
+                    cachedIds.isNotEmpty() -> held.filter { it.id !in cachedIds }
+                    else -> held
+                }
                 val merged = mergeLatestPage(existing, fetchedList)
                 // The held history no longer connects to the latest page: start over from it and allow paging again.
                 if (merged == null) reachedStart.remove(channelId)
@@ -695,6 +834,8 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     }
 
     private val reachedStart: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    /** Ids of messages shown from the disk copy that no live page has replaced yet, by channel. */
+    private val cachedIdsByChannel = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
     private val loadingOlder: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /** False once the beginning of [channelId]'s history has been loaded. */
@@ -729,6 +870,241 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     }
 
     fun getDisplayName(userId: String): String? = userDisplayNames[userId]
+
+    // ---- Typing ----
+
+    private val typingSentAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Lets the others see we're typing; at most once every 8 s per channel, like Discord's client. */
+    fun typingInChannel(channelId: String) {
+        val now = System.currentTimeMillis()
+        val last = typingSentAt[channelId] ?: 0L
+        if (now - last < 8_000) return
+        typingSentAt[channelId] = now
+        scope.launch { rest.sendTyping(channelId) }
+    }
+
+    /** After sending, the next keystroke may say "typing" again straight away. */
+    private fun typingDone(channelId: String) { typingSentAt.remove(channelId) }
+
+    // ---- Read state ----
+
+    /** Marks every unread channel of [guildId] read (mentions too), here and on Discord. */
+    suspend fun markGuildRead(guildId: String): Result<Unit> {
+        val rs = _readState.value
+        val reads = (unread.unreadChannels(guildId, rs, includeMuted = true) + unread.unreadThreads(guildId, rs)).toMutableList()
+        rs.forEach { (channelId, state) ->
+            if (state.mentionCount > 0 && channelGuildCache[channelId] == guildId && reads.none { it.first == channelId }) {
+                (unread.lastMessageId(channelId) ?: state.lastMessageId).let { reads += channelId to it }
+            }
+        }
+        return ackLocallyAndRemotely(reads)
+    }
+
+    /** Marks one channel read up to [messageId], here and on Discord; undone here if Discord doesn't take it. */
+    suspend fun markChannelReadChecked(channelId: String, messageId: String): Result<Unit> =
+        ackLocallyAndRemotely(listOf(channelId to messageId))
+
+    /** Marks everything read: every server's unread channels and every DM. */
+    suspend fun markAllRead(): Result<Unit> {
+        val rs = _readState.value
+        val reads = mutableListOf<Pair<String, String>>()
+        _guilds.value.forEach { g -> reads += unread.unreadChannels(g.id, rs, includeMuted = true) + unread.unreadThreads(g.id, rs) }
+        _dmChannels.value.forEach { dm ->
+            val last = dm.lastMessageId ?: return@forEach
+            val state = rs[dm.id]
+            if (state == null || compareSnowflakes(last, state.lastMessageId) > 0 || state.mentionCount > 0) reads += dm.id to last
+        }
+        rs.forEach { (channelId, state) ->
+            if (state.mentionCount > 0 && reads.none { it.first == channelId }) {
+                reads += channelId to (unread.lastMessageId(channelId) ?: state.lastMessageId)
+            }
+        }
+        return ackLocallyAndRemotely(reads.distinctBy { it.first })
+    }
+
+    /** A mark-read waiting for Discord: the furthest read Discord reported (another device) per channel meanwhile. */
+    private class AckWatch(val channels: Set<String>) {
+        val furthest = java.util.concurrent.ConcurrentHashMap<String, ChannelUnreadState>()
+    }
+    private val ackWatches = java.util.concurrent.CopyOnWriteArrayList<AckWatch>()
+    /**
+     * Mark-reads take turns: each one's "before" is then what the last one left (done or undone), so two
+     * failing at once can't undo each other's undo.
+     */
+    private val ackTurns = kotlinx.coroutines.sync.Mutex()
+
+    private suspend fun ackLocallyAndRemotely(reads: List<Pair<String, String>>): Result<Unit> {
+        if (reads.isEmpty()) return Result.success(Unit)
+        val ids = reads.map { it.first }.toSet()
+        return ackTurns.withLock {
+            val watch = AckWatch(ids).also { ackWatches += it }
+            try {
+                ackWatched(reads, ids, watch)
+            } finally {
+                ackWatches -= watch
+            }
+        }
+    }
+
+    private suspend fun ackWatched(reads: List<Pair<String, String>>, ids: Set<String>, watch: AckWatch): Result<Unit> {
+        val pingsBefore = _pings.value.filter { it.message.channelId in ids }
+        val before = _readState.value
+        var marked: Map<String, ChannelUnreadState> = emptyMap()
+        _pings.update { list -> list.filterNot { it.message.channelId in ids } }
+        _readState.update { current ->
+            marked = reads.associate { (channelId, messageId) ->
+                val newest = current[channelId]?.lastMessageId?.takeIf { compareSnowflakes(it, messageId) > 0 } ?: messageId
+                channelId to ChannelUnreadState(newest, 0)
+            }
+            current + marked
+        }
+        return rest.ackBulk(reads).onFailure { error ->
+            // Discord didn't take it: show them unread again, so trying again sends them again.
+            // Channel -> how far another device read meanwhile (null: nowhere); pings up to there stay cleared.
+            val rolledBack = HashMap<String, String?>()
+            _readState.update { current ->
+                val out = current.toMutableMap()
+                rolledBack.clear()
+                marked.forEach { (channelId, set) ->
+                    if (out[channelId] != set) return@forEach // Changed since (read in the chat, a new message).
+                    val back = rollbackFor(set, before[channelId], watch.furthest[channelId]) ?: return@forEach
+                    if (back.state != null) out[channelId] = back.state else out.remove(channelId)
+                    rolledBack[channelId] = back.pingFloor
+                }
+                out
+            }
+            // Pings come back only where the unread state did; a channel read elsewhere meanwhile stays clear.
+            val restore = pingsBefore.filter { p ->
+                val ch = p.message.channelId
+                ch in rolledBack && rolledBack[ch].let { floor -> floor == null || compareSnowflakes(p.message.id, floor) > 0 }
+            }
+            _pings.update { list -> (list + restore).distinctBy { it.message.id } }
+            handleApiError(error)
+        }
+    }
+
+    // ---- Pins, search ----
+
+    suspend fun pins(channelId: String) = rest.getPins(channelId).onFailure { handleApiError(it) }
+    suspend fun setPinned(channelId: String, messageId: String, pinned: Boolean) = rest.setPinned(channelId, messageId, pinned)
+    suspend fun search(guildId: String?, channelId: String, query: String) = rest.searchMessages(guildId, channelId, query)
+
+    // ---- People ----
+
+    suspend fun refreshRelationships(): Result<List<Relationship>> =
+        rest.getRelationships().onSuccess { relationshipStore.set(it) }.onFailure { handleApiError(it) }
+
+    suspend fun acceptFriend(user: DiscordUser): Result<Unit> = rest.acceptFriend(user.id).onSuccess {
+        relationshipStore.put(Relationship(user.id, Relationship.FRIEND, user))
+    }
+
+    suspend fun removeRelationship(userId: String): Result<Unit> = rest.removeRelationship(userId).onSuccess {
+        relationshipStore.remove(userId)
+    }
+
+    suspend fun blockUser(user: DiscordUser): Result<Unit> = rest.blockUser(user.id).onSuccess {
+        relationshipStore.put(Relationship(user.id, Relationship.BLOCKED, user))
+    }
+
+    suspend fun setNickname(guildId: String, nick: String) = rest.setNickname(guildId, nick).onSuccess {
+        // The cached member still has the old nickname; the next look fetches the new one.
+        currentUser.value?.id?.let { me -> guildMemberCache.remove("$guildId:$me") }
+    }
+
+    suspend fun createGroupDm(userIds: List<String>): Result<Channel> = rest.createGroupDm(userIds).onSuccess { ch ->
+        channelNameCache[ch.id] = ch.displayName
+        channelCache[ch.id] = ch
+        _channelNames.value = channelNameCache.toMap()
+        _dmChannels.update { list -> if (list.any { it.id == ch.id }) list else listOf(ch) + list }
+    }
+
+    suspend fun addToGroup(channelId: String, userId: String) = rest.addToGroup(channelId, userId).onSuccess {
+        scope.launch { refreshDmChannels() }
+    }
+
+    /** Asks Discord to stream [guildId]'s member list (as seen from [channelId]) into [memberLists]. */
+    fun subscribeMemberList(guildId: String, channelId: String) {
+        val changed = noteMemberListChannel(guildId, channelId)
+        // Already subscribed to this channel (opening its chat does it) and the list is here: asking for the
+        // same range again may get an empty answer, so keep what we have; updates keep streaming in.
+        if (changed || guildId !in memberListStore.lists.value) gateway.subscribeMemberList(guildId, channelId)
+    }
+
+    private val _sessions = MutableStateFlow(0)
+    /** Goes up on each READY: a new gateway session, whose subscriptions (op 14) must be asked for again. */
+    val sessions: StateFlow<Int> = _sessions.asStateFlow()
+
+    /** Which channel each server's member list subscription is for, this gateway session. */
+    private val memberListChannel = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Records [channelId] as [guildId]'s subscribed list; a different channel drops the old list. True if it changed. */
+    private fun noteMemberListChannel(guildId: String, channelId: String): Boolean {
+        val old = memberListChannel.put(guildId, channelId)
+        if (old != channelId) memberListStore.reset(guildId)
+        return old != channelId
+    }
+
+    // ---- Sending ----
+
+    suspend fun forward(message: DiscordMessage, toChannelId: String) =
+        rest.forwardMessage(toChannelId, message.channelId, message.guildId ?: channelGuildCache[message.channelId], message.id)
+
+    suspend fun createPoll(channelId: String, question: String, answers: List<Pair<String, String?>>, hours: Int, multiselect: Boolean) =
+        rest.createPoll(channelId, question, answers, hours, multiselect).onSuccess { typingDone(channelId) }
+
+    // ---- Servers ----
+
+    suspend fun invitePreview(code: String) = rest.getInvite(code)
+
+    suspend fun joinInvite(code: String): Result<Unit> = rest.joinInvite(code).onSuccess {
+        scope.launch { refreshGuilds() }
+    }
+
+    suspend fun leaveGuild(guildId: String): Result<Unit> = rest.leaveGuild(guildId).onSuccess {
+        _guilds.update { list -> list.filterNot { it.id == guildId } }
+        unread.forgetGuild(guildId, _readState.value)
+    }
+
+    suspend fun scheduledEvents(guildId: String) = rest.getScheduledEvents(guildId)
+    suspend fun setEventInterest(guildId: String, eventId: String, interested: Boolean) = rest.setEventInterest(guildId, eventId, interested)
+    suspend fun requestToSpeak(guildId: String, channelId: String, request: Boolean) = rest.requestToSpeak(guildId, channelId, request)
+
+    // ---- Soundboard ----
+
+    private val soundCache = java.util.concurrent.ConcurrentHashMap<String, List<SoundboardSound>>()
+
+    /** The server's own sounds first, then Discord's defaults. */
+    suspend fun soundboard(guildId: String?): List<SoundboardSound> {
+        val defaults = soundCache["default"] ?: rest.getDefaultSounds().getOrNull()?.also { soundCache["default"] = it }.orEmpty()
+        val own = if (guildId == null) emptyList()
+        else soundCache[guildId] ?: rest.getGuildSounds(guildId).getOrNull()?.also { soundCache[guildId] = it }.orEmpty()
+        return own + defaults
+    }
+
+    suspend fun playSound(voiceChannelId: String, sound: SoundboardSound) = rest.playSound(voiceChannelId, sound)
+
+    // ---- Bots ----
+
+    private val commandCache = java.util.concurrent.ConcurrentHashMap<String, List<ApplicationCommand>>()
+
+    /** Slash commands for [channelId] (cached per server, or per DM). */
+    suspend fun commands(guildId: String?, channelId: String): Result<List<ApplicationCommand>> {
+        val key = guildId ?: channelId
+        commandCache[key]?.let { return Result.success(it) }
+        return rest.getCommands(guildId, channelId).onSuccess { commandCache[key] = it.filter { c -> c.usable } }
+            .map { commandCache[key].orEmpty() }
+    }
+
+    suspend fun runCommand(command: ApplicationCommand, options: Map<String, Any>, guildId: String?, channelId: String): Result<String> {
+        val session = gateway.currentSessionId ?: return Result.failure(java.io.IOException("Not connected"))
+        return rest.runCommand(command, options, guildId, channelId, session)
+    }
+
+    suspend fun pressComponent(message: DiscordMessage, componentType: Int, customId: String, values: List<String>?): Result<String> {
+        val session = gateway.currentSessionId ?: return Result.failure(java.io.IOException("Not connected"))
+        return rest.pressComponent(message, componentType, customId, values, message.guildId ?: channelGuildCache[message.channelId], session)
+    }
     suspend fun sendMessage(channelId: String, content: String): Result<DiscordMessage> {
         val result = rest.sendMessage(channelId, content)
         result.onSuccess { msg ->
@@ -758,12 +1134,15 @@ class DiscordRepository(token: String, private val context: Context? = null) {
     /** Everyone who reacted to a message with [reaction]'s emoji, normal and super reactions together. */
     suspend fun reactionUsers(channelId: String, messageId: String, reaction: Reaction): Result<List<DiscordUser>> {
         val key = reaction.emoji.apiKey
+        // Only the kinds this reaction has are asked for; it failed if every request that was made failed
+        // (a skipped request isn't a success, or a dead connection would look like "nobody reacted").
         val normal = if (reaction.count > reaction.burstCount || reaction.burstCount == 0)
-            rest.getReactionUsers(channelId, messageId, key) else Result.success(emptyList())
+            rest.getReactionUsers(channelId, messageId, key) else null
         val burst = if (reaction.burstCount > 0)
-            rest.getReactionUsers(channelId, messageId, key, burst = true) else Result.success(emptyList())
-        if (normal.isFailure && burst.isFailure) return normal
-        return Result.success((normal.getOrDefault(emptyList()) + burst.getOrDefault(emptyList())).distinctBy { it.id })
+            rest.getReactionUsers(channelId, messageId, key, burst = true) else null
+        val made = listOfNotNull(normal, burst)
+        made.firstOrNull { it.isFailure }?.takeIf { made.all { r -> r.isFailure } }?.let { return it }
+        return Result.success(made.flatMap { it.getOrDefault(emptyList()) }.distinctBy { it.id })
     }
 
     suspend fun sendFileAttachment(
@@ -847,6 +1226,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                     ?: return@update current
                 current + (channelId to list)
             }
+            syncPreview(channelId) { if (it.id == updated.id) updated else it }
         }
         return result
     }
@@ -859,6 +1239,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                     ?: return@update current
                 current + (channelId to list)
             }
+            syncPreview(channelId, deleted = setOf(messageId))
         }
         return result
     }
@@ -995,6 +1376,20 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                     }
 
                     is GatewayEvent.Ready -> {
+                        event.guilds.forEach { g ->
+                            g.myRoleIds?.let { myRolesByGuild[g.id] = it }
+                            g.ownerId?.let { guildOwnerCache[g.id] = it }
+                            if (g.roles.isNotEmpty()) guildRolesCache[g.id] = g.roles
+                            g.channels.forEach { ch ->
+                                channelGuildCache[ch.id] = g.id
+                                if (!channelNameCache.containsKey(ch.id)) channelNameCache[ch.id] = ch.name
+                            }
+                        }
+                        _notifySettings.value = event.notifySettings
+                        relationshipStore.set(event.relationships)
+                        memberListChannel.clear() // A new session has no subscriptions yet.
+                        _sessions.update { it + 1 }
+                        unread.onReady(event.user.id, event.guilds, event.notifySettings, event.readState.ifEmpty { _readState.value })
                         _currentUser.value = event.user
                         currentUserId = event.user.id
                         _voiceStates.value = event.voiceStates.filter { it.channelId != null }.associateBy(::voiceKey)
@@ -1016,8 +1411,52 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                         }
                     }
 
+                    is GatewayEvent.MessageAck -> {
+                        val acked = ChannelUnreadState(event.messageId, event.mentionCount)
+                        ackWatches.forEach { w ->
+                            if (event.channelId in w.channels) w.furthest.compute(event.channelId) { _, old -> furtherAck(old, acked) }
+                        }
+                        _readState.update { current ->
+                            val old = current[event.channelId]
+                            if (old != null && compareSnowflakes(event.messageId, old.lastMessageId) < 0) current
+                            else current + (event.channelId to ChannelUnreadState(event.messageId, event.mentionCount))
+                        }
+                        if (event.mentionCount == 0) _pings.update { list ->
+                            list.filterNot { it.message.channelId == event.channelId && compareSnowflakes(it.message.id, event.messageId) <= 0 }
+                        }
+                    }
+
+                    is GatewayEvent.MemberListUpdate -> memberListStore.apply(event)
+                    is GatewayEvent.RelationshipAdd -> relationshipStore.put(event.relationship)
+                    is GatewayEvent.RelationshipRemove -> relationshipStore.remove(event.userId)
+                    is GatewayEvent.SoundboardPlay -> _soundboardPlays.tryEmit(event)
+                    is GatewayEvent.InteractionResult -> _interactionResults.tryEmit(event)
+                    is GatewayEvent.GuildJoined -> {
+                        currentUser.value?.id?.let { me ->
+                            val wrapped = JSONObject().put("guilds", JSONArray().put(event.raw))
+                            ReadyParsing.guilds(wrapped, me).firstOrNull()?.let { g ->
+                                g.channels.forEach { ch -> channelGuildCache[ch.id] = g.id }
+                                unread.onGuildJoined(g, _readState.value)
+                            }
+                        }
+                        if (_guilds.value.none { it.id == event.guild.id }) {
+                            _guilds.update { it + event.guild }
+                            scope.launch { refreshGuilds() }
+                        }
+                    }
+                    is GatewayEvent.GuildLeft -> {
+                        _guilds.update { list -> list.filterNot { it.id == event.guildId } }
+                        unread.forgetGuild(event.guildId, _readState.value)
+                    }
+                    is GatewayEvent.NotifySettingsUpdate -> {
+                        _notifySettings.update { it + (event.guildId to event.settings) }
+                        unread.onSettings(event.guildId, event.settings, _readState.value)
+                    }
+
                     is GatewayEvent.MessageCreate -> {
                         val msg = event.message
+                        if (msg.author.id == currentUserId) typingDone(msg.channelId)
+                        unread.onMessage(msg.channelId, msg.id, _readState.value, msg.guildId)
                         userDisplayNames[msg.author.id] = msg.author.displayName
                         val myId = currentUserId
                         if (myId != null && msg.author.id == myId &&
@@ -1034,6 +1473,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                         }
                         val isDmChannel = _dmChannels.value.any { it.id == msg.channelId }
                         if (isDmChannel) {
+                            _lastMessages.update { it + (msg.channelId to msg) }
                             _dmChannels.update { channels ->
                                 channels.map { ch ->
                                     if (ch.id == msg.channelId &&
@@ -1076,6 +1516,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                             } ?: return@update current
                             current + (event.channelId to list)
                         }
+                        syncPreview(event.channelId) { if (it.id == event.id) mergeUpdate(it, event) else it }
                     }
 
                     is GatewayEvent.MessageDeleteBulk -> {
@@ -1084,6 +1525,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                                 ?: return@update current
                             current + (event.channelId to list)
                         }
+                        syncPreview(event.channelId, deleted = event.ids.toSet())
                     }
 
                     is GatewayEvent.ReactionRemoveAll -> {
@@ -1116,6 +1558,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                                 ?: return@update current
                             current + (event.channelId to list)
                         }
+                        syncPreview(event.channelId, deleted = setOf(event.id))
                     }
 
                     is GatewayEvent.ReactionAdd -> {
@@ -1187,6 +1630,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
                     is GatewayEvent.ChannelUpdate -> {
                         val ch = event.channel
+                        ch.guildId?.let { unread.onChannels(it, listOf(ch), _readState.value) }
                         channelCache[ch.id] = ch
                         channelNameCache[ch.id] = ch.displayName
                         if (ch.guildId != null) {
@@ -1203,6 +1647,7 @@ class DiscordRepository(token: String, private val context: Context? = null) {
                         channelNameCache.remove(ch.id)
                         channelGuildCache.remove(ch.id)
                         if (ch.guildId != null) {
+                            unread.onChannelDelete(ch.guildId, ch.id, _readState.value)
                             refreshGuildChannelsSoon(ch.guildId)
                         } else if (ch.isDm) {
                             scope.launch { refreshDmChannels() }
@@ -1233,17 +1678,27 @@ class DiscordRepository(token: String, private val context: Context? = null) {
         val raw = event.raw
         val full = event.message
         if (full != null) {
-            // Updates carry no reactions, and a poll only when it changed: keep the ones we have.
+            // Updates carry no reactions, and other fields only when they changed: keep the ones we have.
             return full.copy(
                 reactions = if (raw.has("reactions")) full.reactions else old.reactions,
                 poll = if (raw.has("poll")) full.poll else old.poll,
+                embeds = if (raw.has("embeds")) full.embeds else old.embeds,
+                components = if (raw.has("components")) full.components else old.components,
+                pinned = if (raw.has("pinned")) full.pinned else old.pinned,
+                flags = if (raw.has("flags")) full.flags else old.flags,
             )
         }
-        // Partial update, typically link previews arriving after the message was sent.
-        val embeds = raw.optJSONArray("embeds")?.let { arr ->
-            (0 until arr.length()).mapNotNull { i -> runCatching { Embed.fromJson(arr.getJSONObject(i)) }.getOrNull() }
+        // Partial update: link previews arriving after the message was sent, a bot changing its buttons, a pin.
+        var merged = old
+        raw.optJSONArray("embeds")?.let { arr ->
+            merged = merged.copy(embeds = (0 until arr.length()).mapNotNull { i -> runCatching { Embed.fromJson(arr.getJSONObject(i)) }.getOrNull() })
         }
-        return if (embeds != null) old.copy(embeds = embeds) else old
+        if (raw.has("components")) {
+            runCatching { MessageComponent.listFromJson(raw.optJSONArray("components")) }.getOrNull()?.let { merged = merged.copy(components = it) }
+        }
+        if (raw.has("pinned")) merged = merged.copy(pinned = raw.optBoolean("pinned"))
+        if (raw.has("flags")) merged = merged.copy(flags = raw.optInt("flags"))
+        return merged
     }
 
 
@@ -1275,6 +1730,59 @@ class DiscordRepository(token: String, private val context: Context? = null) {
 
     init {
         _dmChannels.value = loadCachedDmChannels()
+        scope.launch {
+            @OptIn(kotlinx.coroutines.FlowPreview::class)
+            _readState.debounce(300).collect { unread.recompute(it) }
+        }
+    }
+
+    /** Forgets what's kept on disk for offline reading (log-out). */
+    fun clearOfflineCache() = messageCache.clear()
+
+    /**
+     * Fills the repository with sample data, as if it had connected, for the screenshot tests. The app
+     * never calls this.
+     */
+    internal fun seedForTests(
+        user: DiscordUser,
+        guilds: List<Guild> = emptyList(),
+        dms: List<Channel> = emptyList(),
+        channels: Map<String, List<CategoryGroup>> = emptyMap(),
+        messages: Map<String, List<DiscordMessage>> = emptyMap(),
+        readState: Map<String, ChannelUnreadState> = emptyMap(),
+        presences: List<UserPresence> = emptyList(),
+        voiceStates: List<VoiceState> = emptyList(),
+        folders: List<GuildFolder> = emptyList(),
+        relationships: List<Relationship> = emptyList(),
+    ) {
+        _currentUser.value = user
+        currentUserId = user.id
+        _guilds.value = guilds
+        _dmChannels.value = dms
+        _guildFolders.value = folders
+        _guildChannelsMap.value = channels
+        (dms + channels.values.flatten().flatMap { it.channels }).forEach { ch ->
+            channelCache[ch.id] = ch
+            channelNameCache[ch.id] = ch.displayName
+            ch.guildId?.let { channelGuildCache[ch.id] = it }
+        }
+        _channelNames.value = channelNameCache.toMap()
+        _channelGuilds.value = channelGuildCache.toMap()
+        messages.values.flatten().forEach { userDisplayNames[it.author.id] = it.author.displayName }
+        _messages.value = messages
+        loadedChannels.addAll(messages.keys)
+        _lastMessages.value = messages.mapNotNull { (id, list) -> list.lastOrNull()?.let { id to it } }.toMap()
+        _readState.value = readState
+        _presences.value = presences.associateBy { it.userId }
+        _voiceStates.value = voiceStates.filter { it.channelId != null }.associateBy(::voiceKey)
+        relationshipStore.set(relationships)
+        // Everyone can see every channel in the sample servers.
+        val everyone = { gid: String -> GuildRole(gid, "@everyone", 0, 0, Permissions.VIEW_CHANNEL) }
+        unread.onReady(
+            user.id,
+            channels.map { (gid, groups) -> ReadyGuild(gid, null, groups.flatMap { it.channels }, listOf(everyone(gid)), emptyList()) },
+            emptyMap(), readState
+        )
     }
 }
 
@@ -1283,6 +1791,28 @@ class DiscordRepository(token: String, private val context: Context? = null) {
  * replaced by the page (so deletions while away disappear), older and newer ones are kept. Returns null if
  * [held] doesn't reach the page (more than a page was missed), in which case the caller should start over.
  */
+/** Where a failed mark-read goes back to: [state] (null: no read state), keeping pings up to [pingFloor] cleared. */
+internal data class Rollback(val state: ChannelUnreadState?, val pingFloor: String?)
+
+/** Of two reads Discord reported, the one further on; for the same message the newer report (its mention count) wins. */
+internal fun furtherAck(old: ChannelUnreadState?, new: ChannelUnreadState): ChannelUnreadState =
+    if (old == null || compareSnowflakes(new.lastMessageId, old.lastMessageId) >= 0) new else old
+
+/**
+ * Undoing an optimistic mark-read to [set] that Discord refused. [before] is the state before it, [furthest]
+ * the furthest read Discord reported (another device) meanwhile. Null when that already covers [set]: it stands.
+ * Otherwise back to the further of [before] and that read, with that read's own mention count.
+ */
+internal fun rollbackFor(set: ChannelUnreadState, before: ChannelUnreadState?, furthest: ChannelUnreadState?): Rollback? {
+    if (furthest != null && compareSnowflakes(furthest.lastMessageId, set.lastMessageId) >= 0) return null
+    // At the same message as before, the report is newer, so its mention count wins.
+    val state = if (furthest != null && (before == null || compareSnowflakes(furthest.lastMessageId, before.lastMessageId) >= 0)) furthest else before
+    return Rollback(state, furthest?.lastMessageId)
+}
+
+/** Message flag for "@silent": shown, but no push or watch notification. */
+private const val SUPPRESS_NOTIFICATIONS_FLAG = 1 shl 12
+
 internal fun mergeLatestPage(held: List<DiscordMessage>, fetched: List<DiscordMessage>): List<DiscordMessage>? {
     if (held.isEmpty()) return fetched
     if (fetched.isEmpty()) return held

@@ -1,38 +1,78 @@
 package com.dihcord.app.screens
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
-import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
-import androidx.wear.compose.material3.*
-import com.dihcord.app.SetupPreferences
-import com.dihcord.app.api.Ping
-import com.dihcord.app.discordApp
-import com.dihcord.app.R
-import androidx.compose.ui.res.painterResource
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.ScrollAxisRange
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.horizontalScrollAxisRange
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
+import androidx.wear.compose.material3.*
+import androidx.wear.compose.material3.lazy.rememberTransformationSpec
+import androidx.wear.compose.material3.lazy.transformedHeight
+import com.dihcord.app.R
+import com.dihcord.app.SetupPreferences
+import com.dihcord.app.api.OnlineStatus
+import com.dihcord.app.api.compareSnowflakes
+import com.dihcord.app.discordApp
+import com.dihcord.app.voice.VoiceCall
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /** Jump target meaning "the first message after the read marker that mentions me". */
 const val JUMP_TO_FIRST_MENTION = "mention"
 
+/** A recent DM in the row of faces at the top of Home. */
+data class RecentDm(
+    val channelId: String,
+    val name: String,
+    val avatarUrl: String?,
+    val status: OnlineStatus?,
+    val mentionCount: Int,
+    val unread: Boolean,
+)
+
+/** A mention card on Home: who pinged, where, and what they said (when we have the message). */
+data class HomeMention(
+    val key: String,
+    val channelId: String,
+    val channelName: String,
+    val guildId: String?,
+    val guildName: String?,
+    val author: String?,
+    val avatarUrl: String?,
+    val preview: String?,
+    val timeMillis: Long?,
+    val count: Int,
+    /** The message to open at, or [JUMP_TO_FIRST_MENTION]. */
+    val jumpTo: String,
+) {
+    val isDm: Boolean get() = guildId == null
+}
 
 @Composable
 fun HomeScreen(
@@ -41,11 +81,11 @@ fun HomeScreen(
     onNavigateToWelcome: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onNavigateToChat: (channelId: String, channelName: String, guildId: String?, jumpTo: String?) -> Unit,
-    onOpenVoice: (call: com.dihcord.app.voice.VoiceCall) -> Unit = {}
+    onOpenVoice: (call: VoiceCall) -> Unit = {},
+    onOpenSaved: () -> Unit = {},
 ) {
     val voiceCall by com.dihcord.app.voice.VoiceManager.call.collectAsState()
     val context = LocalContext.current
-    val listState = rememberScalingLazyListState()
 
     LaunchedEffect(Unit) {
         if (!SetupPreferences.isSetupComplete(context)) {
@@ -58,8 +98,15 @@ fun HomeScreen(
     val readState by repo.readState.collectAsState()
     val dmChannels by repo.dmChannels.collectAsState()
     val guilds by repo.guilds.collectAsState()
+    val presences by repo.presences.collectAsState()
+    val lastMessages by repo.lastMessages.collectAsState()
+    val heldMessages by repo.messages.collectAsState()
+    val channelNames by repo.channelNames.collectAsState()
+    val channelGuilds by repo.channelGuilds.collectAsState()
+    val myId = repo.currentUser.collectAsState().value?.id
+    val relationships by repo.relationships.collectAsState()
+    val hiddenDms = remember { SetupPreferences.getHiddenDms(context) }
 
-    // Mention counts for badges
     val dmIds = remember(dmChannels) { dmChannels.map { it.id }.toSet() }
     val dmMentionCount = remember(readState, dmIds) {
         readState.entries.filter { it.key in dmIds }.sumOf { it.value.mentionCount }
@@ -68,24 +115,28 @@ fun HomeScreen(
         readState.entries.filter { it.key !in dmIds }.sumOf { it.value.mentionCount }
     }
 
-    val channelNames by repo.channelNames.collectAsState()
-
-    fun dismiss(channelId: String) {
-        repo.dismissMentions(channelId)
-        com.dihcord.app.Notifier.clear(context, channelId)
+    val recentDms = remember(dmChannels, readState, presences, hiddenDms) {
+        dmChannels
+            .filter { it.id !in hiddenDms }
+            .sortedByDescending { it.lastMessageId?.toLongOrNull() ?: 0L }
+            .take(3)
+            .map { dm ->
+                val oneToOne = dm.recipients.size == 1
+                val recipient = dm.recipients.firstOrNull()
+                val rs = readState[dm.id]
+                RecentDm(
+                    channelId = dm.id,
+                    name = dm.displayName,
+                    avatarUrl = if (oneToOne) recipient?.avatarUrl(64) else null,
+                    status = if (oneToOne) recipient?.let { presences[it.id]?.status } else null,
+                    mentionCount = rs?.mentionCount ?: 0,
+                    unread = dm.lastMessageId != null && rs != null && compareSnowflakes(dm.lastMessageId, rs.lastMessageId) > 0
+                )
+            }
     }
-    val channelGuilds by repo.channelGuilds.collectAsState()
+    val shownDmMentions = recentDms.sumOf { it.mentionCount }
 
-    data class MentionEntry(
-        val channelId: String,
-        val channelName: String,
-        val guildName: String?,
-        val count: Int,
-        val isDm: Boolean
-    )
-
-    // Fetch names for mentioned channels we haven't cached yet, once per distinct set
-    // (not from inside remember{}, which re-ran on every readState change).
+    // Fetch names for mentioned channels we haven't cached yet, once per distinct set.
     val uncachedMentionIds = remember(readState, channelNames) {
         readState.entries
             .filter { it.value.mentionCount > 0 && it.key !in channelNames }
@@ -96,44 +147,158 @@ fun HomeScreen(
         uncachedMentionIds.forEach { repo.ensureChannelCached(it) }
     }
 
-    val mentionEntries = remember(readState, dmIds, channelNames, channelGuilds, guilds) {
-        readState.entries
+    val mentions = remember(readState, pings, dmIds, channelNames, channelGuilds, guilds, heldMessages, lastMessages, myId, relationships) {
+        fun guildName(id: String?) = id?.let { gid -> guilds.firstOrNull { it.id == gid }?.name }
+        // Like the chat, which folds them: text from someone you blocked isn't shown here either.
+        fun preview(m: com.dihcord.app.api.DiscordMessage) =
+            if (relationships[m.author.id]?.isBlocked == true) "Blocked message" else messagePreview(m, myId, channelNames)
+        // The read-state counts (known from startup), with the message itself when we have it: a live ping,
+        // a held message that mentions us, or a DM's newest message.
+        val fromReadState = readState.entries
             .filter { it.value.mentionCount > 0 }
             .map { (channelId, state) ->
                 val isDm = channelId in dmIds
-                val chName = channelNames[channelId] ?: channelId
-                val guildId = channelGuilds[channelId]
-                val guildName = guildId?.let { id -> guilds.firstOrNull { it.id == id }?.name }
-                MentionEntry(channelId, chName, guildName, state.mentionCount, isDm)
+                val guildId = if (isDm) null else channelGuilds[channelId]
+                val msg = pings.firstOrNull { it.message.channelId == channelId }?.message
+                    ?: heldMessages[channelId]?.lastOrNull { myId != null && it.author.id != myId && it.pingFor(myId, repo.getMyRoles(guildId ?: "")) }
+                    ?: lastMessages[channelId]?.takeIf { isDm && it.author.id != myId }
+                HomeMention(
+                    key = "m$channelId",
+                    channelId = channelId,
+                    channelName = channelNames[channelId] ?: channelId,
+                    guildId = guildId,
+                    guildName = guildName(guildId),
+                    author = msg?.author?.displayName,
+                    avatarUrl = msg?.author?.avatarUrl(64),
+                    preview = msg?.let { preview(it) },
+                    timeMillis = snowflakeMillis(msg?.id),
+                    count = state.mentionCount,
+                    jumpTo = pings.firstOrNull { it.message.channelId == channelId }?.message?.id ?: JUMP_TO_FIRST_MENTION
+                )
             }
-            .sortedByDescending { it.count }
+        // Live pings that arrived after the last read-state sync.
+        val extra = pings
+            .filter { p -> fromReadState.none { it.channelId == p.message.channelId } }
+            .map { p ->
+                HomeMention(
+                    key = "p" + p.message.id,
+                    channelId = p.message.channelId,
+                    channelName = p.channelName,
+                    guildId = p.message.guildId,
+                    guildName = p.guildName,
+                    author = p.message.author.displayName,
+                    avatarUrl = p.message.author.avatarUrl(64),
+                    preview = preview(p.message),
+                    timeMillis = snowflakeMillis(p.message.id),
+                    count = 1,
+                    jumpTo = p.message.id
+                )
+            }
+        (fromReadState + extra).sortedByDescending { it.timeMillis ?: 0L }
     }
 
-    ScreenScaffold(scrollState = listState) {
-        ScalingLazyColumn(state = listState) {
+    fun dismiss(channelId: String) {
+        repo.dismissMentions(channelId)
+        com.dihcord.app.Notifier.clear(context, channelId)
+    }
 
-            item {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    ScreenTitle("Dihcord")
-                    PrideBar(Modifier.padding(bottom = 4.dp))
+    val unreadGuilds by repo.unreadGuilds.collectAsState()
+    var confirmMarkAll by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    if (confirmMarkAll) {
+        androidx.activity.compose.BackHandler { confirmMarkAll = false }
+        ConfirmScreen(
+            iconRes = R.drawable.check,
+            title = "Mark everything read?",
+            text = "Every server, channel and DM, here and on Discord.",
+            confirmLabel = "Mark read",
+            onConfirm = {
+                confirmMarkAll = false
+                scope.launch {
+                    repo.markAllRead().onFailure {
+                        android.widget.Toast.makeText(context, "Couldn't mark everything read. " + friendlyError(it), android.widget.Toast.LENGTH_SHORT).show()
+                    }
                 }
-            }
+            },
+            onCancel = { confirmMarkAll = false }
+        )
+        return
+    }
 
-            voiceCall?.takeIf { com.dihcord.app.voice.VoiceManager.isInCall }?.let { call ->
+    HomeContent(
+        voiceCall = voiceCall?.takeIf { com.dihcord.app.voice.VoiceManager.isInCall },
+        recentDms = recentDms,
+        otherDmMentions = (dmMentionCount - shownDmMentions).coerceAtLeast(0),
+        mentions = mentions,
+        serverMentionCount = serverMentionCount,
+        onOpenVoice = onOpenVoice,
+        onOpenDm = { onNavigateToChat(it.channelId, it.name, null, null) },
+        onOpenDms = onNavigateToDms,
+        onOpenServers = onNavigateToServers,
+        onOpenMention = { onNavigateToChat(it.channelId, it.channelName, it.guildId, it.jumpTo) },
+        onDismissMention = { dismiss(it.channelId) },
+        onOpenSettings = onNavigateToSettings,
+        onOpenSaved = onOpenSaved,
+        onMarkAllRead = if (mentions.isNotEmpty() || unreadGuilds.isNotEmpty() || recentDms.any { it.unread }) ({ confirmMarkAll = true }) else null,
+    )
+}
+
+/** Home, drawn from plain data (so the screenshot tests can show it without a Discord connection). */
+@Composable
+internal fun HomeContent(
+    voiceCall: VoiceCall?,
+    recentDms: List<RecentDm>,
+    otherDmMentions: Int,
+    mentions: List<HomeMention>,
+    serverMentionCount: Int,
+    onOpenVoice: (VoiceCall) -> Unit,
+    onOpenDm: (RecentDm) -> Unit,
+    onOpenDms: () -> Unit,
+    onOpenServers: () -> Unit,
+    onOpenMention: (HomeMention) -> Unit,
+    onDismissMention: (HomeMention) -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenSaved: () -> Unit = {},
+    /** Shown when there's something unread. */
+    onMarkAllRead: (() -> Unit)? = null,
+) {
+    val state = rememberTransformingLazyColumnState()
+    val spec = rememberTransformationSpec()
+    val pride = com.dihcord.app.AppTheme.preset.isPride
+    ScreenScaffold(
+        scrollState = state,
+        edgeButton = {
+            EdgeButton(onClick = onOpenServers) {
+                // A badge gets squashed in the curved button; the count reads fine as text (then without the icon, to fit).
+                if (serverMentionCount == 0) {
+                    Icon(painterResource(R.drawable.servers), contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                }
+                Text(
+                    if (serverMentionCount > 0) "Servers · ${if (serverMentionCount > 99) "99+" else serverMentionCount}" else "Servers",
+                    maxLines = 1
+                )
+            }
+        }
+    ) { padding ->
+        TransformingLazyColumn(state = state, contentPadding = padding) {
+            if (pride) item { PrideBar(Modifier.padding(bottom = 2.dp)) }
+
+            item { RecentDmRow(recentDms, otherDmMentions, onOpenDm, onOpenDms) }
+
+            voiceCall?.let { call ->
                 item {
                     Button(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().transformedHeight(this, spec),
+                        transformation = SurfaceTransformation(spec),
                         onClick = { onOpenVoice(call) },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = androidx.compose.ui.graphics.Color(0xFF23A55A),
-                            contentColor = androidx.compose.ui.graphics.Color.White
-                        ),
+                        colors = ButtonDefaults.buttonColors(containerColor = DiscordColors.Online, contentColor = Color.White),
                         icon = { Icon(painterResource(R.drawable.speaker), null, Modifier.size(18.dp)) },
-                        label = { Text(call.channelName, maxLines = 1) },
+                        label = { Text(call.channelName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         secondaryLabel = {
                             Text(
                                 when {
-                                    call.status == com.dihcord.app.voice.VoiceCall.Status.CONNECTING -> "Connecting…"
+                                    call.status == VoiceCall.Status.CONNECTING -> "Connecting…"
                                     call.deafened -> "Deafened"
                                     call.muted -> "Muted"
                                     else -> "Voice connected"
@@ -146,136 +311,160 @@ fun HomeScreen(
             }
 
             item {
-                Box {
-                    Button(
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = onNavigateToDms,
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) { Text("Direct Messages") }
-                    if (dmMentionCount > 0) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(top = 2.dp, end = 2.dp)
-                                .defaultMinSize(minWidth = 18.dp, minHeight = 18.dp)
-                                .background(
-                                    androidx.compose.ui.graphics.Color(0xFFF23F43),
-                                    androidx.compose.foundation.shape.CircleShape
-                                )
-                                .padding(horizontal = 4.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = if (dmMentionCount > 99) "99+" else dmMentionCount.toString(),
-                                color = androidx.compose.ui.graphics.Color.White,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
+                Text(
+                    "Mentions",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.primary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp)
+                )
             }
-
-            item {
-                Box {
-                    Button(
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = onNavigateToServers,
-                        colors = ButtonDefaults.filledTonalButtonColors()
-                    ) { Text("Servers") }
-                    if (serverMentionCount > 0) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(top = 2.dp, end = 2.dp)
-                                .defaultMinSize(minWidth = 18.dp, minHeight = 18.dp)
-                                .background(
-                                    androidx.compose.ui.graphics.Color(0xFFF23F43),
-                                    androidx.compose.foundation.shape.CircleShape
-                                )
-                                .padding(horizontal = 4.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = if (serverMentionCount > 99) "99+" else serverMentionCount.toString(),
-                                color = androidx.compose.ui.graphics.Color.White,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (mentionEntries.isNotEmpty() || pings.isNotEmpty()) {
-                item {
-                    Text(
-                        text = "@  Mentions",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                        modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
-                    )
-                }
-                // readState-derived cards (visible from startup)
-                // Swipe a card sideways to clear it; tap it to open the chat at the mention.
-                items(mentionEntries.size, key = { "m" + mentionEntries[it].channelId }) { index ->
-                    val entry = mentionEntries[index]
-                    SwipeAway(onDismiss = { dismiss(entry.channelId) }) {
-                        MentionCard(
-                            title = if (entry.isDm) entry.channelName else "#${entry.channelName}",
-                            subtitle = if (entry.isDm) "Direct message" else entry.guildName ?: "Server",
-                            count = entry.count,
-                            onClick = {
-                                // The newest live ping there is the exact message; otherwise find the first
-                                // message after the read marker that mentions us.
-                                val ping = pings.firstOrNull { it.message.channelId == entry.channelId }
-                                onNavigateToChat(
-                                    entry.channelId,
-                                    entry.channelName,
-                                    if (entry.isDm) null else channelGuilds[entry.channelId],
-                                    ping?.message?.id ?: JUMP_TO_FIRST_MENTION
-                                )
-                            }
+            if (mentions.isEmpty()) {
+                item { EmptyState(R.drawable.chat, "You're all caught up", "Pings for you show up here.") }
+            } else {
+                items(mentions.size, key = { mentions[it].key }) { index ->
+                    val mention = mentions[index]
+                    SwipeAway(onDismiss = { onDismissMention(mention) }) {
+                        MentionPreviewCard(
+                            mention = mention,
+                            modifier = Modifier.transformedHeight(this, spec),
+                            transformation = SurfaceTransformation(spec),
+                            onClick = { onOpenMention(mention) }
                         )
                     }
                 }
-                // live gateway pings not yet in readState (e.g. arrived after last ack)
-                val extraPings = pings.filter { p -> mentionEntries.none { it.channelId == p.message.channelId } }
-                items(extraPings.size, key = { "p" + extraPings[it].message.id }) { index ->
-                    val ping = extraPings[index]
-                    SwipeAway(onDismiss = { dismiss(ping.message.channelId) }) {
-                        PingCard(ping = ping, onClick = {
-                            onNavigateToChat(
-                                ping.message.channelId,
-                                ping.channelName,
-                                ping.message.guildId,
-                                ping.message.id
-                            )
-                        })
+            }
+
+            item {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                ) {
+                    FilledTonalIconButton(onClick = onOpenSaved, modifier = Modifier.size(40.dp)) {
+                        Icon(painterResource(R.drawable.bookmark_border), contentDescription = "Saved messages", modifier = Modifier.size(20.dp))
+                    }
+                    FilledTonalIconButton(onClick = onOpenSettings, modifier = Modifier.size(40.dp)) {
+                        Icon(painterResource(R.drawable.settings), contentDescription = "Settings", modifier = Modifier.size(20.dp))
+                    }
+                    if (onMarkAllRead != null) {
+                        FilledTonalIconButton(onClick = onMarkAllRead, modifier = Modifier.size(40.dp)) {
+                            Icon(painterResource(R.drawable.check), contentDescription = "Mark everything read", modifier = Modifier.size(20.dp))
+                        }
                     }
                 }
-            } else {
-                item {
+            }
+        }
+    }
+}
+
+/** Up to three recent DMs as faces with their first name under them, then a button for the full list. */
+@Composable
+private fun RecentDmRow(dms: List<RecentDm>, otherMentions: Int, onOpen: (RecentDm) -> Unit, onOpenAll: () -> Unit) {
+    Row(
+        // Pushed down a little: the screen is too narrow near the top for four faces.
+        Modifier.fillMaxWidth().padding(top = 10.dp),
+        horizontalArrangement = Arrangement.Center
+    ) {
+        dms.forEach { dm ->
+            FaceButton(label = dm.name.substringBefore(' '), onClick = { onOpen(dm) }) {
+                // The ring only ever means status; new messages are the badge or the dot.
+                UserAvatar(dm.name, dm.avatarUrl, 36.dp, ring = dm.status?.ringColor())
+                if (dm.mentionCount > 0) CountBadge(dm.mentionCount, Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp))
+                else if (dm.unread) UnreadDot(Modifier.align(Alignment.TopEnd))
+            }
+        }
+        FaceButton(label = "All", onClick = onOpenAll, description = "All direct messages") {
+            Box(
+                Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(painterResource(R.drawable.chat), null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurface)
+            }
+            if (otherMentions > 0) CountBadge(otherMentions, Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp))
+        }
+    }
+}
+
+@Composable
+private fun FaceButton(
+    label: String,
+    onClick: () -> Unit,
+    description: String = label,
+    face: @Composable BoxScope.() -> Unit
+) {
+    Column(
+        Modifier
+            .width(42.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .semantics { contentDescription = description }
+            .padding(vertical = 2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center, content = face)
+        Text(
+            label,
+            fontSize = 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+/** A mention: who and when on top, what they said under it, and where (for servers) at the bottom. */
+@Composable
+private fun MentionPreviewCard(
+    mention: HomeMention,
+    modifier: Modifier,
+    transformation: SurfaceTransformation,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        transformation = transformation,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            UserAvatar(mention.author ?: mention.channelName, mention.avatarUrl, 24.dp)
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "No mentions yet.",
-                        style = MaterialTheme.typography.bodySmall,
+                        mention.author ?: if (mention.isDm) mention.channelName else "#${mention.channelName}",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    mention.timeMillis?.let {
+                        Text(
+                            " · " + shortAgo(it),
+                            style = MaterialTheme.typography.labelSmall.merge(TabularNumbers),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                }
+                Text(
+                    mention.preview ?: if (mention.count == 1) "1 mention" else "${mention.count} mentions",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (mention.preview != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (!mention.isDm) {
+                    Text(
+                        "#${mention.channelName}" + (mention.guildName?.let { " · $it" } ?: ""),
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp)
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
-            item {
-                FilledIconButton(
-                    onClick = onNavigateToSettings,
-                    modifier = Modifier
-                        .height(40.dp)
-                        .width(40.dp),
-                ) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.settings),
-                        contentDescription = "Settings"
-                    )
-                }
-            }
+            if (mention.count > 1) CountBadge(mention.count)
         }
     }
 }
@@ -313,79 +502,4 @@ internal fun SwipeAway(onDismiss: () -> Unit, content: @Composable () -> Unit) {
             .offset { IntOffset(offset.value.roundToInt(), 0) }
             .graphicsLayer { alpha = 1f - (kotlin.math.abs(offset.value) / width).coerceIn(0f, 0.8f) }
     ) { content() }
-}
-
-@Composable
-private fun MentionCard(title: String, subtitle: String, count: Int, onClick: () -> Unit) {
-    TitleCard(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = onClick,
-        title = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    text = if (count > 99) "99+" else "$count",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = androidx.compose.ui.graphics.Color(0xFFF23F43),
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-    ) {
-        Text(
-            text = subtitle,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-        )
-    }
-}
-
-@Composable
-private fun PingCard(ping: Ping, onClick: () -> Unit) {
-    val location = if (ping.guildName != null) "${ping.guildName} • #${ping.channelName}"
-    else "DM • ${ping.channelName}"
-
-    TitleCard(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = onClick,
-        title = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = ping.message.author.displayName,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    text = location,
-                    style = MaterialTheme.typography.bodyExtraSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                )
-            }
-        }
-    ) {
-        Text(
-            text = ping.message.content.take(80),
-            style = MaterialTheme.typography.bodySmall
-        )
-    }
 }
