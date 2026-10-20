@@ -353,7 +353,7 @@ private fun MenuActionButton(action: MenuAction) {
             colors = if (action.destructive) androidx.wear.compose.material3.IconButtonDefaults.filledTonalIconButtonColors(
                 containerColor = MaterialTheme.colorScheme.errorContainer,
                 contentColor = MaterialTheme.colorScheme.onErrorContainer
-            ) else androidx.wear.compose.material3.IconButtonDefaults.filledTonalIconButtonColors()
+            ) else tonalIconButtonColors()
         ) {
             Icon(
                 painter = painterResource(action.iconRes),
@@ -430,7 +430,7 @@ fun ConfirmScreen(
                 )
             }
             Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                FilledTonalIconButton(onClick = onCancel, modifier = Modifier.size(52.dp)) {
+                FilledTonalIconButton(colors = tonalIconButtonColors(), onClick = onCancel, modifier = Modifier.size(52.dp)) {
                     Icon(painterResource(R.drawable.close), "Cancel", Modifier.size(22.dp))
                 }
                 androidx.wear.compose.material3.FilledIconButton(

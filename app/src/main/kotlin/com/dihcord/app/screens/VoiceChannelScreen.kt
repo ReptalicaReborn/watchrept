@@ -406,13 +406,13 @@ internal fun VoiceChannelContent(
             is VoiceMode.Active -> CallControls(Modifier.align(Alignment.BottomCenter)) {
                 if (stage?.listening == true) FilledIconButton(
                     onClick = { onRequestSpeak(!stage.requested) },
-                    colors = if (stage.requested) IconButtonDefaults.filledIconButtonColors() else IconButtonDefaults.filledTonalIconButtonColors(),
+                    colors = if (stage.requested) IconButtonDefaults.filledIconButtonColors() else tonalIconButtonColors(),
                     modifier = Modifier.padding(bottom = 10.dp).size(44.dp)
                 ) {
                     Icon(painterResource(R.drawable.hand), if (stage.requested) "Take back request to speak" else "Ask to speak")
                 } else FilledIconButton(
                     onClick = onToggleMute,
-                    colors = if (mode.muted) altIconButtonColors() else IconButtonDefaults.filledTonalIconButtonColors(),
+                    colors = if (mode.muted) altIconButtonColors() else tonalIconButtonColors(),
                     modifier = Modifier.padding(bottom = 10.dp).size(44.dp)
                 ) {
                     Icon(
@@ -429,7 +429,7 @@ internal fun VoiceChannelContent(
                 }
                 FilledIconButton(
                     onClick = onToggleDeafen,
-                    colors = if (mode.deafened) altIconButtonColors() else IconButtonDefaults.filledTonalIconButtonColors(),
+                    colors = if (mode.deafened) altIconButtonColors() else tonalIconButtonColors(),
                     modifier = Modifier.padding(bottom = 10.dp).size(44.dp)
                 ) {
                     Icon(

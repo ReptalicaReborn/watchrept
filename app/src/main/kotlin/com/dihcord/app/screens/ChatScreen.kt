@@ -1048,7 +1048,7 @@ fun ChatScreen(
                         ) {
                             @Composable
                             fun Shortcut(icon: Int, label: String, tint: Color? = null, onClick: () -> Unit) {
-                                FilledTonalIconButton(onClick = onClick, modifier = Modifier.size(32.dp)) {
+                                FilledTonalIconButton(colors = tonalIconButtonColors(), onClick = onClick, modifier = Modifier.size(32.dp)) {
                                     Icon(painterResource(icon), label, Modifier.size(16.dp), tint = tint ?: LocalContentColor.current)
                                 }
                             }
@@ -1403,6 +1403,7 @@ fun ChatScreen(
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     FilledTonalIconButton(
+                                        colors = tonalIconButtonColors(),
                                         onClick = {
                                             reactingToMsg = null
                                             showPicker = true
@@ -1418,6 +1419,7 @@ fun ChatScreen(
                                         )
                                     }
                                     if (abilities.canAttach) FilledTonalIconButton(
+                                        colors = tonalIconButtonColors(),
                                         onClick = {
                                             val perm = if (android.os.Build.VERSION.SDK_INT >= 33)
                                                 Manifest.permission.READ_MEDIA_IMAGES
@@ -1442,6 +1444,7 @@ fun ChatScreen(
                                         )
                                     }
                                     if (abilities.canSendVoice) FilledTonalIconButton(
+                                        colors = tonalIconButtonColors(),
                                         onClick = { startRecording() },
                                         modifier = Modifier
                                             .size(36.dp),
@@ -1453,12 +1456,14 @@ fun ChatScreen(
                                         )
                                     }
                                     FilledTonalIconButton(
+                                        colors = tonalIconButtonColors(),
                                         onClick = { showGifPicker = true },
                                         modifier = Modifier.size(36.dp),
                                     ) {
                                         Text("GIF", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                     }
                                     FilledTonalIconButton(
+                                        colors = tonalIconButtonColors(),
                                         onClick = { showMore = true },
                                         modifier = Modifier.size(36.dp),
                                     ) {

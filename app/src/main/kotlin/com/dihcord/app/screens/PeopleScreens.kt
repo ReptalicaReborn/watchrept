@@ -173,7 +173,7 @@ internal fun FriendsContent(
                             colors = IconButtonDefaults.filledIconButtonColors(containerColor = DiscordColors.Online)) {
                             Icon(painterResource(R.drawable.check), "Accept", Modifier.size(18.dp))
                         }
-                        FilledTonalIconButton(onClick = { onRemove(u) }, enabled = busy == null, modifier = Modifier.size(34.dp)) {
+                        FilledTonalIconButton(colors = tonalIconButtonColors(), onClick = { onRemove(u) }, enabled = busy == null, modifier = Modifier.size(34.dp)) {
                             Icon(painterResource(R.drawable.close), "Decline", Modifier.size(16.dp))
                         }
                     }
@@ -184,7 +184,7 @@ internal fun FriendsContent(
                 items(outgoing.size, key = { "out" + outgoing[it].id }) { i ->
                     val u = outgoing[i]
                     RequestRow(u, "Waiting for them", busy == u.id, Modifier.transformedHeight(this, spec)) {
-                        FilledTonalIconButton(onClick = { onRemove(u) }, enabled = busy == null, modifier = Modifier.size(34.dp)) {
+                        FilledTonalIconButton(colors = tonalIconButtonColors(), onClick = { onRemove(u) }, enabled = busy == null, modifier = Modifier.size(34.dp)) {
                             Icon(painterResource(R.drawable.close), "Cancel request", Modifier.size(16.dp))
                         }
                     }

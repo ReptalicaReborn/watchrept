@@ -340,14 +340,14 @@ internal fun HomeContent(
                     Modifier.fillMaxWidth().padding(top = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
                 ) {
-                    FilledTonalIconButton(onClick = onOpenSaved, modifier = Modifier.size(40.dp)) {
+                    FilledTonalIconButton(colors = tonalIconButtonColors(), onClick = onOpenSaved, modifier = Modifier.size(40.dp)) {
                         Icon(painterResource(R.drawable.bookmark_border), contentDescription = "Saved messages", modifier = Modifier.size(20.dp))
                     }
-                    FilledTonalIconButton(onClick = onOpenSettings, modifier = Modifier.size(40.dp)) {
+                    FilledTonalIconButton(colors = tonalIconButtonColors(), onClick = onOpenSettings, modifier = Modifier.size(40.dp)) {
                         Icon(painterResource(R.drawable.settings), contentDescription = "Settings", modifier = Modifier.size(20.dp))
                     }
                     if (onMarkAllRead != null) {
-                        FilledTonalIconButton(onClick = onMarkAllRead, modifier = Modifier.size(40.dp)) {
+                        FilledTonalIconButton(colors = tonalIconButtonColors(), onClick = onMarkAllRead, modifier = Modifier.size(40.dp)) {
                             Icon(painterResource(R.drawable.check), contentDescription = "Mark everything read", modifier = Modifier.size(20.dp))
                         }
                     }

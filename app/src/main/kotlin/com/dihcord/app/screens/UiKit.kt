@@ -152,3 +152,15 @@ fun altIconButtonColors(): IconButtonColors =
         containerColor = MaterialTheme.colorScheme.secondary,
         contentColor = MaterialTheme.colorScheme.onSecondary
     ) else IconButtonDefaults.filledIconButtonColors()
+
+/**
+ * Colours for filled tonal icon buttons. The stock ones put the primary colour on a near-black container, which is
+ * unreadable with darker accents (Blurple, Crimson, Bi...), so themes get a lighter container and a pale accent tint.
+ */
+@Composable
+fun tonalIconButtonColors(): IconButtonColors =
+    if (AppTheme.preset.accent == null) IconButtonDefaults.filledTonalIconButtonColors()
+    else IconButtonDefaults.filledTonalIconButtonColors(
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+    )
