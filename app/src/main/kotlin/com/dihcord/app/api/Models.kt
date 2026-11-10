@@ -1305,6 +1305,17 @@ data class Poll(
 
     fun isClosed(now: Long = System.currentTimeMillis()): Boolean = finalized || (expiryMillis?.let { now >= it } ?: false)
 
+    /** [answer]'s share of all votes, 0..100. */
+    fun percentOf(answer: PollAnswer): Int =
+        if (totalVotes > 0) Math.round(answer.count * 100f / totalVotes) else 0
+
+    /** The answer(s) with the most votes; empty while nobody has voted. More than one means a tie. */
+    val leaders: Set<Int>
+        get() {
+            val top = answers.maxOfOrNull { it.count } ?: 0
+            return if (top <= 0) emptySet() else answers.filter { it.count == top }.mapTo(HashSet()) { it.id }
+        }
+
     /** Applies a vote event: one vote added to / removed from [answerId], [mine] when it was the current user's. */
     fun withVote(answerId: Int, add: Boolean, mine: Boolean): Poll = copy(answers = answers.map { a ->
         if (a.id != answerId) a else a.copy(
@@ -1354,4 +1365,66 @@ data class Poll(
             )
         }
     }
+}
+
+/** What a "poll ended" message (type 46) says, read from its `poll_result` embed. */
+data class PollResult(
+    val question: String,
+    /** Null when nobody voted or the poll ended in a tie. */
+    val winnerText: String?,
+    val winnerEmoji: String?,
+    val winnerVotes: Int,
+    val totalVotes: Int,
+) {
+    val summary: String
+        get() = when {
+            totalVotes == 0 -> "No votes"
+            winnerText == null && winnerEmoji == null -> "It's a tie \u00B7 " + votes(totalVotes)
+            else -> listOfNotNull(winnerEmoji, winnerText).joinToString(" ") +
+                " won \u00B7 " + Math.round(winnerVotes * 100f / totalVotes) + "% of " + votes(totalVotes)
+        }
+
+    private fun votes(n: Int) = if (n == 1) "1 vote" else "$n votes"
+
+    companion object {
+        fun from(msg: DiscordMessage): PollResult? {
+            val embed = msg.embeds.firstOrNull { it.type == "poll_result" } ?: return null
+            val f = embed.fields.associate { it.name to it.value }
+            return PollResult(
+                question = f["poll_question_text"].orEmpty(),
+                winnerText = f["victor_answer_text"]?.takeIf { it.isNotBlank() },
+                // A custom emoji has an id and can't be shown as text; its name alone would read as a stray word.
+                winnerEmoji = f["victor_answer_emoji_name"]?.takeIf { it.isNotBlank() && f["victor_answer_emoji_id"].isNullOrBlank() },
+                winnerVotes = f["victor_answer_votes"]?.toIntOrNull() ?: 0,
+                totalVotes = f["total_votes"]?.toIntOrNull() ?: 0,
+            )
+        }
+    }
+}
+
+/** Written by Discord rather than typed by someone: shown as one line, see [systemText]. */
+val DiscordMessage.isSystem: Boolean get() = type in 1..12 || type == 18 || type == 46
+
+/**
+ * The line Discord shows in place of a bubble for messages it writes itself (someone joined, pinned a message,
+ * boosted, a poll ended...), or null for ordinary messages. [author] and [target] are the names to show for
+ * the author and the first mentioned user.
+ */
+fun DiscordMessage.systemText(author: String, target: String? = null): String? = when (type) {
+    1 -> "$author added ${target ?: "someone"} to the group"
+    2 -> if (mentionedUsers.firstOrNull()?.id == this.author.id || target == null) "$author left the group"
+         else "$author removed $target from the group"
+    3 -> "$author started a call"
+    4 -> "$author renamed the group" + if (content.isNotBlank()) ": $content" else ""
+    5 -> "$author changed the group icon"
+    6 -> "$author pinned a message"
+    7 -> "$author joined the server"
+    8 -> "$author boosted the server"
+    9, 10, 11 -> "$author boosted the server. It reached Level ${type - 8}!"
+    12 -> "$author added $content to this channel"
+    18 -> "$author started a thread" + if (content.isNotBlank()) ": $content" else ""
+    46 -> PollResult.from(this)?.let { r ->
+        "$author's poll" + (if (r.question.isNotBlank()) " \u201C${r.question}\u201D" else "") + " ended \u00B7 ${r.summary}"
+    } ?: "$author's poll ended"
+    else -> null
 }

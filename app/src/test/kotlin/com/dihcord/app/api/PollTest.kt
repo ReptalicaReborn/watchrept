@@ -44,4 +44,52 @@ class PollTest {
         assertEquals(1, poll.answers[1].count)
         assertFalse(poll.answers[1].meVoted)
     }
+
+    @Test
+    fun `percentages and leaders`() {
+        val poll = Poll.fromJson(json).withVote(2, add = true, mine = false)
+        assertEquals(75, poll.percentOf(poll.answers[0]))
+        assertEquals(25, poll.percentOf(poll.answers[1]))
+        assertEquals(setOf(1), poll.leaders)
+        // A tie has more than one leader; no votes has none.
+        assertEquals(setOf(1, 2), poll.withVote(2, true, false).withVote(2, true, false).leaders)
+        val empty = poll.copy(answers = poll.answers.map { it.copy(count = 0) })
+        assertEquals(emptySet<Int>(), empty.leaders)
+        assertEquals(0, empty.percentOf(empty.answers[0]))
+    }
+
+    private fun system(type: Int, content: String = "", extra: String = "") = DiscordMessage.fromJson(
+        JSONObject(
+            """{"id":"1","channel_id":"2","type":$type,"content":"$content","timestamp":"2024-01-01T00:00:00+00:00",
+                "author":{"id":"9","username":"anna","discriminator":"0","global_name":"Anna"}$extra}"""
+        )
+    )
+
+    @Test
+    fun `system messages read as one line`() {
+        assertEquals("Annie joined the server", system(7).systemText("Annie"))
+        assertEquals("Anna pinned a message", system(6).systemText("Anna"))
+        assertEquals("Anna boosted the server. It reached Level 2!", system(10).systemText("Anna"))
+        assertEquals("Anna started a thread: plans", system(18, "plans").systemText("Anna"))
+        assertTrue(system(7).isSystem)
+        // Ordinary messages and replies keep their bubble.
+        assertEquals(null, system(0, "hello").systemText("Anna"))
+        assertEquals(null, system(19, "hello").systemText("Anna"))
+        assertFalse(system(19).isSystem)
+    }
+
+    @Test
+    fun `poll result message names the winner`() {
+        fun fields(vararg f: Pair<String, String>) = f.joinToString(",") { """{"name":"${it.first}","value":"${it.second}"}""" }
+        val won = system(46, extra = ""","embeds":[{"type":"poll_result","fields":[${fields(
+            "poll_question_text" to "Pizza?", "victor_answer_text" to "Yes", "victor_answer_votes" to "3", "total_votes" to "4"
+        )}]}]""")
+        assertEquals("Anna's poll \u201CPizza?\u201D ended \u00B7 Yes won \u00B7 75% of 4 votes", won.systemText("Anna"))
+        val tie = system(46, extra = ""","embeds":[{"type":"poll_result","fields":[${fields(
+            "poll_question_text" to "Pizza?", "victor_answer_votes" to "2", "total_votes" to "4"
+        )}]}]""")
+        assertEquals("Anna's poll \u201CPizza?\u201D ended \u00B7 It's a tie \u00B7 4 votes", tie.systemText("Anna"))
+        val none = system(46, extra = ""","embeds":[{"type":"poll_result","fields":[${fields("poll_question_text" to "Pizza?", "total_votes" to "0")}]}]""")
+        assertEquals("Anna's poll \u201CPizza?\u201D ended \u00B7 No votes", none.systemText("Anna"))
+    }
 }

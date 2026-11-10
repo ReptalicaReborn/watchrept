@@ -42,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.Color
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -167,6 +168,9 @@ fun ChatScreen(
     val roleColorCache = remember { mutableStateMapOf<String, GuildRole?>() }
     val roleIconCache = remember { mutableStateMapOf<String, GuildRole?>() }
     val guildMemberCache = remember { mutableStateMapOf<String, GuildMember?>() }
+    // Server nicknames ("guildId:userId" -> nick); in a server they replace the account's display name.
+    val nicks by repo.nicks.collectAsState()
+    fun nameOf(user: DiscordUser): String = guildId?.let { nicks["$it:${user.id}"] } ?: user.displayName
     val roleNames = remember(guildId, loading) { mutableStateMapOf<String, String>() }
     // Same map instance until a name actually changes: it is a remember key for every bubble's parsed markdown.
     val publishedChannelNames by repo.channelNames.collectAsState()
@@ -185,6 +189,10 @@ fun ChatScreen(
 
     LaunchedEffect(messages, guildId, loading) {
         if (!loading && guildId != null) {
+            // Authors are looked up one by one below; people only mentioned or replied to are asked for together.
+            repo.loadNicks(guildId, messages.flatMapTo(HashSet()) { m ->
+                m.mentionedUsers.map { it.id } + listOfNotNull(m.referencedMessage?.author?.id)
+            })
             messages
                 .map { it.author.id }
                 .distinct()
@@ -334,6 +342,7 @@ fun ChatScreen(
     var uploadError by remember { mutableStateOf("") }
     var showPhotoPicker by remember { mutableStateOf(false) }
     var reactorsFor by remember { mutableStateOf<Pair<String, Reaction>?>(null) }
+    var pollVotersFor by remember { mutableStateOf<Pair<String, PollAnswer>?>(null) }
     val imagePermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -493,6 +502,10 @@ fun ChatScreen(
         onBack()
     }
 
+    pollVotersFor?.let { (messageId, answer) ->
+        PollVotersScreen(channelId, messageId, answer, guildId, imageLoader, onDismiss = { pollVotersFor = null })
+        return
+    }
     reactorsFor?.let { (messageId, reaction) ->
         ReactorsScreen(channelId, messageId, reaction, imageLoader, onDismiss = { reactorsFor = null })
         return
@@ -740,6 +753,14 @@ fun ChatScreen(
         MessageOptionsDialog(
             msg = msgForOptions,
             isOwn = msgForOptions.author.id == myId,
+            authorName = nameOf(msgForOptions.author),
+            onEndPoll = if (msgForOptions.author.id == myId && msgForOptions.poll?.isClosed() == false) ({
+                selectedMsg = null
+                scope.launch {
+                    repo.endPoll(channelId, msgForOptions.id)
+                        .onFailure { sendError = "Couldn't end the poll. " + friendlyError(it) }
+                }
+            }) else null,
             pinned = msgForOptions.pinned,
             saved = savedNow,
             onPin = {
@@ -758,7 +779,7 @@ fun ChatScreen(
                 val now = com.dihcord.app.FeaturePreferences.toggleSaved(
                     context,
                     SavedMessage(
-                        msgForOptions.id, channelId, guildId, channelName, msgForOptions.author.displayName,
+                        msgForOptions.id, channelId, guildId, channelName, nameOf(msgForOptions.author),
                         messagePreview(msgForOptions, myId, channelNames), System.currentTimeMillis()
                     )
                 )
@@ -766,7 +787,7 @@ fun ChatScreen(
             },
             onReadAloud = {
                 selectedMsg = null
-                com.dihcord.app.ReadAloud.speak(context, msgForOptions.id, msgForOptions.author.displayName, messagePreview(msgForOptions, null, channelNames))
+                com.dihcord.app.ReadAloud.speak(context, msgForOptions.id, nameOf(msgForOptions.author), messagePreview(msgForOptions, null, channelNames))
             },
             onTranslate = if (msgForOptions.content.isBlank()) null else ({
                 selectedMsg = null
@@ -1154,6 +1175,7 @@ fun ChatScreen(
                                 prevMsg.author.id == msg.author.id &&
                                 msg.type !in listOf(19, 23) &&
                                 prevMsg.type !in listOf(19, 23) &&
+                                !msg.isSystem && !prevMsg.isSystem &&
                                 gapMs < 10 * 60 * 1000L
 
                         MessageBubble(
@@ -1168,7 +1190,9 @@ fun ChatScreen(
                             roleColorCache = roleColorCache,
                             roleIconCache = roleIconCache,
                             guildMemberCache = guildMemberCache,
+                            nicks = nicks,
                             myId = myId,
+                            onPollVoters = { answer -> pollVotersFor = msg.id to answer },
                             onReact = { emoji ->
                                 scope.launch {
                                     repo.toggleReaction(channelId, msg.id, emoji)
@@ -1259,7 +1283,7 @@ fun ChatScreen(
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Text(
-                                    " ${replyingTo!!.author.displayName}: ${replyingTo!!.content}",
+                                    " ${nameOf(replyingTo!!.author)}: ${replyingTo!!.content}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                                     maxLines = 1,
@@ -1670,6 +1694,10 @@ private val QuickReactions = listOf("❤️", "😂", "👍", "😮")
 internal fun MessageOptionsDialog(
     msg: DiscordMessage,
     isOwn: Boolean,
+    /** The author as shown in the chat (their server nickname, if any). */
+    authorName: String = msg.author.displayName,
+    /** Set for our own poll while it is still open. */
+    onEndPoll: (() -> Unit)? = null,
     pinned: Boolean = false,
     saved: Boolean = false,
     onPin: (() -> Unit)? = null,
@@ -1702,8 +1730,8 @@ internal fun MessageOptionsDialog(
         return
     }
     ActionMenu(
-        title = msg.author.displayName,
-        header = { UserAvatar(msg.author.displayName, msg.author.avatarUrl(64), 30.dp) },
+        title = authorName,
+        header = { UserAvatar(authorName, msg.author.avatarUrl(64), 30.dp) },
         belowTitle = {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
@@ -1747,7 +1775,8 @@ internal fun MessageOptionsDialog(
             onOpenThread?.let { MenuAction(R.drawable.chat, "Thread", onClick = it) },
             onCreateThread?.let { MenuAction(R.drawable.add, "Thread", onClick = it) },
             MenuAction(R.drawable.copy, "Copy", onClick = onCopy).takeIf { msg.content.isNotBlank() },
-            onEdit?.let { MenuAction(R.drawable.edit, "Edit", onClick = it) }?.takeIf { isOwn },
+            onEdit?.let { MenuAction(R.drawable.edit, "Edit", onClick = it) }?.takeIf { isOwn && msg.poll == null },
+            onEndPoll?.let { MenuAction(R.drawable.check, "End poll", onClick = it) },
             onForward?.let { MenuAction(R.drawable.forward, "Forward", onClick = it) },
             onPin?.let { MenuAction(if (pinned) R.drawable.unpin else R.drawable.pin, if (pinned) "Unpin" else "Pin", onClick = it) },
             onSave?.let { MenuAction(if (saved) R.drawable.bookmark else R.drawable.bookmark_border, if (saved) "Saved" else "Save", onClick = it) },
@@ -1773,7 +1802,11 @@ internal fun MessageBubble(
     roleColorCache: SnapshotStateMap<String, GuildRole?> = mutableStateMapOf(),
     roleIconCache: SnapshotStateMap<String, GuildRole?> = mutableStateMapOf(),
     guildMemberCache: SnapshotStateMap<String, GuildMember?> = mutableStateMapOf(),
+    /** Server nicknames, keyed "guildId:userId". */
+    nicks: Map<String, String> = emptyMap(),
     myId: String = "",
+    /** Long-press on a poll answer: who voted for it. */
+    onPollVoters: ((PollAnswer) -> Unit)? = null,
     onReact: (ReactionEmoji) -> Unit,
     onShowReactors: ((Reaction) -> Unit)? = null,
     onPollVote: ((answerId: Int) -> Unit)? = null,
@@ -1809,8 +1842,25 @@ internal fun MessageBubble(
     val context = LocalContext.current
     val repo = context.discordApp.repository
 
-    val userNames = remember(msg.mentionedUsers) {
-        msg.mentionedUsers.associate { it.id to it.displayName }
+    fun nameOf(user: DiscordUser): String = guildId?.let { nicks["$it:${user.id}"] } ?: user.displayName
+    val authorName = nameOf(msg.author)
+    // Keyed on the names themselves, so a nickname arriving for someone else doesn't re-parse this message.
+    val mentionNames = msg.mentionedUsers.map { nameOf(it) }
+    val userNames = remember(msg.mentionedUsers, mentionNames) {
+        msg.mentionedUsers.indices.associate { msg.mentionedUsers[it].id to mentionNames[it] }
+    }
+
+    msg.systemText(authorName, mentionNames.firstOrNull())?.let { line ->
+        SystemMessageLine(
+            text = line,
+            type = msg.type,
+            highlighted = highlighted,
+            onClick = if (msg.threadId != null && onOpenThread != null) ({ onOpenThread(msg.threadId) })
+                else if (msg.type == 46 && onJumpToReply != null && msg.referencedMessage != null) ({ onJumpToReply(msg.referencedMessage.id) })
+                else null,
+            onLongPress = onLongPress
+        )
+        return
     }
 
     val memberRoles = if (guildId != null && repo != null) repo.getMyRoles(guildId) else emptyList()
@@ -2019,7 +2069,7 @@ internal fun MessageBubble(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = msg.author.displayName,
+                            text = authorName,
                             style = MaterialTheme.typography.labelSmall,
                             color = authorNameColor,
                             maxLines = 1,
@@ -2112,7 +2162,7 @@ internal fun MessageBubble(
                             modifier = Modifier.size(10.dp)
                         )
                         Text(
-                            " ${ref.author.displayName}: ",
+                            " ${nameOf(ref.author)}: ",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -2229,7 +2279,7 @@ internal fun MessageBubble(
                         EmbedCard(embed, imageLoader)
                     }
 
-                msg.poll?.let { poll -> PollCard(poll, onPollVote) }
+                msg.poll?.let { poll -> PollCard(poll, onPollVote, onPollVoters) }
 
                 if (onComponent != null && msg.components.isNotEmpty()) MessageComponents(msg.components, onComponent)
 
@@ -3106,14 +3156,17 @@ private fun DiscordAvatar(url: String?, displayName: String, imageLoader: ImageL
 }
 
 /**
- * A poll: tap an answer to vote (tap again to take it back). Results show once you've voted or the poll has
- * ended, like Discord; [onVote] null makes it read-only.
+ * A poll: tap an answer to vote (tap again to take it back), long-press one to see who chose it. Results show
+ * once you've voted or the poll has ended, like Discord, or earlier with "Show results"; [onVote] null makes it
+ * read-only.
  */
 @Composable
-private fun PollCard(poll: Poll, onVote: ((Int) -> Unit)?) {
+internal fun PollCard(poll: Poll, onVote: ((Int) -> Unit)?, onVoters: ((PollAnswer) -> Unit)? = null) {
     val closed = poll.isClosed()
-    val showResults = closed || poll.iVoted
+    var peek by remember { mutableStateOf(false) }
+    val showResults = closed || poll.iVoted || peek
     val total = poll.totalVotes
+    val leaders = if (showResults) poll.leaders else emptySet()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -3122,25 +3175,43 @@ private fun PollCard(poll: Poll, onVote: ((Int) -> Unit)?) {
             .padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Text(poll.question, style = MaterialTheme.typography.labelMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+        Text(poll.question, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        if (!closed) {
+            Text(
+                if (poll.multiselect) "Pick one or more" else "Pick one",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         poll.answers.forEach { a ->
             val fraction = if (showResults && total > 0) a.count.toFloat() / total else 0f
+            val shownFraction by animateFloatAsState(fraction, label = "pollBar")
             val canTap = onVote != null && !closed
+            val leading = a.id in leaders
+            // The winner of a finished poll stands out; while it runs, your own pick does.
+            val strong = if (closed) leading else a.meVoted
+            val shape = RoundedCornerShape(8.dp)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(shape)
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                    .then(if (a.meVoted) Modifier.border(1.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp)) else Modifier)
-                    .then(if (canTap) Modifier.clickable { onVote?.invoke(a.id) } else Modifier)
+                    .then(if (a.meVoted) Modifier.border(1.dp, MaterialTheme.colorScheme.primary, shape) else Modifier)
+                    .combinedClickable(
+                        enabled = canTap || (onVoters != null && showResults),
+                        onClickLabel = if (a.meVoted) "Remove vote" else "Vote",
+                        onLongClickLabel = "See who voted",
+                        onLongClick = if (onVoters != null && showResults) ({ onVoters(a) }) else null,
+                        onClick = { if (canTap) onVote?.invoke(a.id) }
+                    )
             ) {
-                if (fraction > 0f) {
+                if (shownFraction > 0f) {
                     Box(Modifier.matchParentSize()) {
                         Box(
                             Modifier
                                 .fillMaxHeight()
-                                .fillMaxWidth(fraction)
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                                .fillMaxWidth(shownFraction)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = if (strong) 0.4f else 0.2f))
                         )
                     }
                 }
@@ -3159,16 +3230,34 @@ private fun PollCard(poll: Poll, onVote: ((Int) -> Unit)?) {
                     Text(
                         a.text,
                         style = MaterialTheme.typography.bodySmall,
+                        fontWeight = if (strong) FontWeight.SemiBold else null,
                         modifier = Modifier.weight(1f),
-                        maxLines = 2,
+                        maxLines = 3,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (showResults) {
-                        Text(
-                            "${(fraction * 100).roundToInt()}%",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    if (a.meVoted) {
+                        Icon(
+                            painterResource(R.drawable.check),
+                            contentDescription = "Your vote",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(start = 4.dp).size(12.dp)
                         )
+                    }
+                    if (showResults) {
+                        Column(Modifier.padding(start = 4.dp), horizontalAlignment = Alignment.End) {
+                            Text(
+                                "${poll.percentOf(a)}%",
+                                style = MaterialTheme.typography.labelSmall.merge(TabularNumbers),
+                                fontWeight = if (strong) FontWeight.SemiBold else null,
+                                color = if (strong) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                a.count.toString(),
+                                fontSize = 9.sp,
+                                style = MaterialTheme.typography.labelSmall.merge(TabularNumbers),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -3182,9 +3271,27 @@ private fun PollCard(poll: Poll, onVote: ((Int) -> Unit)?) {
                     else -> poll.expiryMillis?.let { pollTimeLeft(it - System.currentTimeMillis()) } ?: "Open"
                 }
             )
-            if (poll.multiselect && !closed) append(" \u00B7 pick any")
         }
-        Text(footer, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                footer,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            // Before voting the results are hidden, as in Discord; this peeks without casting a vote.
+            if (!closed && !poll.iVoted && total > 0) {
+                Text(
+                    if (peek) "Hide" else "Results",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { peek = !peek }
+                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                )
+            }
+        }
     }
 }
 
@@ -3209,5 +3316,50 @@ private fun NewMessagesLine() {
     ) {
         Box(Modifier.weight(1f).height(1.dp).background(DiscordColors.Mention))
         Text("NEW", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = DiscordColors.Mention)
+    }
+}
+
+
+/** A message Discord wrote itself (a join, a pin, a boost, a finished poll): one quiet line, no bubble. */
+@Composable
+private fun SystemMessageLine(
+    text: String,
+    type: Int,
+    highlighted: Boolean,
+    onClick: (() -> Unit)?,
+    onLongPress: () -> Unit,
+) {
+    val icon = when (type) {
+        6 -> R.drawable.pin
+        1, 2, 7 -> R.drawable.person_add
+        3 -> R.drawable.call
+        18 -> R.drawable.chat
+        46 -> R.drawable.check
+        else -> R.drawable.announce
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent)
+            .combinedClickable(onClick = { onClick?.invoke() }, onLongClick = onLongPress)
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Icon(
+            painterResource(icon),
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(12.dp)
+        )
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 4,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +18,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -34,6 +36,7 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import com.dihcord.app.R
 import com.dihcord.app.api.DiscordUser
+import com.dihcord.app.api.PollAnswer
 import com.dihcord.app.api.Reaction
 import com.dihcord.app.discordApp
 
@@ -69,37 +72,136 @@ internal fun ReactorsContent(
     imageLoader: ImageLoader,
     onRetry: () -> Unit,
 ) {
+    UserListContent(
+        users = users,
+        error = error,
+        errorText = "Couldn't load who reacted",
+        emptyText = "They may have removed it.",
+        onRetry = onRetry,
+    ) {
+        val url = reaction.emoji.imageUrl
+        if (url != null) {
+            AsyncImage(
+                model = url.replace("size=16", "size=64"),
+                imageLoader = imageLoader,
+                contentDescription = reaction.emoji.name,
+                modifier = Modifier.size(32.dp)
+            )
+        } else {
+            Text(reaction.emoji.name, fontSize = 28.sp)
+        }
+        Text(
+            if (reaction.count == 1) "1 reaction" else "${reaction.count} reactions",
+            style = MaterialTheme.typography.labelMedium.merge(TabularNumbers),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
+        )
+    }
+}
+
+/** Who voted for one poll answer (long-press an answer to open). */
+@Composable
+fun PollVotersScreen(
+    channelId: String,
+    messageId: String,
+    answer: PollAnswer,
+    guildId: String?,
+    imageLoader: ImageLoader,
+    onDismiss: () -> Unit
+) {
+    BackHandler { onDismiss() }
+    val repo = LocalContext.current.discordApp.repository
+    var users by remember { mutableStateOf<List<DiscordUser>?>(null) }
+    var error by remember { mutableStateOf<Throwable?>(null) }
+    var attempt by remember { mutableIntStateOf(0) }
+    LaunchedEffect(messageId, answer.id, attempt) {
+        users = null
+        error = null
+        val result = repo?.pollVoters(channelId, messageId, answer.id) ?: return@LaunchedEffect
+        result.onSuccess { list ->
+            users = list
+            if (guildId != null) repo.loadNicks(guildId, list.map { it.id })
+        }.onFailure { error = it }
+    }
+    val nicks = repo?.nicks?.collectAsState()?.value.orEmpty()
+    PollVotersContent(answer, users, error, imageLoader, onRetry = { attempt++ }) { user ->
+        guildId?.let { nicks["$it:${user.id}"] } ?: user.displayName
+    }
+}
+
+/** The voters list from plain data: null [users] means still loading. */
+@Composable
+internal fun PollVotersContent(
+    answer: PollAnswer,
+    users: List<DiscordUser>?,
+    error: Throwable?,
+    imageLoader: ImageLoader,
+    onRetry: () -> Unit,
+    nameOf: (DiscordUser) -> String = { it.displayName },
+) {
+    UserListContent(
+        users = users,
+        error = error,
+        errorText = "Couldn't load who voted",
+        emptyText = "Nobody has picked this yet.",
+        onRetry = onRetry,
+        nameOf = nameOf,
+    ) {
+        val emoji = answer.emoji
+        val emojiUrl = emoji?.imageUrl
+        if (emoji != null && emojiUrl != null) {
+            AsyncImage(
+                model = emojiUrl.replace("size=16", "size=64"),
+                imageLoader = imageLoader,
+                contentDescription = emoji.name,
+                modifier = Modifier.size(28.dp)
+            )
+        } else if (emoji != null) {
+            Text(emoji.name, fontSize = 24.sp)
+        }
+        Text(
+            answer.text,
+            style = MaterialTheme.typography.labelMedium,
+            textAlign = TextAlign.Center,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth(0.8f)
+        )
+        // The live count, not the size of the list: only the first 100 voters are fetched.
+        Text(
+            if (answer.count == 1) "1 vote" else "${answer.count} votes",
+            style = MaterialTheme.typography.labelSmall.merge(TabularNumbers),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
+        )
+    }
+}
+
+/** A centred [header] over a list of people, with loading, error and empty states. */
+@Composable
+private fun UserListContent(
+    users: List<DiscordUser>?,
+    error: Throwable?,
+    errorText: String,
+    emptyText: String,
+    onRetry: () -> Unit,
+    nameOf: (DiscordUser) -> String = { it.displayName },
+    header: @Composable () -> Unit,
+) {
     val state = rememberTransformingLazyColumnState()
     val spec = rememberTransformationSpec()
     ScreenScaffold(scrollState = state) { padding ->
         TransformingLazyColumn(state = state, contentPadding = padding) {
             item {
-                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    val url = reaction.emoji.imageUrl
-                    if (url != null) {
-                        AsyncImage(
-                            model = url.replace("size=16", "size=64"),
-                            imageLoader = imageLoader,
-                            contentDescription = reaction.emoji.name,
-                            modifier = Modifier.size(32.dp)
-                        )
-                    } else {
-                        Text(reaction.emoji.name, fontSize = 28.sp)
-                    }
-                    Text(
-                        if (reaction.count == 1) "1 reaction" else "${reaction.count} reactions",
-                        style = MaterialTheme.typography.labelMedium.merge(TabularNumbers),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
-                    )
-                }
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) { header() }
             }
             when {
-                error != null -> item { ErrorState("Couldn't load who reacted", error, onRetry) }
+                error != null -> item { ErrorState(errorText, error, onRetry) }
                 users == null -> item { LoadingIndicator() }
-                users.isEmpty() -> item { EmptyState(R.drawable.emoji, "No one to show", "They may have removed it.") }
+                users.isEmpty() -> item { EmptyState(R.drawable.emoji, "No one to show", emptyText) }
                 else -> items(users.size, key = { users[it].id }) { i ->
                     val user = users[i]
+                    val name = nameOf(user)
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -108,9 +210,9 @@ internal fun ReactorsContent(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        UserAvatar(user.displayName, user.avatarUrl(64), 28.dp)
+                        UserAvatar(name, user.avatarUrl(64), 28.dp)
                         Text(
-                            user.displayName,
+                            name,
                             style = MaterialTheme.typography.labelMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis

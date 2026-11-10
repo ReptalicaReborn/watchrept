@@ -107,6 +107,50 @@ class NewFeaturesShotTest {
             }
         }
     }
+    private val biomePoll = Poll(
+        "Which biome should spawn in?",
+        listOf(
+            PollAnswer(1, "Cherry grove", ReactionEmoji(null, "🌸", false), count = 7, meVoted = true),
+            PollAnswer(2, "Mushroom island", ReactionEmoji(null, "🍄", false), count = 4),
+            PollAnswer(3, "Deep dark", null, count = 1),
+        ),
+        expiry = java.time.OffsetDateTime.now().plusHours(5).toString(), multiselect = false, finalized = false
+    )
+    private fun pollShot(name: String, poll: Poll) = shot(name) {
+        androidx.wear.compose.material3.ScreenScaffold {
+            androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.padding(start = 20.dp, end = 20.dp, top = 30.dp)) {
+                PollCard(poll, onVote = {}, onVoters = {})
+            }
+        }
+    }
+    @Test fun pollVoted() = pollShot("poll_voted", biomePoll)
+    @Test fun pollUnvoted() = pollShot("poll_unvoted", biomePoll.copy(multiselect = true, answers = biomePoll.answers.map { it.copy(meVoted = false) }))
+    @Test fun pollClosed() = pollShot("poll_closed", biomePoll.copy(finalized = true, answers = biomePoll.answers.map { it.copy(meVoted = it.id == 2) }))
+    @Test fun pollVoters() = shot("poll_voters") {
+        PollVotersContent(biomePoll.answers[0], listOf(SampleData.ines, SampleData.me, SampleData.spam), null, LocalContext.current.imageLoader, {}) {
+            if (it.id == SampleData.ines.id) "Inês (builder)" else it.displayName
+        }
+    }
+    @Test fun chatSystemLines() = shot("chat_system") {
+        fun sys(n: Int, type: Int, content: String = "", embeds: List<Embed> = emptyList()) =
+            DiscordMessage(SampleData.id(n), "603", SampleData.ines, content, java.time.Instant.now().toString(), null, type = type, embeds = embeds)
+        val result = Embed("poll_result", null, null, null, null, null, null, null, null, null, null, null, listOf(
+            EmbedField("poll_question_text", "Which biome should spawn in?", false), EmbedField("victor_answer_text", "Cherry grove", false),
+            EmbedField("victor_answer_emoji_name", "🌸", false), EmbedField("victor_answer_votes", "7", false), EmbedField("total_votes", "12", false),
+        ))
+        val il = LocalContext.current.imageLoader
+        androidx.wear.compose.material3.ScreenScaffold(timeText = { TitledTimeText("#general") }) {
+            androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.padding(start = 20.dp, end = 18.dp, top = 34.dp)) {
+                MessageBubble(msg = sys(1, 7), isContinuation = false, imageLoader = il, onReact = {}, onLongPress = {})
+                MessageBubble(msg = sys(2, 6), isContinuation = false, imageLoader = il, onReact = {}, onLongPress = {})
+                MessageBubble(
+                    msg = sys(3, 0, "hi all, glad to be here"), isContinuation = false, imageLoader = il, guildId = "700",
+                    nicks = mapOf("700:${SampleData.ines.id}" to "Inês (builder)"), onReact = {}, onLongPress = {}
+                )
+                MessageBubble(msg = sys(4, 46, embeds = listOf(result)), isContinuation = false, imageLoader = il, onReact = {}, onLongPress = {})
+            }
+        }
+    }
     @Test fun chatNewLine() = shot("chat_new_line") {
         ChatScreen(SampleData.general.id, SampleData.general.name, SampleData.blockhaven.id, currentUserId = SampleData.me.id,
             onOpenPins = {}, onOpenSearch = {}, onOpenMembers = {}, onOpenThreads = {})

@@ -48,6 +48,7 @@ import coil.compose.AsyncImage
 import coil.imageLoader
 import com.dihcord.app.R
 import com.dihcord.app.api.DiscordMessage
+import com.dihcord.app.api.systemText
 import com.dihcord.app.api.OnlineStatus
 
 /*
@@ -187,6 +188,7 @@ private val LinePrefix = Regex("^(>+ |#{1,3} |-# )")
  */
 fun messagePreview(msg: DiscordMessage, myId: String?, channelNames: Map<String, String> = emptyMap()): String {
     val names = msg.mentionedUsers.associate { it.id to it.displayName }
+    msg.systemText(msg.author.displayName, msg.mentionedUsers.firstOrNull()?.displayName)?.let { return it }
     var text = msg.content
         // Spoilers stay hidden here too, as they are in the chat until tapped.
         .replace(SpoilerRegex, "▒▒▒")

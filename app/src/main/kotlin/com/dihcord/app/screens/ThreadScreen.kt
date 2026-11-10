@@ -31,6 +31,8 @@ import com.dihcord.app.api.DiscordUser
 import com.dihcord.app.api.MentionCandidate
 import com.dihcord.app.api.MentionInput
 import com.dihcord.app.api.Reaction
+import com.dihcord.app.api.PollAnswer
+import com.dihcord.app.api.isSystem
 import com.dihcord.app.api.GuildRole
 import com.dihcord.app.discordApp
 import kotlinx.coroutines.launch
@@ -132,6 +134,9 @@ fun ThreadScreen(
     var showGifPicker by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(0) }
     val roleColorCache = remember { mutableStateMapOf<String, GuildRole?>() }
+    // Server nicknames ("guildId:userId" -> nick); in a server they replace the account's display name.
+    val nicks by repo.nicks.collectAsState()
+    fun nameOf(user: DiscordUser): String = guildId?.let { nicks["$it:${user.id}"] } ?: user.displayName
     // Same map instance until a name actually changes: it is a remember key for every bubble's parsed markdown.
     val publishedChannelNames by repo.channelNames.collectAsState()
     var channelNames by remember { mutableStateOf(repo.getChannelNames()) }
@@ -143,6 +148,7 @@ fun ThreadScreen(
     var uploadError by remember { mutableStateOf("") }
     var showPhotoPicker by remember { mutableStateOf(false) }
     var reactorsFor by remember { mutableStateOf<Pair<String, Reaction>?>(null) }
+    var pollVotersFor by remember { mutableStateOf<Pair<String, PollAnswer>?>(null) }
     val imagePermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -269,6 +275,9 @@ fun ThreadScreen(
 
     LaunchedEffect(threadMessages, guildId, loading) {
         if (!loading && guildId != null) {
+            repo.loadNicks(guildId, threadMessages.flatMapTo(HashSet()) { m ->
+                m.mentionedUsers.map { it.id } + listOfNotNull(m.referencedMessage?.author?.id) + m.author.id
+            })
             threadMessages.map { it.author.id }.distinct()
                 .filterNot { roleColorCache.containsKey(it) }
                 .forEach { userId ->
@@ -290,6 +299,9 @@ fun ThreadScreen(
     BackHandler(enabled = reactorsFor != null) {
         reactorsFor = null
     }
+    BackHandler(enabled = pollVotersFor != null) {
+        pollVotersFor = null
+    }
     BackHandler(enabled = replyingTo != null) {
         replyingTo = null
     }
@@ -300,7 +312,7 @@ fun ThreadScreen(
         showGifPicker = false
     }
     BackHandler(
-        enabled = !isRecording && !showPhotoPicker && !showPicker && !showGifPicker && reactorsFor == null &&
+        enabled = !isRecording && !showPhotoPicker && !showPicker && !showGifPicker && reactorsFor == null && pollVotersFor == null &&
             replyingTo == null && selectedMsg == null
     ) { onBack() }
 
@@ -397,6 +409,11 @@ fun ThreadScreen(
         return
     }
 
+    pollVotersFor?.let { (messageId, answer) ->
+        PollVotersScreen(threadId, messageId, answer, guildId, imageLoader, onDismiss = { pollVotersFor = null })
+        return
+    }
+
     reactorsFor?.let { (messageId, reaction) ->
         ReactorsScreen(threadId, messageId, reaction, imageLoader, onDismiss = { reactorsFor = null })
         return
@@ -421,6 +438,7 @@ fun ThreadScreen(
         MessageOptionsDialog(
             msg = msgForOptions,
             isOwn = msgForOptions.author.id == myId,
+            authorName = nameOf(msgForOptions.author),
             onReply = { replyingTo = msgForOptions; selectedMsg = null },
             onCopy = {
                 val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
@@ -508,7 +526,8 @@ fun ThreadScreen(
                         msg.timestamp.toEpochMs() - prevMsg.timestamp.toEpochMs()
                     else Long.MAX_VALUE
                     val isContinuation = prevMsg != null &&
-                        prevMsg.author.id == msg.author.id && gapMs < 10 * 60 * 1000L
+                        prevMsg.author.id == msg.author.id && gapMs < 10 * 60 * 1000L &&
+                        !msg.isSystem && !prevMsg.isSystem
 
                     MessageBubble(
                         msg = msg,
@@ -517,7 +536,9 @@ fun ThreadScreen(
                         channelNames = channelNames,
                         guildId = guildId,
                         roleColorCache = roleColorCache,
+                        nicks = nicks,
                         myId = myId,
+                        onPollVoters = { answer -> pollVotersFor = msg.id to answer },
                         onReact = { emoji ->
                             scope.launch {
                                 repo.toggleReaction(threadId, msg.id, emoji)
@@ -562,7 +583,7 @@ fun ThreadScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(painter = painterResource(id = R.drawable.reply), contentDescription = null,tint = Color.White, modifier = Modifier.size(10.dp))
-                        Text(" ${replyingTo!!.author.displayName}: ${replyingTo!!.content}",
+                        Text(" ${nameOf(replyingTo!!.author)}: ${replyingTo!!.content}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                             maxLines = 1,
