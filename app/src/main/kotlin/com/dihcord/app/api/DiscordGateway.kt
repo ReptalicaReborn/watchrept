@@ -71,6 +71,13 @@ class DiscordGateway(private val token: String) {
     /** This session's id, which interactions (bot buttons, slash commands) must carry. */
     val currentSessionId: String? get() = sessionId
 
+    /**
+     * Whether to ask Discord to compress the connection (as its web client does). The first message after
+     * connecting describes every server the account is in and is several times smaller compressed, which is
+     * most of what a watch downloads on each (re)connect. Turned off for good if a compressed frame can't be read.
+     */
+    @Volatile private var compress = true
+
     /** False after [pause]: scheduled reconnects (after errors, RECONNECT, INVALID_SESSION) then stay quiet. */
     @Volatile private var wanted = true
 
@@ -79,12 +86,13 @@ class DiscordGateway(private val token: String) {
         wanted = true
         if (ws != null) return // already connected or connecting
         // resume_gateway_url comes without the version/encoding query, so add it like the default URL has.
-        val url = (resumeUrl?.trimEnd('/') ?: "wss://gateway.discord.gg") + "/?v=10&encoding=json"
+        val url = (resumeUrl?.trimEnd('/') ?: "wss://gateway.discord.gg") + "/?v=10&encoding=json" +
+            if (compress) "&compress=zlib-stream" else ""
         val request = Request.Builder().url(url)
             .header("User-Agent", ClientIdentity.USER_AGENT)
             .header("Origin", "https://discord.com")
             .build()
-        ws = http.newWebSocket(request, Listener())
+        ws = http.newWebSocket(request, Listener(if (compress) GatewayInflater() else null))
     }
 
     fun disconnect() {
@@ -252,10 +260,25 @@ class DiscordGateway(private val token: String) {
         send(Op.RESUME, d)
     }
 
-    private inner class Listener : WebSocketListener() {
+    private inner class Listener(private val inflater: GatewayInflater?) : WebSocketListener() {
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
             if (webSocket === ws) connected = true
+        }
+
+        /** Compressed connections deliver binary frames; a message is complete once the inflater says so. */
+        override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
+            if (webSocket !== ws) return
+            val text = try {
+                inflater?.feed(bytes.toByteArray())
+            } catch (e: Exception) {
+                // Not the stream we asked for. Better connected without compression than not at all.
+                compress = false
+                webSocket.close(4000, null)
+                lost(webSocket, reconnectInMs = 500)
+                return
+            }
+            if (text != null) onMessage(webSocket, text)
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -303,6 +326,7 @@ class DiscordGateway(private val token: String) {
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            inflater?.close()
             if (response?.code == 401) {
                 lost(webSocket, reconnectInMs = null)
                 outbox.trySend(GatewayEvent.InvalidToken)
@@ -317,6 +341,7 @@ class DiscordGateway(private val token: String) {
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            inflater?.close()
             when (code) {
                 4004 -> { // authentication failed
                     lost(webSocket, reconnectInMs = null)
@@ -482,7 +507,9 @@ class DiscordGateway(private val token: String) {
                         nicks[u.optString("id")] = memberNick(m)
                     }
                 }
-                GatewayEvent.MessageCreate(msg, roleIds, guildId, nicks)
+                // The author's member data comes with the message: no need to ask for it again.
+                val member = memberObj?.let { runCatching { GuildMember.fromJson(it).copy(userId = msg.author.id) }.getOrNull() }
+                GatewayEvent.MessageCreate(msg, roleIds, guildId, nicks, member)
             }.getOrNull()
 
             "MESSAGE_UPDATE" -> runCatching {
@@ -574,12 +601,14 @@ class DiscordGateway(private val token: String) {
             "GUILD_MEMBERS_CHUNK" -> runCatching {
                 val arr = d.optJSONArray("members") ?: JSONArray()
                 val nicks = HashMap<String, String?>()
+                val full = ArrayList<GuildMember>(arr.length())
                 val members = (0 until arr.length()).mapNotNull { i ->
                     val m = arr.optJSONObject(i) ?: return@mapNotNull null
                     val u = m.optJSONObject("user") ?: return@mapNotNull null
                     val user = DiscordUser.fromJson(u)
                     val nick = memberNick(m)
                     nicks[user.id] = nick
+                    runCatching { GuildMember.fromJson(m) }.getOrNull()?.takeIf { it.userId.isNotEmpty() }?.let { full += it }
                     // A server-specific avatar wins over the account one.
                     val guildAvatar = if (m.isNull("avatar")) null else m.optString("avatar").takeIf { it.isNotEmpty() }
                     val chunkGuild = d.optString("guild_id")
@@ -590,7 +619,10 @@ class DiscordGateway(private val token: String) {
                 }
                 GatewayEvent.MembersChunk(
                     d.optString("nonce").takeIf { it.isNotEmpty() }, members,
-                    guildId = d.optString("guild_id").takeIf { it.isNotEmpty() }, nicks = nicks
+                    guildId = d.optString("guild_id").takeIf { it.isNotEmpty() }, nicks = nicks,
+                    fullMembers = full,
+                    notFound = d.optJSONArray("not_found")?.let { nf -> (0 until nf.length()).map { nf.optString(it) } }.orEmpty(),
+                    isLast = d.optInt("chunk_index", 0) + 1 >= d.optInt("chunk_count", 1)
                 )
             }.getOrNull()
 
@@ -598,7 +630,8 @@ class DiscordGateway(private val token: String) {
                 GatewayEvent.MemberUpdate(
                     guildId = d.getString("guild_id"),
                     userId = d.getJSONObject("user").getString("id"),
-                    nick = memberNick(d)
+                    nick = memberNick(d),
+                    member = runCatching { GuildMember.fromJson(d) }.getOrNull()?.takeIf { it.userId.isNotEmpty() && d.has("roles") }
                 )
             }.getOrNull()
 
@@ -721,7 +754,9 @@ sealed class GatewayEvent {
         val memberRoleIds: List<String> = emptyList(),
         val guildId: String? = null,
         /** Server nicknames this message came with, by user id; null means that member has none. */
-        val nicks: Map<String, String?> = emptyMap()
+        val nicks: Map<String, String?> = emptyMap(),
+        /** The author as a member of [guildId] (roles, nickname, server avatar), when the message came with it. */
+        val member: GuildMember? = null
     ) : GatewayEvent()
 
     /** [message] is null when the update is partial; [raw] says which fields it carries. */
@@ -774,10 +809,16 @@ sealed class GatewayEvent {
         val members: List<MentionCandidate>,
         val guildId: String? = null,
         /** Each returned member's server nickname, by user id; null means none. */
-        val nicks: Map<String, String?> = emptyMap()
+        val nicks: Map<String, String?> = emptyMap(),
+        /** The returned members in full (roles, nickname, server avatar). */
+        val fullMembers: List<GuildMember> = emptyList(),
+        /** Ids that were asked for but aren't members: webhooks, people who left. */
+        val notFound: List<String> = emptyList(),
+        /** Discord answers a request in one or more chunks; this is the final one. */
+        val isLast: Boolean = true
     ) : GatewayEvent()
     /** A member's server profile changed; [nick] null means they have no nickname (any more). */
-    data class MemberUpdate(val guildId: String, val userId: String, val nick: String?) : GatewayEvent()
+    data class MemberUpdate(val guildId: String, val userId: String, val nick: String?, val member: GuildMember? = null) : GatewayEvent()
     object InvalidToken : GatewayEvent()
     data class Unknown(val name: String) : GatewayEvent()
 }

@@ -275,7 +275,7 @@ fun ThreadScreen(
 
     LaunchedEffect(threadMessages, guildId, loading) {
         if (!loading && guildId != null) {
-            repo.loadNicks(guildId, threadMessages.flatMapTo(HashSet()) { m ->
+            repo.loadMembers(guildId, threadMessages.flatMapTo(HashSet()) { m ->
                 m.mentionedUsers.map { it.id } + listOfNotNull(m.referencedMessage?.author?.id, m.interactionUser?.id) + m.author.id
             })
             threadMessages.map { it.author.id }.distinct()

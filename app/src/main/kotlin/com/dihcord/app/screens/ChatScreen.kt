@@ -190,9 +190,10 @@ fun ChatScreen(
 
     LaunchedEffect(messages, guildId, loading) {
         if (!loading && guildId != null) {
-            // Authors are looked up one by one below; people only mentioned or replied to are asked for together.
-            repo.loadNicks(guildId, messages.flatMapTo(HashSet()) { m ->
-                m.mentionedUsers.map { it.id } + listOfNotNull(m.referencedMessage?.author?.id, m.interactionUser?.id)
+            // Everyone in view (authors, people mentioned or replied to) in one gateway request; the lookups
+            // below then find them already there, and only fetch one by one whoever is still missing.
+            repo.loadMembers(guildId, messages.flatMapTo(HashSet()) { m ->
+                m.mentionedUsers.map { it.id } + listOfNotNull(m.referencedMessage?.author?.id, m.interactionUser?.id) + m.author.id
             })
             messages
                 .map { it.author.id }
@@ -3017,9 +3018,12 @@ private fun VideoAttachment(att: Attachment, imageLoader: ImageLoader) {
                 }
             }
     ) {
+        // A still frame from Discord's proxy. Loading the video's own address as a picture would download the
+        // whole video only to fail to draw it.
+        val posterPx = with(LocalDensity.current) { 140.dp.roundToPx() }
         AsyncImage(
             model = ImageRequest.Builder(context)
-                .data(att.proxyUrl)
+                .data(remember(att, posterPx) { MediaSize.poster(att.proxyUrl, att.width, att.height, posterPx) })
                 .crossfade(true)
                 .build(),
             imageLoader = imageLoader,
