@@ -18,6 +18,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -191,7 +192,7 @@ fun ChatScreen(
         if (!loading && guildId != null) {
             // Authors are looked up one by one below; people only mentioned or replied to are asked for together.
             repo.loadNicks(guildId, messages.flatMapTo(HashSet()) { m ->
-                m.mentionedUsers.map { it.id } + listOfNotNull(m.referencedMessage?.author?.id)
+                m.mentionedUsers.map { it.id } + listOfNotNull(m.referencedMessage?.author?.id, m.interactionUser?.id)
             })
             messages
                 .map { it.author.id }
@@ -507,7 +508,7 @@ fun ChatScreen(
         return
     }
     reactorsFor?.let { (messageId, reaction) ->
-        ReactorsScreen(channelId, messageId, reaction, imageLoader, onDismiss = { reactorsFor = null })
+        ReactorsScreen(channelId, messageId, reaction, imageLoader, onDismiss = { reactorsFor = null }, guildId = guildId)
         return
     }
 
@@ -1173,8 +1174,8 @@ fun ChatScreen(
 
                         val isContinuation = prevMsg != null &&
                                 prevMsg.author.id == msg.author.id &&
-                                msg.type !in listOf(19, 23) &&
-                                prevMsg.type !in listOf(19, 23) &&
+                                msg.type !in listOf(19, 20, 23) &&
+                                prevMsg.type !in listOf(19, 20, 23) &&
                                 !msg.isSystem && !prevMsg.isSystem &&
                                 gapMs < 10 * 60 * 1000L
 
@@ -1850,6 +1851,8 @@ internal fun MessageBubble(
         msg.mentionedUsers.indices.associate { msg.mentionedUsers[it].id to mentionNames[it] }
     }
 
+    val spoilerLinks = remember(msg.content) { spoileredLinks(msg.content) }
+
     msg.systemText(authorName, mentionNames.firstOrNull())?.let { line ->
         SystemMessageLine(
             text = line,
@@ -2144,6 +2147,22 @@ internal fun MessageBubble(
                     }
                 }
 
+                val command = msg.commandLabel
+                val commandUser = msg.interactionUser
+                if (command != null && commandUser != null) {
+                    // A bot's answer: who asked for it, and with which command.
+                    Text(
+                        buildAnnotatedString {
+                            append(nameOf(commandUser) + " used ")
+                            withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) { append(command) }
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
                 val ref = msg.referencedMessage
                 if (msg.type == 19 && ref != null) {
                     Row(
@@ -2215,8 +2234,9 @@ internal fun MessageBubble(
                             msg.referencedMessage?.attachments ?: emptyList()
                         }
                         fwdAtts.filter { it.isImage }.forEach { att ->
-                            MediaImage(att.proxyUrl, att.filename, imageLoader)
+                            MediaImage(att.proxyUrl, att.displayName, imageLoader, spoiler = att.isSpoiler)
                         }
+                        fwdAtts.filter { it.isOtherFile }.forEach { att -> FileAttachment(att) }
                         val fwdEmbeds = msg.forwardedEmbeds.ifEmpty {
                             msg.referencedMessage?.embeds ?: emptyList()
                         }
@@ -2258,14 +2278,17 @@ internal fun MessageBubble(
                 }
 
                 msg.attachments.filter { it.isImage }.forEach { att ->
-                    MediaImage(att.proxyUrl, att.filename, imageLoader)
+                    MediaImage(att.proxyUrl, att.displayName, imageLoader, spoiler = att.isSpoiler)
                 }
                 msg.attachments.filter { it.isVideo }.forEach { att ->
-                    VideoAttachment(att, imageLoader)
+                    SpoilerCover(att.isSpoiler, att.id, Modifier.padding(top = 2.dp).size(width = 140.dp, height = 80.dp)) {
+                        VideoAttachment(att, imageLoader)
+                    }
                 }
                 msg.attachments.filter { it.isAudio }.forEach { att ->
                     AudioAttachment(att)
                 }
+                msg.attachments.filter { it.isOtherFile }.forEach { att -> FileAttachment(att) }
                 msg.stickers.filter { it.isDisplayable }.forEach { s ->
                     MediaImage(s.imageUrl, s.name, imageLoader, size = 80.dp)
                 }
@@ -2276,10 +2299,24 @@ internal fun MessageBubble(
                                 embed.url?.contains("discordapp.net/emojis/") != true
                     }
                     .forEach { embed ->
-                        EmbedCard(embed, imageLoader)
+                        // The preview of a link sent as ||spoiler|| would give it away: covered like the link itself.
+                        val hidden = embed.url?.trimEnd('/')?.let { it in spoilerLinks } == true
+                        SpoilerCover(hidden, "${msg.id}:${embed.url}", Modifier.padding(top = 2.dp).fillMaxWidth().height(32.dp), "Spoiler link") {
+                            EmbedCard(embed, imageLoader)
+                        }
                     }
 
                 msg.poll?.let { poll -> PollCard(poll, onPollVote, onPollVoters) }
+
+                if (msg.isEphemeral) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Icon(
+                            painterResource(R.drawable.hide), contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(10.dp)
+                        )
+                        Text("Only you can see this", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
 
                 if (onComponent != null && msg.components.isNotEmpty()) MessageComponents(msg.components, onComponent)
 
@@ -2730,8 +2767,15 @@ private fun MediaImage(
     url: String,
     contentDesc: String,
     imageLoader: ImageLoader,
-    size: Dp = 120.dp
+    size: Dp = 120.dp,
+    /** Marked as a spoiler by the sender: not even loaded until tapped. */
+    spoiler: Boolean = false,
 ) {
+    var revealed by rememberSaveable(url) { mutableStateOf(false) }
+    if (spoiler && !revealed) {
+        SpoilerPlaceholder(Modifier.padding(top = 2.dp).size(size), "Spoiler") { revealed = true }
+        return
+    }
     var viewing by remember { mutableStateOf(false) }
     AsyncImage(
         model = ImageRequest.Builder(LocalContext.current)
@@ -2887,6 +2931,74 @@ private fun EmbedCard(embed: Embed, imageLoader: ImageLoader) {
     }
 }
 
+/** [content], or a cover in its place until tapped when the sender marked it as a spoiler. */
+@Composable
+private fun SpoilerCover(
+    spoiler: Boolean,
+    key: String,
+    coverModifier: Modifier,
+    label: String = "Spoiler",
+    content: @Composable () -> Unit,
+) {
+    var revealed by rememberSaveable(key) { mutableStateOf(false) }
+    if (spoiler && !revealed) SpoilerPlaceholder(coverModifier, label) { revealed = true } else content()
+}
+
+@Composable
+private fun SpoilerPlaceholder(modifier: Modifier, label: String, onReveal: () -> Unit) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .clickable(onClickLabel = "Show", onClick = onReveal),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            Modifier
+                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(50))
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(painterResource(R.drawable.hide), contentDescription = null, tint = Color.White, modifier = Modifier.size(11.dp))
+            Text(label.uppercase(), fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        }
+    }
+}
+
+/** A file that isn't a picture, video or audio: its name and size; tapping opens it like a link (on the phone). */
+@Composable
+private fun FileAttachment(att: Attachment) {
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+    Row(
+        modifier = Modifier
+            .padding(top = 2.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .clickable(onClickLabel = "Open") { runCatching { uriHandler.openUri(att.url) } }
+            .padding(horizontal = 7.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(
+            painterResource(R.drawable.file), contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp)
+        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (att.isSpoiler) "Spoiler file" else att.displayName,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.MiddleEllipsis
+            )
+            att.sizeLabel?.let {
+                Text(it, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
 @Composable
 private fun VideoAttachment(att: Attachment, imageLoader: ImageLoader) {
     val context = LocalContext.current
@@ -2932,7 +3044,7 @@ private fun VideoAttachment(att: Attachment, imageLoader: ImageLoader) {
         }
     }
     Text(
-        text = att.filename,
+        text = att.displayName,
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         maxLines = 1

@@ -572,8 +572,30 @@ data class Attachment(
     val proxyUrl: String,
     val contentType: String?,
     val width: Int?,
-    val height: Int?
+    val height: Int?,
+    /** In bytes; 0 when unknown. */
+    val size: Long = 0,
+    val flags: Int = 0,
 ) {
+    /** Marked as a spoiler by the sender: covered until tapped. Discord marks these with a filename prefix. */
+    val isSpoiler: Boolean get() = filename.startsWith("SPOILER_") || flags and (1 shl 3) != 0
+
+    /** The name without the spoiler marker. */
+    val displayName: String get() = filename.removePrefix("SPOILER_")
+
+    /** Anything that isn't shown as a picture, video or audio player: listed by name instead. */
+    val isOtherFile: Boolean get() = !isImage && !isVideo && !isAudio
+
+    /** The size as people write it ("340 KB", "1.2 MB"), or null when unknown. */
+    val sizeLabel: String?
+        get() = when {
+            size <= 0 -> null
+            size < 1024 -> "$size B"
+            size < 1024 * 1024 -> "${size / 1024} KB"
+            size < 1024L * 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f MB", size / (1024.0 * 1024.0))
+            else -> String.format(java.util.Locale.US, "%.1f GB", size / (1024.0 * 1024.0 * 1024.0))
+        }
+
     val isImage: Boolean
         get() = contentType?.startsWith("image/") == true
                 || filename.lowercase().let {
@@ -603,7 +625,9 @@ data class Attachment(
             proxyUrl = o.getString("proxy_url"),
             contentType = o.nullableString("content_type"),
             width = o.nullableInt("width"),
-            height = o.nullableInt("height")
+            height = o.nullableInt("height"),
+            size = o.optLong("size", 0),
+            flags = o.optInt("flags", 0),
         )
     }
 }
@@ -1064,7 +1088,17 @@ data class DiscordMessage(
     val applicationId: String? = null,
     val flags: Int = 0,
     val pinned: Boolean = false,
+    /** For a bot's answer to a command: who ran it and the command's name. */
+    val interactionUser: DiscordUser? = null,
+    val interactionName: String? = null,
 ) {
+    /** Shown only to us (a bot's private answer); gone after a restart. */
+    val isEphemeral: Boolean get() = flags and (1 shl 6) != 0
+
+    /** "/roll" for a slash command, the plain name for a right-click command; null when not a command's answer. */
+    val commandLabel: String?
+        get() = interactionName?.let { if (type == 23) it else "/$it" }
+
     fun pingFor(userId: String, memberRoleIds: List<String> = emptyList()): Boolean =
         mentionEveryone ||
                 userId in mentionedUserIds ||
@@ -1169,6 +1203,10 @@ data class DiscordMessage(
                 }
             }
 
+            // "interaction" carries the command's name; newer messages may only have "interaction_metadata".
+            val interaction = o.optJSONObject("interaction")?.takeIf { it.has("name") }
+                ?: o.optJSONObject("interaction_metadata") ?: o.optJSONObject("interaction")
+
             return DiscordMessage(
                 id = o.getString("id"),
                 channelId = o.getString("channel_id"),
@@ -1202,6 +1240,8 @@ data class DiscordMessage(
                     ?: o.optJSONObject("author")?.takeIf { it.optBoolean("bot") }?.optString("id"),
                 flags = o.optInt("flags", 0),
                 pinned = o.optBoolean("pinned", false),
+                interactionUser = interaction?.optJSONObject("user")?.let { runCatching { DiscordUser.fromJson(it) }.getOrNull() },
+                interactionName = interaction?.optString("name")?.takeIf { it.isNotBlank() && it != "null" },
             )
         }
 
@@ -1318,10 +1358,17 @@ data class Poll(
 
     /** Applies a vote event: one vote added to / removed from [answerId], [mine] when it was the current user's. */
     fun withVote(answerId: Int, add: Boolean, mine: Boolean): Poll = copy(answers = answers.map { a ->
-        if (a.id != answerId) a else a.copy(
+        // Our own vote is already shown the moment we tap (see [withMyVotes]): its echo changes nothing.
+        if (a.id != answerId || (mine && a.meVoted == add)) a else a.copy(
             count = (a.count + if (add) 1 else -1).coerceAtLeast(0),
             meVoted = if (mine) add else a.meVoted
         )
+    })
+
+    /** This poll with our picks set to exactly [answerIds], counts adjusted: shown at once while the vote is sent. */
+    fun withMyVotes(answerIds: Collection<Int>): Poll = copy(answers = answers.map { a ->
+        val voted = a.id in answerIds
+        if (voted == a.meVoted) a else a.copy(count = (a.count + if (voted) 1 else -1).coerceAtLeast(0), meVoted = voted)
     })
 
     /** The answer ids to send when the user taps [answerId]: toggles it, replacing the old pick unless [multiselect]. */
@@ -1428,3 +1475,11 @@ fun DiscordMessage.systemText(author: String, target: String? = null): String? =
     } ?: "$author's poll ended"
     else -> null
 }
+
+private val SpoilerSpan = Regex("\\|\\|(.+?)\\|\\|", RegexOption.DOT_MATCHES_ALL)
+private val UrlInText = Regex("https?://[^\\s<>|]+")
+
+/** Links the sender wrapped in spoiler marks (`||https://...||`): their previews stay covered until tapped. */
+fun spoileredLinks(content: String): Set<String> =
+    if (!content.contains("||")) emptySet()
+    else SpoilerSpan.findAll(content).flatMapTo(HashSet()) { m -> UrlInText.findAll(m.groupValues[1]).map { it.value.trimEnd('/') } }

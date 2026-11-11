@@ -58,6 +58,21 @@ class PollTest {
         assertEquals(0, empty.percentOf(empty.answers[0]))
     }
 
+    @Test
+    fun `my vote shows at once and its echo changes nothing`() {
+        val open = Poll.fromJson(json).copy(expiry = null)            // 1: 3 votes (mine), 2: none
+        val moved = open.withMyVotes(open.votesAfterTap(2))           // single choice: my vote moves to 2
+        assertEquals(listOf(2, 1), moved.answers.map { it.count })
+        assertEquals(listOf(false, true), moved.answers.map { it.meVoted })
+        // Discord then reports the same change: it must not be counted twice.
+        val echoed = moved.withVote(1, add = false, mine = true).withVote(2, add = true, mine = true)
+        assertEquals(moved, echoed)
+        // Someone else's vote for the same answer still counts.
+        assertEquals(2, echoed.withVote(2, add = true, mine = false).answers[1].count)
+        // A failed request puts the old picks back exactly.
+        assertEquals(open, moved.withMyVotes(listOf(1)))
+    }
+
     private fun system(type: Int, content: String = "", extra: String = "") = DiscordMessage.fromJson(
         JSONObject(
             """{"id":"1","channel_id":"2","type":$type,"content":"$content","timestamp":"2024-01-01T00:00:00+00:00",

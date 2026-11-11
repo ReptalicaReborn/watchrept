@@ -277,4 +277,52 @@ class FeatureModelsTest {
         assertEquals(ChannelUnreadState("200", 1), furthest)
         assertEquals(Rollback(ChannelUnreadState("200", 1), "200"), rollbackFor(ChannelUnreadState("300", 0), ChannelUnreadState("100", 2), furthest))
     }
+
+    @Test
+    fun `attachments know when they are spoilers and how big they are`() {
+        fun att(name: String, extra: String = "") = Attachment.fromJson(
+            JSONObject("""{"id":"1","filename":"$name","url":"u","proxy_url":"p"$extra}""")
+        )
+        val hidden = att("SPOILER_ending.png")
+        assertTrue(hidden.isSpoiler)
+        assertEquals("ending.png", hidden.displayName)
+        assertTrue(hidden.isImage)
+        assertTrue(att("ending.png", ""","flags":8""").isSpoiler)
+        assertFalse(att("ending.png").isSpoiler)
+
+        val pdf = att("notes.pdf", ""","size":1572864,"content_type":"application/pdf"""")
+        assertTrue(pdf.isOtherFile)
+        assertEquals("1.5 MB", pdf.sizeLabel)
+        assertEquals("340 KB", att("a.zip", ""","size":348160""").sizeLabel)
+        assertEquals(null, att("a.zip").sizeLabel)
+        assertFalse(att("clip.mp4").isOtherFile)
+    }
+
+    @Test
+    fun `links inside spoiler marks are found`() {
+        assertEquals(setOf("https://example.com/a"), spoileredLinks("look ||https://example.com/a/|| and https://example.com/b"))
+        assertEquals(emptySet<String>(), spoileredLinks("https://example.com/a"))
+        assertEquals(emptySet<String>(), spoileredLinks("||just words||"))
+    }
+
+    @Test
+    fun `a bot's answer says who ran which command`() {
+        fun msg(type: Int, extra: String) = DiscordMessage.fromJson(
+            JSONObject(
+                """{"id":"1","channel_id":"2","type":$type,"content":"4","timestamp":"2024-01-01T00:00:00+00:00",
+                    "author":{"id":"50","username":"dicebot","discriminator":"0","bot":true},$extra}"""
+            )
+        )
+        val user = """"user":{"id":"9","username":"anna","discriminator":"0","global_name":"Anna"}"""
+        val slash = msg(20, """"interaction":{"id":"7","type":2,"name":"roll","user":{"id":"9","username":"anna","discriminator":"0","global_name":"Anna"}},"flags":64""")
+        assertEquals("/roll", slash.commandLabel)
+        assertEquals("Anna", slash.interactionUser?.displayName)
+        assertTrue(slash.isEphemeral)
+        // Only the newer field present, and a right-click command: the name has no slash.
+        val context = msg(23, """"interaction_metadata":{"id":"7","type":2,"name":"Report message",$user}""")
+        assertEquals("Report message", context.commandLabel)
+        assertFalse(context.isEphemeral)
+        // A button press has a user but no command to name.
+        assertEquals(null, msg(19, """"interaction_metadata":{"id":"7","type":3,$user}""").commandLabel)
+    }
 }

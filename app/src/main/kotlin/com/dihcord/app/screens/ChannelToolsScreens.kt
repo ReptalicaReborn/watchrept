@@ -86,7 +86,7 @@ internal fun TransformingLazyColumnItemScope.MessageListCard(
 // ---------------------------------------------------------------- Pinned messages
 
 @Composable
-fun PinnedScreen(channelId: String, channelName: String, onOpen: (messageId: String) -> Unit) {
+fun PinnedScreen(channelId: String, channelName: String, guildId: String? = null, onOpen: (messageId: String) -> Unit) {
     val repo = LocalContext.current.discordApp.repository ?: return
     var pins by remember { mutableStateOf<List<DiscordMessage>?>(null) }
     var error by remember { mutableStateOf<Throwable?>(null) }
@@ -94,9 +94,15 @@ fun PinnedScreen(channelId: String, channelName: String, onOpen: (messageId: Str
     val myId = repo.currentUser.collectAsState().value?.id
     LaunchedEffect(channelId, attempt) {
         pins = null; error = null
-        repo.pins(channelId).onSuccess { pins = it }.onFailure { error = it }
+        repo.pins(channelId).onSuccess { list ->
+            pins = list
+            if (guildId != null) repo.loadNicks(guildId, list.map { it.author.id })
+        }.onFailure { error = it }
     }
-    PinnedContent(channelName, pins, error, myId, onRetry = { attempt++ }, onOpen = onOpen)
+    val nicks by repo.nicks.collectAsState()
+    PinnedContent(channelName, pins, error, myId, onRetry = { attempt++ }, onOpen = onOpen) { user ->
+        guildId?.let { nicks["$it:${user.id}"] } ?: user.displayName
+    }
 }
 
 @Composable
@@ -107,6 +113,8 @@ internal fun PinnedContent(
     myId: String?,
     onRetry: () -> Unit,
     onOpen: (String) -> Unit,
+    /** The name to show for an author: their server nickname where they have one. */
+    nameOf: (DiscordUser) -> String = { it.displayName },
 ) {
     val state = rememberTransformingLazyColumnState()
     val spec = rememberTransformationSpec()
@@ -120,7 +128,7 @@ internal fun PinnedContent(
                 pins.isEmpty() -> item { EmptyState(R.drawable.pin, "Nothing pinned yet", "Long-press a message to pin it.") }
                 else -> items(pins.size, key = { pins[it].id }) { i ->
                     val m = pins[i]
-                    MessageListCard(m.author.displayName, m.author.avatarUrl(64), snowflakeMillis(m.id), messagePreview(m, myId), null, spec) { onOpen(m.id) }
+                    MessageListCard(nameOf(m.author), m.author.avatarUrl(64), snowflakeMillis(m.id), messagePreview(m, myId), null, spec) { onOpen(m.id) }
                 }
             }
         }
@@ -145,9 +153,15 @@ fun SearchScreen(channelId: String, guildId: String?, channelName: String, onOpe
         results = null
         val found = repo.search(guildId, channelId, q)
         ensureActive() // A newer search replaced this one: its (cancelled) answer must not show.
-        found.onSuccess { results = it }.onFailure { error = it; results = emptyList() }
+        found.onSuccess { list ->
+            results = list
+            if (guildId != null) repo.loadNicks(guildId, list.map { it.author.id })
+        }.onFailure { error = it; results = emptyList() }
     }
-    SearchContent(channelName, query, { query = it.take(64) }, results, error, myId, onRetry = { attempt++ }, onOpen = onOpen)
+    val nicks by repo.nicks.collectAsState()
+    SearchContent(channelName, query, { query = it.take(64) }, results, error, myId, onRetry = { attempt++ }, onOpen = onOpen) { user ->
+        guildId?.let { nicks["$it:${user.id}"] } ?: user.displayName
+    }
 }
 
 @Composable
@@ -160,6 +174,8 @@ internal fun SearchContent(
     myId: String?,
     onRetry: () -> Unit,
     onOpen: (String) -> Unit,
+    /** The name to show for an author: their server nickname where they have one. */
+    nameOf: (DiscordUser) -> String = { it.displayName },
 ) {
     val state = rememberTransformingLazyColumnState()
     val spec = rememberTransformationSpec()
@@ -184,7 +200,7 @@ internal fun SearchContent(
                 results.isEmpty() -> item { EmptyState(R.drawable.search, "No messages found", "Try another word.") }
                 else -> items(results.size, key = { results[it].id }) { i ->
                     val m = results[i]
-                    MessageListCard(m.author.displayName, m.author.avatarUrl(64), snowflakeMillis(m.id), messagePreview(m, myId), null, spec) { onOpen(m.id) }
+                    MessageListCard(nameOf(m.author), m.author.avatarUrl(64), snowflakeMillis(m.id), messagePreview(m, myId), null, spec) { onOpen(m.id) }
                 }
             }
         }

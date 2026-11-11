@@ -151,6 +151,36 @@ class NewFeaturesShotTest {
             }
         }
     }
+    @Test fun chatAttachments() = shot("chat_attachments") {
+        val il = LocalContext.current.imageLoader
+        val now = java.time.Instant.now().toString()
+        androidx.wear.compose.material3.ScreenScaffold(timeText = { TitledTimeText("#general") }) {
+            androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.padding(start = 20.dp, end = 18.dp, top = 34.dp)) {
+                MessageBubble(
+                    msg = DiscordMessage(
+                        SampleData.id(7), "603", SampleData.spam, "4, 2 and 6", now, null, type = 20, flags = 64,
+                        interactionUser = SampleData.ines, interactionName = "roll"
+                    ),
+                    isContinuation = false, imageLoader = il, guildId = "700",
+                    nicks = mapOf("700:${SampleData.ines.id}" to "Inês (builder)"), onReact = {}, onLongPress = {}
+                )
+                MessageBubble(
+                    msg = DiscordMessage(
+                        SampleData.id(8), "603", SampleData.ines, "", now, null,
+                        attachments = listOf(Attachment("1", "castle-build-plan-final.pdf", "", "", "application/pdf", null, null, size = 1_572_864))
+                    ),
+                    isContinuation = false, imageLoader = il, onReact = {}, onLongPress = {}
+                )
+                MessageBubble(
+                    msg = DiscordMessage(
+                        SampleData.id(9), "603", SampleData.ines, "", now, null,
+                        attachments = listOf(Attachment("2", "SPOILER_ending.png", "", "", "image/png", 800, 600))
+                    ),
+                    isContinuation = true, imageLoader = il, onReact = {}, onLongPress = {}
+                )
+            }
+        }
+    }
     @Test fun chatNewLine() = shot("chat_new_line") {
         ChatScreen(SampleData.general.id, SampleData.general.name, SampleData.blockhaven.id, currentUserId = SampleData.me.id,
             onOpenPins = {}, onOpenSearch = {}, onOpenMembers = {}, onOpenThreads = {})

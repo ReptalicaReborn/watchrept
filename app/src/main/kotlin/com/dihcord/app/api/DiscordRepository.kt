@@ -1169,9 +1169,20 @@ class DiscordRepository(
             }
         }
 
+    private fun setMyPollVotes(channelId: String, messageId: String, answerIds: List<Int>) = _messages.update { current ->
+        val list = current[channelId] ?: return@update current
+        current + (channelId to list.map { m -> if (m.id == messageId && m.poll != null) m.copy(poll = m.poll.withMyVotes(answerIds)) else m })
+    }
+
     suspend fun votePoll(channelId: String, message: DiscordMessage, answerId: Int): Result<Unit> {
-        val poll = message.poll ?: return Result.failure(IllegalStateException("Not a poll"))
-        return rest.votePoll(channelId, message.id, poll.votesAfterTap(answerId))
+        // The copy we hold, not the one the screen drew: a second quick tap must build on the first.
+        val poll = _messages.value[channelId]?.firstOrNull { it.id == message.id }?.poll ?: message.poll
+            ?: return Result.failure(IllegalStateException("Not a poll"))
+        val before = poll.answers.filter { it.meVoted }.map { it.id }
+        val wanted = poll.votesAfterTap(answerId)
+        // Shown straight away; Discord's own vote event for it then changes nothing, and a failure puts it back.
+        setMyPollVotes(channelId, message.id, wanted)
+        return rest.votePoll(channelId, message.id, wanted).onFailure { setMyPollVotes(channelId, message.id, before) }
     }
 
     suspend fun getStatus(): Result<Pair<String, String>> = rest.getStatus()

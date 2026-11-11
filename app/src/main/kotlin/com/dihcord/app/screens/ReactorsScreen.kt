@@ -47,7 +47,9 @@ fun ReactorsScreen(
     messageId: String,
     reaction: Reaction,
     imageLoader: ImageLoader,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** The server the message is in, to show people's nicknames there. */
+    guildId: String? = null,
 ) {
     BackHandler { onDismiss() }
     val repo = LocalContext.current.discordApp.repository
@@ -58,9 +60,15 @@ fun ReactorsScreen(
         users = null
         error = null
         val result = repo?.reactionUsers(channelId, messageId, reaction) ?: return@LaunchedEffect
-        result.onSuccess { users = it }.onFailure { error = it }
+        result.onSuccess { list ->
+            users = list
+            if (guildId != null) repo.loadNicks(guildId, list.map { it.id })
+        }.onFailure { error = it }
     }
-    ReactorsContent(reaction, users, error, imageLoader, onRetry = { attempt++ })
+    val nicks = repo?.nicks?.collectAsState()?.value.orEmpty()
+    ReactorsContent(reaction, users, error, imageLoader, onRetry = { attempt++ }) { user ->
+        guildId?.let { nicks["$it:${user.id}"] } ?: user.displayName
+    }
 }
 
 /** The reactors list from plain data: null [users] means still loading. */
@@ -71,6 +79,7 @@ internal fun ReactorsContent(
     error: Throwable?,
     imageLoader: ImageLoader,
     onRetry: () -> Unit,
+    nameOf: (DiscordUser) -> String = { it.displayName },
 ) {
     UserListContent(
         users = users,
@@ -78,6 +87,7 @@ internal fun ReactorsContent(
         errorText = "Couldn't load who reacted",
         emptyText = "They may have removed it.",
         onRetry = onRetry,
+        nameOf = nameOf,
     ) {
         val url = reaction.emoji.imageUrl
         if (url != null) {

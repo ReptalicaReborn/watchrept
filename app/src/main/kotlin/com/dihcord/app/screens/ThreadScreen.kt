@@ -276,7 +276,7 @@ fun ThreadScreen(
     LaunchedEffect(threadMessages, guildId, loading) {
         if (!loading && guildId != null) {
             repo.loadNicks(guildId, threadMessages.flatMapTo(HashSet()) { m ->
-                m.mentionedUsers.map { it.id } + listOfNotNull(m.referencedMessage?.author?.id) + m.author.id
+                m.mentionedUsers.map { it.id } + listOfNotNull(m.referencedMessage?.author?.id, m.interactionUser?.id) + m.author.id
             })
             threadMessages.map { it.author.id }.distinct()
                 .filterNot { roleColorCache.containsKey(it) }
@@ -415,7 +415,7 @@ fun ThreadScreen(
     }
 
     reactorsFor?.let { (messageId, reaction) ->
-        ReactorsScreen(threadId, messageId, reaction, imageLoader, onDismiss = { reactorsFor = null })
+        ReactorsScreen(threadId, messageId, reaction, imageLoader, onDismiss = { reactorsFor = null }, guildId = guildId)
         return
     }
 
@@ -527,7 +527,8 @@ fun ThreadScreen(
                     else Long.MAX_VALUE
                     val isContinuation = prevMsg != null &&
                         prevMsg.author.id == msg.author.id && gapMs < 10 * 60 * 1000L &&
-                        !msg.isSystem && !prevMsg.isSystem
+                        !msg.isSystem && !prevMsg.isSystem &&
+                        msg.type !in listOf(19, 20, 23) && prevMsg.type !in listOf(19, 20, 23)
 
                     MessageBubble(
                         msg = msg,
@@ -547,7 +548,10 @@ fun ThreadScreen(
                         },
                         onShowReactors = { reaction -> reactorsFor = msg.id to reaction },
                         onPollVote = { answerId ->
-                            scope.launch { repo.votePoll(threadId, msg, answerId) }
+                            scope.launch {
+                                repo.votePoll(threadId, msg, answerId)
+                                    .onFailure { sendError = "Vote failed: ${it.message}" }
+                            }
                         },
                         onSwipeToReply = { msgToReply ->
                             replyingTo = msgToReply
