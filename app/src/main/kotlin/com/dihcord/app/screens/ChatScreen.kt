@@ -2234,7 +2234,7 @@ internal fun MessageBubble(
                             msg.referencedMessage?.attachments ?: emptyList()
                         }
                         fwdAtts.filter { it.isImage }.forEach { att ->
-                            MediaImage(att.proxyUrl, att.displayName, imageLoader, spoiler = att.isSpoiler)
+                            MediaImage(att.proxyUrl, att.displayName, imageLoader, spoiler = att.isSpoiler, width = att.width, height = att.height)
                         }
                         fwdAtts.filter { it.isOtherFile }.forEach { att -> FileAttachment(att) }
                         val fwdEmbeds = msg.forwardedEmbeds.ifEmpty {
@@ -2278,7 +2278,7 @@ internal fun MessageBubble(
                 }
 
                 msg.attachments.filter { it.isImage }.forEach { att ->
-                    MediaImage(att.proxyUrl, att.displayName, imageLoader, spoiler = att.isSpoiler)
+                    MediaImage(att.proxyUrl, att.displayName, imageLoader, spoiler = att.isSpoiler, width = att.width, height = att.height)
                 }
                 msg.attachments.filter { it.isVideo }.forEach { att ->
                     SpoilerCover(att.isSpoiler, att.id, Modifier.padding(top = 2.dp).size(width = 140.dp, height = 80.dp)) {
@@ -2770,6 +2770,9 @@ private fun MediaImage(
     size: Dp = 120.dp,
     /** Marked as a spoiler by the sender: not even loaded until tapped. */
     spoiler: Boolean = false,
+    /** The picture's real size, when known: lets a copy the size of the screen be loaded instead of the original. */
+    width: Int? = null,
+    height: Int? = null,
 ) {
     var revealed by rememberSaveable(url) { mutableStateOf(false) }
     if (spoiler && !revealed) {
@@ -2777,18 +2780,27 @@ private fun MediaImage(
         return
     }
     var viewing by remember { mutableStateOf(false) }
+    val boxPx = with(LocalDensity.current) { size.roundToPx() }
+    val small = remember(url, width, height, boxPx) { MediaSize.fit(url, width, height, boxPx) }
+    // Should the resized copy ever fail to load, the original still does.
+    var failed by remember(url) { mutableStateOf(false) }
+    val shown = if (failed) url else small
     AsyncImage(
         model = ImageRequest.Builder(LocalContext.current)
-            .data(url).crossfade(true).build(),
+            .data(shown).memoryCacheKey(shown).crossfade(true).build(),
         imageLoader = imageLoader,
         contentDescription = contentDesc,
         contentScale = ContentScale.Fit,
+        onError = { if (shown != url) failed = true },
         modifier = Modifier
             .padding(top = 2.dp)
             .size(size)
             .clickable { viewing = true }
     )
-    if (viewing) ImageViewer(url, contentDesc, imageLoader) { viewing = false }
+    if (viewing) {
+        val large = if (failed) url else MediaSize.fit(url, width, height, MediaSize.VIEWER_PX)
+        ImageViewer(large, contentDesc, imageLoader, saveUrl = url, previewKey = shown) { viewing = false }
+    }
 }
 
 /** Strikethrough and/or underline for a markdown span (null when neither). */
@@ -2889,12 +2901,20 @@ private fun EmbedCard(embed: Embed, imageLoader: ImageLoader) {
         var viewingEmbedImage by remember { mutableStateOf(false) }
         if (imgUrl != null) {
             Spacer(Modifier.height(4.dp))
+            // Discord's copy of the picture, sized for the watch; the site's own (full-size) file if that fails.
+            val boxPx = with(LocalDensity.current) { 160.dp.roundToPx() }
+            val small = remember(embed, boxPx) {
+                embed.displayImageProxyUrl?.let { MediaSize.fit(it, embed.displayImageWidth, embed.displayImageHeight, boxPx) }
+            }
+            var failed by remember(embed) { mutableStateOf(false) }
+            val shown = if (small == null || failed) imgUrl else small
             AsyncImage(
                 model = ImageRequest.Builder(LocalContext.current)
-                    .data(imgUrl).crossfade(true).build(),
+                    .data(shown).crossfade(true).build(),
                 imageLoader = imageLoader,
                 contentDescription = embed.title ?: "embed image",
                 contentScale = ContentScale.Fit,
+                onError = { if (shown != imgUrl) failed = true },
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 120.dp)
@@ -3017,9 +3037,12 @@ private fun VideoAttachment(att: Attachment, imageLoader: ImageLoader) {
                 }
             }
     ) {
+        // A still frame from Discord's proxy. Loading the video's own address as a picture would download the
+        // whole video only to fail to draw it.
+        val posterPx = with(LocalDensity.current) { 140.dp.roundToPx() }
         AsyncImage(
             model = ImageRequest.Builder(context)
-                .data(att.proxyUrl)
+                .data(remember(att, posterPx) { MediaSize.poster(att.proxyUrl, att.width, att.height, posterPx) })
                 .crossfade(true)
                 .build(),
             imageLoader = imageLoader,
