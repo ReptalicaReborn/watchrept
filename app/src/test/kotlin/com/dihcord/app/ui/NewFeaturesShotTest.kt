@@ -201,6 +201,13 @@ class NewFeaturesShotTest {
                     isContinuation = false, imageLoader = il, guildId = "700", roleColorCache = roles, onReact = {}, onLongPress = {}
                 )
                 TypingIndicator(listOf("Inês", "Zaffox"))
+                TypingIndicator(
+                    listOf("rept"),
+                    TypingStyle(
+                        listOf(ReactionEmoji(null, "🐱", false), ReactionEmoji(null, "🐾", false), ReactionEmoji(null, "✨", false)),
+                        TypingStyle.Animation.PULSE, "meowing"
+                    )
+                )
             }
         }
     }

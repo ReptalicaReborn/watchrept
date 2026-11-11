@@ -1496,3 +1496,37 @@ private val UrlInText = Regex("https?://[^\\s<>|]+")
 fun spoileredLinks(content: String): Set<String> =
     if (!content.contains("||")) emptySet()
     else SpoilerSpan.findAll(content).flatMapTo(HashSet()) { m -> UrlInText.findAll(m.groupValues[1]).map { it.value.trimEnd('/') } }
+
+/**
+ * Someone's custom typing indicator (a Nitro feature): up to three emoji shown in place of the dots, how they
+ * move, and the word used instead of "typing". Discord shows it only while that person is the only one typing.
+ */
+data class TypingStyle(val emojis: List<ReactionEmoji>, val animation: Animation, val verb: String) {
+    enum class Animation { NONE, PULSE, RING, WAVE }
+
+    companion object {
+        /** Discord sends the word as a number from a fixed list. */
+        private val Verbs = listOf("typing", "yapping", "venting", "oversharing", "barking", "babbling", "daydreaming", "meowing")
+
+        /** Null when [o] holds nothing to show: no emoji and the ordinary word. */
+        fun fromJson(o: JSONObject?): TypingStyle? {
+            if (o == null) return null
+            val arr = o.optJSONArray("emojis")
+            val emojis = if (arr == null) emptyList() else (0 until arr.length()).mapNotNull { i ->
+                val e = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = e.optString("id").takeIf { it.isNotEmpty() && it != "null" }
+                val name = e.optString("name").takeIf { it != "null" }.orEmpty()
+                if (id == null && name.isEmpty()) null else ReactionEmoji(id, name, e.optBoolean("animated", false))
+            }.take(3)
+            val verb = Verbs.getOrNull(o.optInt("typing_suggestion", o.optInt("typingSuggestion", 0))) ?: Verbs[0]
+            if (emojis.isEmpty() && verb == Verbs[0]) return null
+            return TypingStyle(emojis, Animation.values().getOrNull(o.optInt("animation", 0)) ?: Animation.NONE, verb)
+        }
+
+        /** Looks in the places a typing event or a user object may carry the style. */
+        fun find(vararg holders: JSONObject?): JSONObject? = holders.firstNotNullOfOrNull { h ->
+            h?.optJSONObject("custom_typing_indicator_config") ?: h?.optJSONObject("typing_indicator_style")
+                ?: h?.optJSONObject("customTypingIndicatorConfig") ?: h?.optJSONObject("typingIndicatorStyle")
+        }
+    }
+}

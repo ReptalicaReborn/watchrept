@@ -943,6 +943,11 @@ class DiscordRepository(
 
     fun getDisplayName(userId: String): String? = userDisplayNames[userId]
 
+    private val typingStyles = java.util.concurrent.ConcurrentHashMap<String, TypingStyle>()
+
+    /** [userId]'s custom typing indicator, as their latest typing event described it. */
+    fun typingStyleOf(userId: String): TypingStyle? = typingStyles[userId]
+
     // ---- Typing ----
 
     private val typingSentAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
@@ -1711,6 +1716,8 @@ class DiscordRepository(
 
                     is GatewayEvent.TypingStart -> {
                         event.displayName?.let { userDisplayNames[event.userId] = it }
+                        // Each typing event says how its author's indicator looks right now.
+                        if (event.style != null) typingStyles[event.userId] = event.style else typingStyles.remove(event.userId)
                         val updated = _typing.value.toMutableMap()
                         val users = (updated[event.channelId] ?: emptySet()) + event.userId
                         updated[event.channelId] = users

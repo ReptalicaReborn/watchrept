@@ -337,4 +337,25 @@ class FeatureModelsTest {
             role(""","colors":{"primary_color":255,"secondary_color":16759788,"tertiary_color":16761760}""").gradient
         )
     }
+
+    @Test
+    fun `a custom typing indicator is read from a typing event`() {
+        val event = JSONObject(
+            """{"channel_id":"1","user_id":"9","custom_typing_indicator_config":{"animation":1,"typing_suggestion":7,
+                "emojis":[{"id":"123","name":"cat","animated":true},{"id":null,"name":"🐾"},{"id":null,"name":"✨"},{"id":null,"name":"x"}]}}"""
+        )
+        val style = TypingStyle.fromJson(TypingStyle.find(event))!!
+        assertEquals(TypingStyle.Animation.PULSE, style.animation)
+        assertEquals("meowing", style.verb)
+        assertEquals(listOf("cat", "🐾", "✨"), style.emojis.map { it.name })   // never more than three
+        assertEquals("123", style.emojis[0].id)
+        // On the user object instead, and values we don't know fall back to the ordinary ones.
+        val onUser = JSONObject("""{"id":"9","typing_indicator_style":{"animation":42,"typing_suggestion":99,"emojis":[{"name":"🐱"}]}}""")
+        val unknown = TypingStyle.fromJson(TypingStyle.find(JSONObject("{}"), onUser))!!
+        assertEquals(TypingStyle.Animation.NONE, unknown.animation)
+        assertEquals("typing", unknown.verb)
+        // Nothing custom: no style at all.
+        assertNull(TypingStyle.fromJson(TypingStyle.find(JSONObject("""{"user_id":"9"}"""))))
+        assertNull(TypingStyle.fromJson(JSONObject("""{"emojis":[],"animation":2,"typing_suggestion":0}""")))
+    }
 }

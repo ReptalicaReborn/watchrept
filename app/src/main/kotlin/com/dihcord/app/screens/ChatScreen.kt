@@ -1254,7 +1254,8 @@ fun ChatScreen(
                         val names = currentTypingUsers.map { uid ->
                             repo.nickIn(guildId, uid) ?: repo.getDisplayName(uid) ?: "Someone"
                         }
-                        TypingIndicator(names)
+                        // A custom indicator shows only while its owner is the only one typing, as in Discord.
+                        TypingIndicator(names, currentTypingUsers.singleOrNull()?.let { repo.typingStyleOf(it) }, imageLoader)
                     }
                 }
 
@@ -3487,18 +3488,23 @@ private fun SystemMessageLine(
 }
 
 /**
- * Discord's typing indicator: three dots that bounce in turn, then who is typing with the names in bold.
- * In lite mode the dots stay still.
+ * Discord's typing indicator: three dots that bounce in turn, then who is typing with the names in bold. A lone
+ * typist's custom indicator ([style]) replaces the dots with their emoji and "typing" with their word.
+ * In lite mode nothing moves.
  */
 @Composable
-internal fun TypingIndicator(names: List<String>) {
-    val phase = if (Perf.lite) null else {
-        val transition = rememberInfiniteTransition(label = "typing")
-        transition.animateFloat(
-            initialValue = 0f, targetValue = 1f, label = "typingPhase",
-            animationSpec = infiniteRepeatable(tween(1200, easing = LinearEasing))
+internal fun TypingIndicator(names: List<String>, style: TypingStyle? = null, imageLoader: ImageLoader? = null) {
+    val custom = style?.takeIf { names.size == 1 }
+    val emojis = custom?.emojis.orEmpty()
+    val animation = custom?.animation ?: TypingStyle.Animation.NONE
+    val moving = !Perf.lite && (emojis.isEmpty() || animation != TypingStyle.Animation.NONE)
+    // One cycle, 0..1. The emoji animations run at Discord's pace: 1.31 s, the ring a little slower.
+    val phase = if (!moving) null else rememberInfiniteTransition(label = "typing").animateFloat(
+        initialValue = 0f, targetValue = 1f, label = "typingPhase",
+        animationSpec = infiniteRepeatable(
+            tween(if (emojis.isEmpty()) 1200 else if (animation == TypingStyle.Animation.RING) 1610 else 1310, easing = LinearEasing)
         )
-    }
+    )
     val dotColor = MaterialTheme.colorScheme.onSurfaceVariant
     Row(
         modifier = Modifier
@@ -3507,24 +3513,59 @@ internal fun TypingIndicator(names: List<String>) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
-        Canvas(Modifier.size(width = 18.dp, height = 8.dp)) {
-            val r = 2.dp.toPx()
-            for (i in 0..2) {
-                // Each dot takes its turn in the first part of the cycle: it rises, brightens and comes back.
-                val t = phase?.let { ((it.value - i * 0.16f + 1f) % 1f) } ?: 1f
-                val lift = if (t < 0.4f) kotlin.math.sin(t / 0.4f * Math.PI).toFloat() else 0f
-                drawCircle(
-                    color = dotColor.copy(alpha = 0.45f + 0.55f * lift),
-                    radius = r * (1f + 0.2f * lift),
-                    center = androidx.compose.ui.geometry.Offset(r * 1.3f + i * 6.dp.toPx(), size.height / 2 - lift * 1.5.dp.toPx())
-                )
+        if (emojis.isEmpty()) {
+            Canvas(Modifier.size(width = 18.dp, height = 8.dp)) {
+                val r = 2.dp.toPx()
+                for (i in 0..2) {
+                    // Each dot takes its turn in the first part of the cycle: it rises, brightens and comes back.
+                    val t = phase?.let { ((it.value - i * 0.16f + 1f) % 1f) } ?: 1f
+                    val lift = if (t < 0.4f) kotlin.math.sin(t / 0.4f * Math.PI).toFloat() else 0f
+                    drawCircle(
+                        color = dotColor.copy(alpha = 0.45f + 0.55f * lift),
+                        radius = r * (1f + 0.2f * lift),
+                        center = androidx.compose.ui.geometry.Offset(r * 1.3f + i * 6.dp.toPx(), size.height / 2 - lift * 1.5.dp.toPx())
+                    )
+                }
+            }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                emojis.forEachIndexed { i, emoji ->
+                    val motion = Modifier.graphicsLayer {
+                        // Each emoji starts a quarter of a cycle after the one before it.
+                        val t = phase?.let { ((it.value - i * 0.245f + 1f) % 1f) } ?: return@graphicsLayer
+                        // Up in the first 40% of the cycle, then at rest.
+                        val bump = if (t < 0.4f) kotlin.math.sin(t / 0.4f * Math.PI).toFloat() else 0f
+                        when (animation) {
+                            TypingStyle.Animation.PULSE -> { scaleX = 1f + 0.16f * bump; scaleY = scaleX }
+                            TypingStyle.Animation.WAVE -> translationY = -2.dp.toPx() * bump
+                            TypingStyle.Animation.RING -> {
+                                val angle = t * 2 * Math.PI
+                                translationX = (kotlin.math.cos(angle) * 1.dp.toPx()).toFloat()
+                                translationY = (-kotlin.math.sin(angle) * 1.dp.toPx()).toFloat() - 1.dp.toPx()
+                            }
+                            TypingStyle.Animation.NONE -> {}
+                        }
+                    }
+                    val url = emoji.imageUrl
+                    if (url != null) {
+                        AsyncImage(
+                            model = url.replace("size=16", "size=48"),
+                            imageLoader = imageLoader ?: LocalContext.current.imageLoader,
+                            contentDescription = emoji.name,
+                            modifier = Modifier.size(14.dp).then(motion)
+                        )
+                    } else {
+                        Text(emoji.name, fontSize = 11.sp, modifier = motion)
+                    }
+                }
             }
         }
+        val verb = custom?.verb ?: "typing"
         val bold = SpanStyle(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
         Text(
             text = buildAnnotatedString {
                 when (names.size) {
-                    1 -> { withStyle(bold) { append(names[0]) }; append(" is typing…") }
+                    1 -> { withStyle(bold) { append(names[0]) }; append(" is $verb…") }
                     2 -> {
                         withStyle(bold) { append(names[0]) }; append(" and ")
                         withStyle(bold) { append(names[1]) }; append(" are typing…")

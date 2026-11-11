@@ -594,7 +594,8 @@ class DiscordGateway(private val token: String) {
                 GatewayEvent.TypingStart(
                     channelId = d.getString("channel_id"),
                     userId = d.getString("user_id"),
-                    displayName = displayName
+                    displayName = displayName,
+                    style = TypingStyle.fromJson(TypingStyle.find(d, userObj, memberObj))
                 )
             }.getOrNull()
 
@@ -796,7 +797,9 @@ sealed class GatewayEvent {
     data class TypingStart(
         val channelId: String,
         val userId: String,
-        val displayName: String? = null
+        val displayName: String? = null,
+        /** Their custom typing indicator, when they have one. */
+        val style: TypingStyle? = null
     ) : GatewayEvent()
 
     data class PresenceUpdate(val presence: UserPresence) : GatewayEvent()
