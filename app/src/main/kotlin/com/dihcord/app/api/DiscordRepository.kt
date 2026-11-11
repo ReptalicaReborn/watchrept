@@ -712,7 +712,9 @@ class DiscordRepository(
         val roleMap = roles.associateBy { it.id }
         return roleIds
             .mapNotNull { roleMap[it] }
-            .filter { it.color != 0 || it.unicodeEmoji != null || it.iconHash != null }
+            // The name takes the colour of the highest role that has one. A higher role with only an icon doesn't
+            // count: its icon is found separately (getRoleWithIconForUser).
+            .filter { it.color != 0 }
             .maxByOrNull { it.position }
     }
 
