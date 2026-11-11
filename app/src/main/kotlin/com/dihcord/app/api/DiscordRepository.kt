@@ -187,11 +187,6 @@ class DiscordRepository(
     // These are touched from the gateway, background loads and the UI at once, so they must be thread-safe.
     private val channelNameCache = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val channelGuildCache = java.util.concurrent.ConcurrentHashMap<String, String>()
-    private val memberRolesCache: MutableMap<String, List<String>> = java.util.Collections.synchronizedMap(
-        object : LinkedHashMap<String, List<String>>(32, 0.75f, true) {
-            override fun removeEldestEntry(eldest: Map.Entry<String, List<String>>?) =
-                size > 100 // Max 100 user role lookups cached
-        })
     private val guildRolesCache: MutableMap<String, List<GuildRole>> = java.util.Collections.synchronizedMap(
         object : LinkedHashMap<String, List<GuildRole>>(16, 0.75f, true) {
             override fun removeEldestEntry(eldest: Map.Entry<String, List<GuildRole>>?) =
@@ -199,18 +194,68 @@ class DiscordRepository(
         })
     private val guildMemberCache: MutableMap<String, GuildMember> = java.util.Collections.synchronizedMap(
         object : LinkedHashMap<String, GuildMember>(64, 0.75f, true) {
-            override fun removeEldestEntry(eldest: Map.Entry<String, GuildMember>?) = size > 200
+            override fun removeEldestEntry(eldest: Map.Entry<String, GuildMember>?) = size > 400
         })
+    /** "guildId:userId" of message authors who aren't members (webhooks, people who left): not asked for again. */
+    private val nonMembers = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    /** Member requests on their way to the gateway, by "guildId:userId", so the same person isn't asked for twice. */
+    private val memberLoads = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Unit>>()
+
+    /** Remembers a member learned from anywhere: a lookup, a gateway answer, a live message. */
+    private fun noteMember(guildId: String, member: GuildMember) {
+        if (member.userId.isEmpty()) return
+        val key = "$guildId:${member.userId}"
+        guildMemberCache[key] = member
+        nonMembers.remove(key)
+    }
 
     suspend fun getGuildMember(guildId: String, userId: String): GuildMember? {
         val cacheKey = "$guildId:$userId"
         guildMemberCache[cacheKey]?.let { return it }
-        val member = rest.getGuildMember(guildId, userId).getOrNull()
-        if (member != null) {
-            guildMemberCache[cacheKey] = member
-            noteNicks(guildId, mapOf(userId to member.nick))
+        if (cacheKey in nonMembers) return null
+        return rest.getGuildMember(guildId, userId)
+            .onSuccess { member ->
+                // The answer names the user itself; the key we asked with is the one to file it under.
+                noteMember(guildId, member.copy(userId = userId))
+                noteNicks(guildId, mapOf(userId to member.nick))
+            }
+            .onFailure { if (it is DiscordApiException && it.httpCode == 404) nonMembers.add(cacheKey) }
+            .getOrNull()
+    }
+
+    /**
+     * Makes sure the members behind [userIds] are known, asking the gateway for all the missing ones in one
+     * request (as Discord's own apps do) rather than one HTTP request per person. Returns when the answer is
+     * in or after a few seconds; whoever is still unknown then is fetched one by one by [getGuildMember].
+     */
+    suspend fun loadMembers(guildId: String, userIds: Collection<String>) {
+        if (!gateway.online.value) return
+        val missing = userIds.toSet().filter { "$guildId:$it".let { key -> key !in guildMemberCache && key !in nonMembers } }
+        if (missing.isEmpty()) return
+        missing.filter { !memberLoads.containsKey("$guildId:$it") }.chunked(100).forEach { ids ->
+            // In the repository's own scope: a screen that recomposes (a new message arrived) must not cancel
+            // the request and then ask for the same people again.
+            val load = scope.async(start = kotlinx.coroutines.CoroutineStart.LAZY) { requestMembers(guildId, ids) }
+            ids.forEach { memberLoads["$guildId:$it"] = load }
+            load.invokeOnCompletion { ids.forEach { id -> memberLoads.remove("$guildId:$id", load) } }
+            load.start()
         }
-        return member
+        missing.mapNotNullTo(HashSet()) { memberLoads["$guildId:$it"] }.forEach { runCatching { it.await() }.onFailure { e -> if (e is kotlinx.coroutines.CancellationException) throw e } }
+    }
+
+    private suspend fun requestMembers(guildId: String, ids: List<String>) {
+        val nonce = "members${System.nanoTime()}"
+        kotlinx.coroutines.withTimeoutOrNull(3_000) {
+            kotlinx.coroutines.coroutineScope {
+                // Listening before asking, or a quick answer could be missed. The chunks are filed by the
+                // gateway event handler before they reach here.
+                val answered = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                    memberChunks.first { it.nonce == nonce && it.isLast }
+                }
+                gateway.requestGuildMembersByIds(guildId, ids, nonce)
+                answered.await()
+            }
+        }
     }
 
     /** Server nicknames seen so far, keyed "guildId:userId". People without one are simply absent. */
@@ -660,10 +705,7 @@ class DiscordRepository(
 
     /** Returns the highest-position coloured role for a user, or null if none. */
     suspend fun getTopRoleForUser(guildId: String, userId: String): GuildRole? {
-        val cacheKey = "$guildId/$userId"
-        val roleIds = memberRolesCache.getOrPut(cacheKey) {
-            rest.getGuildMemberRoles(guildId, userId).getOrNull() ?: return null
-        }
+        val roleIds = getGuildMember(guildId, userId)?.roleIds ?: return null
         val roles = guildRolesCache.getOrPut(guildId) {
             rest.getGuildRoles(guildId).getOrNull() ?: return null
         }
@@ -675,10 +717,7 @@ class DiscordRepository(
     }
 
     suspend fun getRolesForUser(guildId: String, userId: String): List<GuildRole> {
-        val cacheKey = "$guildId/$userId"
-        val roleIds = memberRolesCache.getOrPut(cacheKey) {
-            rest.getGuildMemberRoles(guildId, userId).getOrNull() ?: return emptyList()
-        }
+        val roleIds = getGuildMember(guildId, userId)?.roleIds ?: return emptyList()
         val roles = guildRolesCache.getOrPut(guildId) {
             rest.getGuildRoles(guildId).getOrNull() ?: return emptyList()
         }
@@ -1427,12 +1466,18 @@ class DiscordRepository(
 
                     is GatewayEvent.MemberUpdate -> {
                         noteNicks(event.guildId, mapOf(event.userId to event.nick))
-                        // The cached member (nickname, server avatar) is out of date now.
-                        guildMemberCache.remove("${event.guildId}:${event.userId}")
+                        // The cached member (roles, nickname, server avatar) is out of date now: replaced by the
+                        // one the update carries, or dropped so the next look fetches it.
+                        if (event.member != null) noteMember(event.guildId, event.member)
+                        else guildMemberCache.remove("${event.guildId}:${event.userId}")
                     }
 
                     is GatewayEvent.MembersChunk -> {
-                        event.guildId?.let { noteNicks(it, event.nicks) }
+                        event.guildId?.let { g ->
+                            noteNicks(g, event.nicks)
+                            event.fullMembers.forEach { noteMember(g, it) }
+                            event.notFound.forEach { nonMembers.add("$g:$it") }
+                        }
                         event.members.forEach { userDisplayNames[it.id] = it.displayName }
                         if (event.nonce?.startsWith("voice") == true) {
                             _voiceProfiles.update { profiles ->
@@ -1525,7 +1570,10 @@ class DiscordRepository(
                         if (msg.author.id == currentUserId) typingDone(msg.channelId)
                         unread.onMessage(msg.channelId, msg.id, _readState.value, msg.guildId)
                         userDisplayNames[msg.author.id] = msg.author.displayName
-                        event.guildId?.let { noteNicks(it, event.nicks) }
+                        event.guildId?.let { g ->
+                            noteNicks(g, event.nicks)
+                            event.member?.let { noteMember(g, it) }
+                        }
                         val myId = currentUserId
                         if (myId != null && msg.author.id == myId &&
                             event.guildId != null && event.memberRoleIds.isNotEmpty()

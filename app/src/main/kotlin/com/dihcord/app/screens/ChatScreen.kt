@@ -190,9 +190,10 @@ fun ChatScreen(
 
     LaunchedEffect(messages, guildId, loading) {
         if (!loading && guildId != null) {
-            // Authors are looked up one by one below; people only mentioned or replied to are asked for together.
-            repo.loadNicks(guildId, messages.flatMapTo(HashSet()) { m ->
-                m.mentionedUsers.map { it.id } + listOfNotNull(m.referencedMessage?.author?.id, m.interactionUser?.id)
+            // Everyone in view (authors, people mentioned or replied to) in one gateway request; the lookups
+            // below then find them already there, and only fetch one by one whoever is still missing.
+            repo.loadMembers(guildId, messages.flatMapTo(HashSet()) { m ->
+                m.mentionedUsers.map { it.id } + listOfNotNull(m.referencedMessage?.author?.id, m.interactionUser?.id) + m.author.id
             })
             messages
                 .map { it.author.id }

@@ -482,7 +482,9 @@ class DiscordGateway(private val token: String) {
                         nicks[u.optString("id")] = memberNick(m)
                     }
                 }
-                GatewayEvent.MessageCreate(msg, roleIds, guildId, nicks)
+                // The author's member data comes with the message: no need to ask for it again.
+                val member = memberObj?.let { runCatching { GuildMember.fromJson(it).copy(userId = msg.author.id) }.getOrNull() }
+                GatewayEvent.MessageCreate(msg, roleIds, guildId, nicks, member)
             }.getOrNull()
 
             "MESSAGE_UPDATE" -> runCatching {
@@ -574,12 +576,14 @@ class DiscordGateway(private val token: String) {
             "GUILD_MEMBERS_CHUNK" -> runCatching {
                 val arr = d.optJSONArray("members") ?: JSONArray()
                 val nicks = HashMap<String, String?>()
+                val full = ArrayList<GuildMember>(arr.length())
                 val members = (0 until arr.length()).mapNotNull { i ->
                     val m = arr.optJSONObject(i) ?: return@mapNotNull null
                     val u = m.optJSONObject("user") ?: return@mapNotNull null
                     val user = DiscordUser.fromJson(u)
                     val nick = memberNick(m)
                     nicks[user.id] = nick
+                    runCatching { GuildMember.fromJson(m) }.getOrNull()?.takeIf { it.userId.isNotEmpty() }?.let { full += it }
                     // A server-specific avatar wins over the account one.
                     val guildAvatar = if (m.isNull("avatar")) null else m.optString("avatar").takeIf { it.isNotEmpty() }
                     val chunkGuild = d.optString("guild_id")
@@ -590,7 +594,10 @@ class DiscordGateway(private val token: String) {
                 }
                 GatewayEvent.MembersChunk(
                     d.optString("nonce").takeIf { it.isNotEmpty() }, members,
-                    guildId = d.optString("guild_id").takeIf { it.isNotEmpty() }, nicks = nicks
+                    guildId = d.optString("guild_id").takeIf { it.isNotEmpty() }, nicks = nicks,
+                    fullMembers = full,
+                    notFound = d.optJSONArray("not_found")?.let { nf -> (0 until nf.length()).map { nf.optString(it) } }.orEmpty(),
+                    isLast = d.optInt("chunk_index", 0) + 1 >= d.optInt("chunk_count", 1)
                 )
             }.getOrNull()
 
@@ -598,7 +605,8 @@ class DiscordGateway(private val token: String) {
                 GatewayEvent.MemberUpdate(
                     guildId = d.getString("guild_id"),
                     userId = d.getJSONObject("user").getString("id"),
-                    nick = memberNick(d)
+                    nick = memberNick(d),
+                    member = runCatching { GuildMember.fromJson(d) }.getOrNull()?.takeIf { it.userId.isNotEmpty() && d.has("roles") }
                 )
             }.getOrNull()
 
@@ -721,7 +729,9 @@ sealed class GatewayEvent {
         val memberRoleIds: List<String> = emptyList(),
         val guildId: String? = null,
         /** Server nicknames this message came with, by user id; null means that member has none. */
-        val nicks: Map<String, String?> = emptyMap()
+        val nicks: Map<String, String?> = emptyMap(),
+        /** The author as a member of [guildId] (roles, nickname, server avatar), when the message came with it. */
+        val member: GuildMember? = null
     ) : GatewayEvent()
 
     /** [message] is null when the update is partial; [raw] says which fields it carries. */
@@ -774,10 +784,16 @@ sealed class GatewayEvent {
         val members: List<MentionCandidate>,
         val guildId: String? = null,
         /** Each returned member's server nickname, by user id; null means none. */
-        val nicks: Map<String, String?> = emptyMap()
+        val nicks: Map<String, String?> = emptyMap(),
+        /** The returned members in full (roles, nickname, server avatar). */
+        val fullMembers: List<GuildMember> = emptyList(),
+        /** Ids that were asked for but aren't members: webhooks, people who left. */
+        val notFound: List<String> = emptyList(),
+        /** Discord answers a request in one or more chunks; this is the final one. */
+        val isLast: Boolean = true
     ) : GatewayEvent()
     /** A member's server profile changed; [nick] null means they have no nickname (any more). */
-    data class MemberUpdate(val guildId: String, val userId: String, val nick: String?) : GatewayEvent()
+    data class MemberUpdate(val guildId: String, val userId: String, val nick: String?, val member: GuildMember? = null) : GatewayEvent()
     object InvalidToken : GatewayEvent()
     data class Unknown(val name: String) : GatewayEvent()
 }
