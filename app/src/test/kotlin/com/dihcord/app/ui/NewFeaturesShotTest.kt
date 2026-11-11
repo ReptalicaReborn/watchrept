@@ -237,9 +237,9 @@ class NewFeaturesShotTest {
             listOf(
                 PeopleSection("Admins — 1", listOf(PersonRow(SampleData.teodor, "Teodor", OnlineStatus.ONLINE, null))),
                 PeopleSection("Online — 11", listOf(
-                    PersonRow(SampleData.zaffox, "Zaffox", OnlineStatus.ONLINE, "Playing Minecraft"),
+                    PersonRow(SampleData.zaffox, "Zaffox", OnlineStatus.ONLINE, "Playing Minecraft", nameColors = listOf(0xF47FFF, 0x5BCEFA)),
                     PersonRow(SampleData.mira, "Mira Okafor", OnlineStatus.IDLE, "Listening to Spotify"),
-                    PersonRow(SampleData.kai, "Kai Tanaka", OnlineStatus.DND, null),
+                    PersonRow(SampleData.kai, "Kai Tanaka", OnlineStatus.DND, null, nameColors = listOf(0x3BA55D)),
                 )),
             ), {}
         )

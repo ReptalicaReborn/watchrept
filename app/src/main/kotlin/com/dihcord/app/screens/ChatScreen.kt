@@ -252,6 +252,8 @@ fun ChatScreen(
         }
     }
 
+    // Set by "Mark unread": from then on this visit no longer counts as having read the chat.
+    var keepUnread by remember(channelId) { mutableStateOf(false) }
     val initialLastRead = remember(channelId) { repo.readState.value[channelId]?.lastMessageId }
     // Where "New" goes: the first message from someone else after where the user stopped reading.
     val firstUnreadId = remember(initialLastRead, messages, myId) {
@@ -331,13 +333,13 @@ fun ChatScreen(
     LaunchedEffect(scrolledToUnread.value) {
         if (scrolledToUnread.value && !loading) {
             delay(1_500)
-            messages.lastOrNull()?.id?.let { repo?.markChannelRead(channelId, it) }
+            if (!keepUnread) messages.lastOrNull()?.id?.let { repo?.markChannelRead(channelId, it) }
         }
     }
 
     // Leaving the chat counts as having read what was there (like opening it does).
     val latestMessageId by rememberUpdatedState(messages.lastOrNull()?.id)
-    val ackOnLeave by rememberUpdatedState(!loading && scrolledToUnread.value)
+    val ackOnLeave by rememberUpdatedState(!loading && scrolledToUnread.value && !keepUnread)
     DisposableEffect(channelId) {
         onDispose {
             if (ackOnLeave) latestMessageId?.let { repo.markChannelRead(channelId, it) }
@@ -771,6 +773,15 @@ fun ChatScreen(
             }) else null,
             pinned = msgForOptions.pinned,
             saved = savedNow,
+            onMarkUnread = {
+                selectedMsg = null
+                keepUnread = true
+                scope.launch {
+                    repo.markUnreadFrom(channelId, msgForOptions)
+                        .onSuccess { android.widget.Toast.makeText(context, "Marked unread", android.widget.Toast.LENGTH_SHORT).show() }
+                        .onFailure { keepUnread = false; sendError = "Couldn't mark unread. " + friendlyError(it) }
+                }
+            },
             onPin = {
                 selectedMsg = null
                 scope.launch {
@@ -914,9 +925,9 @@ fun ChatScreen(
     // Ack messages read live while the chat is open (debounced), not only what was there when it opened.
     LaunchedEffect(lastMsgId, isAtBottom) {
         val id = lastMsgId ?: return@LaunchedEffect
-        if (!isAtBottom || loading || !scrolledToUnread.value) return@LaunchedEffect
+        if (!isAtBottom || loading || !scrolledToUnread.value || keepUnread) return@LaunchedEffect
         delay(1_000)
-        repo.markChannelRead(channelId, id)
+        if (!keepUnread) repo.markChannelRead(channelId, id)
     }
     val unseenCount = remember(messages, seenUpToId) {
         val seen = seenUpToId?.toLongOrNull() ?: return@remember 0
@@ -1695,6 +1706,8 @@ internal fun MessageOptionsDialog(
     authorName: String = msg.author.displayName,
     /** Set for our own poll while it is still open. */
     onEndPoll: (() -> Unit)? = null,
+    /** Marks the chat unread from this message on. */
+    onMarkUnread: (() -> Unit)? = null,
     pinned: Boolean = false,
     saved: Boolean = false,
     onPin: (() -> Unit)? = null,
@@ -1777,6 +1790,7 @@ internal fun MessageOptionsDialog(
             onForward?.let { MenuAction(R.drawable.forward, "Forward", onClick = it) },
             onPin?.let { MenuAction(if (pinned) R.drawable.unpin else R.drawable.pin, if (pinned) "Unpin" else "Pin", onClick = it) },
             onSave?.let { MenuAction(if (saved) R.drawable.bookmark else R.drawable.bookmark_border, if (saved) "Saved" else "Save", onClick = it) },
+            onMarkUnread?.let { MenuAction(R.drawable.mail, "Unread", onClick = it) },
             onReadAloud?.let { MenuAction(R.drawable.volume, "Read", onClick = it) },
             onTranslate?.let { MenuAction(R.drawable.translate, "Translate", onClick = it) },
             MenuAction(R.drawable.delete, "Delete", destructive = true) { confirmDelete = true }.takeIf { isOwn },

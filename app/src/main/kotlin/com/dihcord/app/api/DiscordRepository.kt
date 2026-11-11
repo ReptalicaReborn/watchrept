@@ -859,6 +859,33 @@ class DiscordRepository(
         scope.launch { rest.ackChannel(channelId, messageId) }
     }
 
+    /**
+     * Marks [channelId] unread from [message] on, here and on Discord, as Discord's "Mark Unread" does: the read
+     * marker goes back to just before it and the mentions after it count again. Put back if Discord refuses.
+     */
+    suspend fun markUnreadFrom(channelId: String, message: DiscordMessage): Result<Unit> {
+        val held = _messages.value[channelId].orEmpty()
+        // The last message that stays read: the one before it, or the id just below it at the top of what's loaded.
+        val marker = held.lastOrNull { compareSnowflakes(it.id, message.id) < 0 }?.id
+            ?: message.id.toLongOrNull()?.let { (it - 1).toString() }
+            ?: return Result.failure(IllegalArgumentException("Not a message id"))
+        val myId = currentUserId
+        val roles = message.guildId?.let { myRolesByGuild[it] }.orEmpty()
+        val mentions = if (myId == null) 0 else held.count {
+            compareSnowflakes(it.id, marker) > 0 && it.author.id != myId && it.pingFor(myId, roles)
+        }
+        val before = _readState.value[channelId]
+        val unreadState = ChannelUnreadState(marker, mentions)
+        _readState.update { it + (channelId to unreadState) }
+        return rest.markUnread(channelId, marker, mentions).onFailure {
+            // Only if nothing else moved the marker meanwhile.
+            _readState.update { current ->
+                if (current[channelId] != unreadState) current
+                else if (before != null) current + (channelId to before) else current - channelId
+            }
+        }
+    }
+
     suspend fun loadMessages(channelId: String) {
         // Fetch channel metadata if not cached
         if (!channelCache.containsKey(channelId)) {

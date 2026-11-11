@@ -1,5 +1,6 @@
 package com.dihcord.app.screens
 
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
@@ -22,7 +23,14 @@ import com.dihcord.app.discordApp
 import kotlinx.coroutines.launch
 
 /** A person in a list: who, their status ring, and what they're doing. */
-data class PersonRow(val user: DiscordUser, val name: String, val status: OnlineStatus?, val detail: String?)
+data class PersonRow(
+    val user: DiscordUser,
+    val name: String,
+    val status: OnlineStatus?,
+    val detail: String?,
+    /** Their role colour in a server: one colour, or two or three for a gradient or holographic role. */
+    val nameColors: List<Int> = emptyList(),
+)
 
 /** A member list section: its title and people. */
 data class PeopleSection(val title: String, val people: List<PersonRow>)
@@ -41,12 +49,15 @@ fun MembersScreen(guildId: String?, channelId: String, title: String, onOpenProf
     val dms by repo.dmChannels.collectAsState()
     val me = repo.currentUser.collectAsState().value
     var roleNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var rolesById by remember { mutableStateOf<Map<String, GuildRole>>(emptyMap()) }
     // A new gateway session (after a long disconnect) has no subscription: ask again.
     val session by repo.sessions.collectAsState()
     LaunchedEffect(guildId, channelId, session) {
         if (guildId != null) {
             repo.subscribeMemberList(guildId, channelId)
-            roleNames = repo.getGuildRoles(guildId).associate { it.id to it.name }
+            val roles = repo.getGuildRoles(guildId)
+            roleNames = roles.associate { it.id to it.name }
+            rolesById = roles.associateBy { it.id }
         }
     }
     val sections: List<PeopleSection>? = if (guildId != null) {
@@ -62,7 +73,12 @@ fun MembersScreen(guildId: String?, channelId: String, title: String, onOpenProf
                 }
                 is MemberListItem.Member -> {
                     if (current == null) current = "Members" to mutableListOf()
-                    current!!.second += PersonRow(row.user, row.name, row.status, row.activities.firstNotNullOfOrNull { it.label })
+                    // The name takes the colour of their highest role that has one.
+                    val top = row.roleIds.mapNotNull { rolesById[it] }.filter { it.color != 0 }.maxByOrNull { it.position }
+                    current!!.second += PersonRow(
+                        row.user, row.name, row.status, row.activities.firstNotNullOfOrNull { it.label },
+                        nameColors = top?.let { it.gradient ?: listOf(it.color) }.orEmpty()
+                    )
                 }
             }
         }
@@ -103,7 +119,19 @@ internal fun MembersContent(title: String, subtitle: String?, sections: List<Peo
                             transformation = SurfaceTransformation(spec),
                             colors = ButtonDefaults.filledTonalButtonColors(),
                             icon = { UserAvatar(p.name, p.user.avatarUrl(64), 28.dp, ring = p.status?.ringColor()) },
-                            label = { Text(p.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            label = {
+                                val colors = p.nameColors.map { Color(0xFF000000.toInt() or it) }
+                                when {
+                                    colors.size > 1 -> androidx.compose.foundation.text.BasicText(
+                                        p.name, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        style = androidx.wear.compose.material3.LocalTextStyle.current.copy(
+                                            brush = androidx.compose.ui.graphics.Brush.horizontalGradient(colors)
+                                        )
+                                    )
+                                    colors.size == 1 -> Text(p.name, maxLines = 1, overflow = TextOverflow.Ellipsis, color = colors[0])
+                                    else -> Text(p.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            },
                             secondaryLabel = p.detail?.let { d -> { Text(d, maxLines = 1, overflow = TextOverflow.Ellipsis) } }
                         )
                     }
