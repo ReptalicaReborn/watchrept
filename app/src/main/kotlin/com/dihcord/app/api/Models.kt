@@ -645,20 +645,11 @@ data class Embed(
     val authorIconUrl: String?,
     val footerText: String?,
     val footerIconUrl: String?,
-    val fields: List<EmbedField> = emptyList(),
-    /** The picture shown ([displayImageUrl]) as served by Discord's own proxy, and its size, when Discord gave them. */
-    val displayImageProxyUrl: String? = null,
-    val displayImageWidth: Int? = null,
-    val displayImageHeight: Int? = null,
+    val fields: List<EmbedField> = emptyList()
 ) {
     val displayImageUrl: String? get() = imageUrl ?: thumbnailUrl
 
     companion object {
-        /** The same choice [displayImageUrl] makes: the image, else the thumbnail. */
-        private fun shownImage(o: JSONObject): JSONObject? =
-            o.optJSONObject("image")?.takeIf { it.optString("url").isNotEmpty() }
-                ?: o.optJSONObject("thumbnail")?.takeIf { it.optString("url").isNotEmpty() }
-
         fun fromJson(o: JSONObject) = Embed(
             type = o.optString("type", "rich"),
             title = o.nullableString("title"),
@@ -675,9 +666,6 @@ data class Embed(
             footerText = o.optJSONObject("footer")?.optString("text")?.takeIf { it.isNotEmpty() },
             footerIconUrl = o.optJSONObject("footer")?.optString("icon_url")
                 ?.takeIf { it.isNotEmpty() },
-            displayImageProxyUrl = shownImage(o)?.optString("proxy_url")?.takeIf { it.isNotEmpty() && it != "null" },
-            displayImageWidth = shownImage(o)?.nullableInt("width"),
-            displayImageHeight = shownImage(o)?.nullableInt("height"),
             fields = run {
                 val arr = o.optJSONArray("fields")
                 if (arr != null) {

@@ -47,16 +47,7 @@ private const val DOUBLE_TAP_ZOOM = 2.5f
  * Back / swipe-back also dismisses (it is a dialog).
  */
 @Composable
-fun ImageViewer(
-    url: String,
-    contentDescription: String?,
-    imageLoader: ImageLoader,
-    /** What "Save" downloads: the original, when [url] is a smaller copy made for the screen. */
-    saveUrl: String = url,
-    /** The small copy already on screen, shown while [url] loads. */
-    previewKey: String? = null,
-    onDismiss: () -> Unit,
-) {
+fun ImageViewer(url: String, contentDescription: String?, imageLoader: ImageLoader, onDismiss: () -> Unit) {
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
@@ -105,9 +96,7 @@ fun ImageViewer(
             contentAlignment = Alignment.Center,
         ) {
             AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current).data(url).crossfade(true)
-                    .apply { if (previewKey != null) placeholderMemoryCacheKey(previewKey) }
-                    .build(),
+                model = ImageRequest.Builder(LocalContext.current).data(url).crossfade(true).build(),
                 imageLoader = imageLoader,
                 contentDescription = contentDescription,
                 contentScale = ContentScale.Fit,
@@ -130,7 +119,7 @@ fun ImageViewer(
                     if (!saving) {
                         saving = true
                         scope.launch {
-                            ImageSaver.save(context, saveUrl)
+                            ImageSaver.save(context, url)
                                 .onSuccess { Toast.makeText(context, "Saved to Pictures/Dihcord", Toast.LENGTH_SHORT).show() }
                                 .onFailure {
                                     Toast.makeText(context, "Couldn't save the picture.", Toast.LENGTH_SHORT).show()
