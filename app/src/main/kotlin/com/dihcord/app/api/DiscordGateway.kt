@@ -71,6 +71,13 @@ class DiscordGateway(private val token: String) {
     /** This session's id, which interactions (bot buttons, slash commands) must carry. */
     val currentSessionId: String? get() = sessionId
 
+    /**
+     * Whether to ask Discord to compress the connection (as its web client does). The first message after
+     * connecting describes every server the account is in and is several times smaller compressed, which is
+     * most of what a watch downloads on each (re)connect. Turned off for good if a compressed frame can't be read.
+     */
+    @Volatile private var compress = true
+
     /** False after [pause]: scheduled reconnects (after errors, RECONNECT, INVALID_SESSION) then stay quiet. */
     @Volatile private var wanted = true
 
@@ -79,12 +86,13 @@ class DiscordGateway(private val token: String) {
         wanted = true
         if (ws != null) return // already connected or connecting
         // resume_gateway_url comes without the version/encoding query, so add it like the default URL has.
-        val url = (resumeUrl?.trimEnd('/') ?: "wss://gateway.discord.gg") + "/?v=10&encoding=json"
+        val url = (resumeUrl?.trimEnd('/') ?: "wss://gateway.discord.gg") + "/?v=10&encoding=json" +
+            if (compress) "&compress=zlib-stream" else ""
         val request = Request.Builder().url(url)
             .header("User-Agent", ClientIdentity.USER_AGENT)
             .header("Origin", "https://discord.com")
             .build()
-        ws = http.newWebSocket(request, Listener())
+        ws = http.newWebSocket(request, Listener(if (compress) GatewayInflater() else null))
     }
 
     fun disconnect() {
@@ -252,10 +260,25 @@ class DiscordGateway(private val token: String) {
         send(Op.RESUME, d)
     }
 
-    private inner class Listener : WebSocketListener() {
+    private inner class Listener(private val inflater: GatewayInflater?) : WebSocketListener() {
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
             if (webSocket === ws) connected = true
+        }
+
+        /** Compressed connections deliver binary frames; a message is complete once the inflater says so. */
+        override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
+            if (webSocket !== ws) return
+            val text = try {
+                inflater?.feed(bytes.toByteArray())
+            } catch (e: Exception) {
+                // Not the stream we asked for. Better connected without compression than not at all.
+                compress = false
+                webSocket.close(4000, null)
+                lost(webSocket, reconnectInMs = 500)
+                return
+            }
+            if (text != null) onMessage(webSocket, text)
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -303,6 +326,7 @@ class DiscordGateway(private val token: String) {
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            inflater?.close()
             if (response?.code == 401) {
                 lost(webSocket, reconnectInMs = null)
                 outbox.trySend(GatewayEvent.InvalidToken)
@@ -317,6 +341,7 @@ class DiscordGateway(private val token: String) {
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            inflater?.close()
             when (code) {
                 4004 -> { // authentication failed
                     lost(webSocket, reconnectInMs = null)
