@@ -319,7 +319,7 @@ class MainActivity : ComponentActivity() {
                             val chId = back.arguments?.getString("channelId") ?: return@composable
                             val chName = back.arguments?.getString("channelName") ?: chId
                             val gId = back.arguments?.getString("guildId")?.takeIf { it != "dm" }
-                            PinnedScreen(chId, chName) { msgId -> openAt(chId, chName, gId, msgId) }
+                            PinnedScreen(chId, chName, gId) { msgId -> openAt(chId, chName, gId, msgId) }
                         }
 
                         composable("search/{channelId}/{channelName}/{guildId}") { back ->

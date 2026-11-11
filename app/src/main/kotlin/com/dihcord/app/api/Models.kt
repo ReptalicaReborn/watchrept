@@ -572,8 +572,30 @@ data class Attachment(
     val proxyUrl: String,
     val contentType: String?,
     val width: Int?,
-    val height: Int?
+    val height: Int?,
+    /** In bytes; 0 when unknown. */
+    val size: Long = 0,
+    val flags: Int = 0,
 ) {
+    /** Marked as a spoiler by the sender: covered until tapped. Discord marks these with a filename prefix. */
+    val isSpoiler: Boolean get() = filename.startsWith("SPOILER_") || flags and (1 shl 3) != 0
+
+    /** The name without the spoiler marker. */
+    val displayName: String get() = filename.removePrefix("SPOILER_")
+
+    /** Anything that isn't shown as a picture, video or audio player: listed by name instead. */
+    val isOtherFile: Boolean get() = !isImage && !isVideo && !isAudio
+
+    /** The size as people write it ("340 KB", "1.2 MB"), or null when unknown. */
+    val sizeLabel: String?
+        get() = when {
+            size <= 0 -> null
+            size < 1024 -> "$size B"
+            size < 1024 * 1024 -> "${size / 1024} KB"
+            size < 1024L * 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f MB", size / (1024.0 * 1024.0))
+            else -> String.format(java.util.Locale.US, "%.1f GB", size / (1024.0 * 1024.0 * 1024.0))
+        }
+
     val isImage: Boolean
         get() = contentType?.startsWith("image/") == true
                 || filename.lowercase().let {
@@ -603,7 +625,9 @@ data class Attachment(
             proxyUrl = o.getString("proxy_url"),
             contentType = o.nullableString("content_type"),
             width = o.nullableInt("width"),
-            height = o.nullableInt("height")
+            height = o.nullableInt("height"),
+            size = o.optLong("size", 0),
+            flags = o.optInt("flags", 0),
         )
     }
 }
@@ -1064,7 +1088,17 @@ data class DiscordMessage(
     val applicationId: String? = null,
     val flags: Int = 0,
     val pinned: Boolean = false,
+    /** For a bot's answer to a command: who ran it and the command's name. */
+    val interactionUser: DiscordUser? = null,
+    val interactionName: String? = null,
 ) {
+    /** Shown only to us (a bot's private answer); gone after a restart. */
+    val isEphemeral: Boolean get() = flags and (1 shl 6) != 0
+
+    /** "/roll" for a slash command, the plain name for a right-click command; null when not a command's answer. */
+    val commandLabel: String?
+        get() = interactionName?.let { if (type == 23) it else "/$it" }
+
     fun pingFor(userId: String, memberRoleIds: List<String> = emptyList()): Boolean =
         mentionEveryone ||
                 userId in mentionedUserIds ||
@@ -1169,6 +1203,10 @@ data class DiscordMessage(
                 }
             }
 
+            // "interaction" carries the command's name; newer messages may only have "interaction_metadata".
+            val interaction = o.optJSONObject("interaction")?.takeIf { it.has("name") }
+                ?: o.optJSONObject("interaction_metadata") ?: o.optJSONObject("interaction")
+
             return DiscordMessage(
                 id = o.getString("id"),
                 channelId = o.getString("channel_id"),
@@ -1202,6 +1240,8 @@ data class DiscordMessage(
                     ?: o.optJSONObject("author")?.takeIf { it.optBoolean("bot") }?.optString("id"),
                 flags = o.optInt("flags", 0),
                 pinned = o.optBoolean("pinned", false),
+                interactionUser = interaction?.optJSONObject("user")?.let { runCatching { DiscordUser.fromJson(it) }.getOrNull() },
+                interactionName = interaction?.optString("name")?.takeIf { it.isNotBlank() && it != "null" },
             )
         }
 
@@ -1305,12 +1345,30 @@ data class Poll(
 
     fun isClosed(now: Long = System.currentTimeMillis()): Boolean = finalized || (expiryMillis?.let { now >= it } ?: false)
 
+    /** [answer]'s share of all votes, 0..100. */
+    fun percentOf(answer: PollAnswer): Int =
+        if (totalVotes > 0) Math.round(answer.count * 100f / totalVotes) else 0
+
+    /** The answer(s) with the most votes; empty while nobody has voted. More than one means a tie. */
+    val leaders: Set<Int>
+        get() {
+            val top = answers.maxOfOrNull { it.count } ?: 0
+            return if (top <= 0) emptySet() else answers.filter { it.count == top }.mapTo(HashSet()) { it.id }
+        }
+
     /** Applies a vote event: one vote added to / removed from [answerId], [mine] when it was the current user's. */
     fun withVote(answerId: Int, add: Boolean, mine: Boolean): Poll = copy(answers = answers.map { a ->
-        if (a.id != answerId) a else a.copy(
+        // Our own vote is already shown the moment we tap (see [withMyVotes]): its echo changes nothing.
+        if (a.id != answerId || (mine && a.meVoted == add)) a else a.copy(
             count = (a.count + if (add) 1 else -1).coerceAtLeast(0),
             meVoted = if (mine) add else a.meVoted
         )
+    })
+
+    /** This poll with our picks set to exactly [answerIds], counts adjusted: shown at once while the vote is sent. */
+    fun withMyVotes(answerIds: Collection<Int>): Poll = copy(answers = answers.map { a ->
+        val voted = a.id in answerIds
+        if (voted == a.meVoted) a else a.copy(count = (a.count + if (voted) 1 else -1).coerceAtLeast(0), meVoted = voted)
     })
 
     /** The answer ids to send when the user taps [answerId]: toggles it, replacing the old pick unless [multiselect]. */
@@ -1355,3 +1413,73 @@ data class Poll(
         }
     }
 }
+
+/** What a "poll ended" message (type 46) says, read from its `poll_result` embed. */
+data class PollResult(
+    val question: String,
+    /** Null when nobody voted or the poll ended in a tie. */
+    val winnerText: String?,
+    val winnerEmoji: String?,
+    val winnerVotes: Int,
+    val totalVotes: Int,
+) {
+    val summary: String
+        get() = when {
+            totalVotes == 0 -> "No votes"
+            winnerText == null && winnerEmoji == null -> "It's a tie \u00B7 " + votes(totalVotes)
+            else -> listOfNotNull(winnerEmoji, winnerText).joinToString(" ") +
+                " won \u00B7 " + Math.round(winnerVotes * 100f / totalVotes) + "% of " + votes(totalVotes)
+        }
+
+    private fun votes(n: Int) = if (n == 1) "1 vote" else "$n votes"
+
+    companion object {
+        fun from(msg: DiscordMessage): PollResult? {
+            val embed = msg.embeds.firstOrNull { it.type == "poll_result" } ?: return null
+            val f = embed.fields.associate { it.name to it.value }
+            return PollResult(
+                question = f["poll_question_text"].orEmpty(),
+                winnerText = f["victor_answer_text"]?.takeIf { it.isNotBlank() },
+                // A custom emoji has an id and can't be shown as text; its name alone would read as a stray word.
+                winnerEmoji = f["victor_answer_emoji_name"]?.takeIf { it.isNotBlank() && f["victor_answer_emoji_id"].isNullOrBlank() },
+                winnerVotes = f["victor_answer_votes"]?.toIntOrNull() ?: 0,
+                totalVotes = f["total_votes"]?.toIntOrNull() ?: 0,
+            )
+        }
+    }
+}
+
+/** Written by Discord rather than typed by someone: shown as one line, see [systemText]. */
+val DiscordMessage.isSystem: Boolean get() = type in 1..12 || type == 18 || type == 46
+
+/**
+ * The line Discord shows in place of a bubble for messages it writes itself (someone joined, pinned a message,
+ * boosted, a poll ended...), or null for ordinary messages. [author] and [target] are the names to show for
+ * the author and the first mentioned user.
+ */
+fun DiscordMessage.systemText(author: String, target: String? = null): String? = when (type) {
+    1 -> "$author added ${target ?: "someone"} to the group"
+    2 -> if (mentionedUsers.firstOrNull()?.id == this.author.id || target == null) "$author left the group"
+         else "$author removed $target from the group"
+    3 -> "$author started a call"
+    4 -> "$author renamed the group" + if (content.isNotBlank()) ": $content" else ""
+    5 -> "$author changed the group icon"
+    6 -> "$author pinned a message"
+    7 -> "$author joined the server"
+    8 -> "$author boosted the server"
+    9, 10, 11 -> "$author boosted the server. It reached Level ${type - 8}!"
+    12 -> "$author added $content to this channel"
+    18 -> "$author started a thread" + if (content.isNotBlank()) ": $content" else ""
+    46 -> PollResult.from(this)?.let { r ->
+        "$author's poll" + (if (r.question.isNotBlank()) " \u201C${r.question}\u201D" else "") + " ended \u00B7 ${r.summary}"
+    } ?: "$author's poll ended"
+    else -> null
+}
+
+private val SpoilerSpan = Regex("\\|\\|(.+?)\\|\\|", RegexOption.DOT_MATCHES_ALL)
+private val UrlInText = Regex("https?://[^\\s<>|]+")
+
+/** Links the sender wrapped in spoiler marks (`||https://...||`): their previews stay covered until tapped. */
+fun spoileredLinks(content: String): Set<String> =
+    if (!content.contains("||")) emptySet()
+    else SpoilerSpan.findAll(content).flatMapTo(HashSet()) { m -> UrlInText.findAll(m.groupValues[1]).map { it.value.trimEnd('/') } }

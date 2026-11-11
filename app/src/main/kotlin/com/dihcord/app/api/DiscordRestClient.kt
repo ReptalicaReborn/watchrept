@@ -748,6 +748,17 @@ class DiscordRestClient(private val token: String, private val baseUrl: String =
         Unit
     }
 
+    /** Who voted for [answerId] in the poll on [messageId], up to [limit] people. */
+    suspend fun getPollVoters(channelId: String, messageId: String, answerId: Int, limit: Int = 100): Result<List<DiscordUser>> = runCatching {
+        val arr = JSONObject(get("/channels/$channelId/polls/$messageId/answers/$answerId?limit=$limit")).optJSONArray("users") ?: JSONArray()
+        (0 until arr.length()).map { DiscordUser.fromJson(arr.getJSONObject(it)) }
+    }
+
+    /** Ends our own poll right away; returns the message with its final results. */
+    suspend fun endPoll(channelId: String, messageId: String): Result<DiscordMessage> = runCatching {
+        DiscordMessage.fromJson(JSONObject(post("/channels/$channelId/polls/$messageId/expire", JSONObject())))
+    }
+
     /** Who reacted with [emojiKey] ([burst] = super reactions), up to [limit] people. */
     suspend fun getReactionUsers(
         channelId: String,

@@ -208,8 +208,41 @@ class DiscordRepository(
         val member = rest.getGuildMember(guildId, userId).getOrNull()
         if (member != null) {
             guildMemberCache[cacheKey] = member
+            noteNicks(guildId, mapOf(userId to member.nick))
         }
         return member
+    }
+
+    /** Server nicknames seen so far, keyed "guildId:userId". People without one are simply absent. */
+    private val _nicks = MutableStateFlow<Map<String, String>>(emptyMap())
+    val nicks: StateFlow<Map<String, String>> = _nicks.asStateFlow()
+    private val requestedNicks = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** [userId]'s nickname in [guildId], if they have one and we have seen it. */
+    fun nickIn(guildId: String?, userId: String): String? = guildId?.let { _nicks.value["$it:$userId"] }
+
+    /** The name to show for [user] in [guildId]: their server nickname, else their display name. */
+    fun nameIn(guildId: String?, user: DiscordUser): String = nickIn(guildId, user.id) ?: user.displayName
+
+    /** Records nicknames for [guildId]; a null value clears that person's. */
+    private fun noteNicks(guildId: String, byUser: Map<String, String?>) {
+        if (byUser.isEmpty()) return
+        _nicks.update { current ->
+            if (byUser.all { (id, nick) -> current["$guildId:$id"] == nick }) return@update current
+            // A watch only ever looks at a few channels: past this many names, start again rather than grow forever.
+            val next = if (current.size > 4000) HashMap() else HashMap(current)
+            byUser.forEach { (id, nick) -> if (nick != null) next["$guildId:$id"] = nick else next.remove("$guildId:$id") }
+            next
+        }
+    }
+
+    /**
+     * Asks the gateway for the server nicknames of [userIds] (people mentioned or replied to, whose messages
+     * came without member data). Each person is asked for once; the answers land in [nicks].
+     */
+    fun loadNicks(guildId: String, userIds: Collection<String>) {
+        val ask = userIds.filter { "$guildId:$it" !in _nicks.value && requestedNicks.add("$guildId:$it") }
+        ask.chunked(100).forEach { gateway.requestGuildMembersByIds(guildId, it, "nick${System.nanoTime()}") }
     }
 
     private val typingJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
@@ -489,7 +522,7 @@ class DiscordRepository(
         return NotificationInfo(
             channelId = msg.channelId,
             title = title,
-            sender = msg.author.displayName,
+            sender = if (isDm) msg.author.displayName else nameIn(guildId, msg.author),
             text = text,
             isDm = isDm,
             guildId = if (isDm) null else guildId,
@@ -1009,7 +1042,10 @@ class DiscordRepository(
 
     suspend fun setNickname(guildId: String, nick: String) = rest.setNickname(guildId, nick).onSuccess {
         // The cached member still has the old nickname; the next look fetches the new one.
-        currentUser.value?.id?.let { me -> guildMemberCache.remove("$guildId:$me") }
+        currentUser.value?.id?.let { me ->
+            guildMemberCache.remove("$guildId:$me")
+            noteNicks(guildId, mapOf(me to nick.trim().ifBlank { null }))
+        }
     }
 
     suspend fun createGroupDm(userIds: List<String>): Result<Channel> = rest.createGroupDm(userIds).onSuccess { ch ->
@@ -1120,9 +1156,33 @@ class DiscordRepository(
 
 
     /** Votes for (or un-votes) [answerId]; the counts update from the gateway's vote events. */
+    /** Who voted for [answerId] in the poll on [messageId] (the first 100). */
+    suspend fun pollVoters(channelId: String, messageId: String, answerId: Int): Result<List<DiscordUser>> =
+        rest.getPollVoters(channelId, messageId, answerId)
+
+    /** Closes our own poll now; the final results arrive as a message update. */
+    suspend fun endPoll(channelId: String, messageId: String): Result<Unit> =
+        rest.endPoll(channelId, messageId).map { ended ->
+            _messages.update { current ->
+                val list = current[channelId] ?: return@update current
+                current + (channelId to list.map { if (it.id == messageId && ended.poll != null) it.copy(poll = ended.poll) else it })
+            }
+        }
+
+    private fun setMyPollVotes(channelId: String, messageId: String, answerIds: List<Int>) = _messages.update { current ->
+        val list = current[channelId] ?: return@update current
+        current + (channelId to list.map { m -> if (m.id == messageId && m.poll != null) m.copy(poll = m.poll.withMyVotes(answerIds)) else m })
+    }
+
     suspend fun votePoll(channelId: String, message: DiscordMessage, answerId: Int): Result<Unit> {
-        val poll = message.poll ?: return Result.failure(IllegalStateException("Not a poll"))
-        return rest.votePoll(channelId, message.id, poll.votesAfterTap(answerId))
+        // The copy we hold, not the one the screen drew: a second quick tap must build on the first.
+        val poll = _messages.value[channelId]?.firstOrNull { it.id == message.id }?.poll ?: message.poll
+            ?: return Result.failure(IllegalStateException("Not a poll"))
+        val before = poll.answers.filter { it.meVoted }.map { it.id }
+        val wanted = poll.votesAfterTap(answerId)
+        // Shown straight away; Discord's own vote event for it then changes nothing, and a failure puts it back.
+        setMyPollVotes(channelId, message.id, wanted)
+        return rest.votePoll(channelId, message.id, wanted).onFailure { setMyPollVotes(channelId, message.id, before) }
     }
 
     suspend fun getStatus(): Result<Pair<String, String>> = rest.getStatus()
@@ -1365,7 +1425,14 @@ class DiscordRepository(
                         _voiceStates.update { current -> current.filterValues { it.guildId != null || it.channelId != event.channelId } }
                     }
 
+                    is GatewayEvent.MemberUpdate -> {
+                        noteNicks(event.guildId, mapOf(event.userId to event.nick))
+                        // The cached member (nickname, server avatar) is out of date now.
+                        guildMemberCache.remove("${event.guildId}:${event.userId}")
+                    }
+
                     is GatewayEvent.MembersChunk -> {
+                        event.guildId?.let { noteNicks(it, event.nicks) }
                         event.members.forEach { userDisplayNames[it.id] = it.displayName }
                         if (event.nonce?.startsWith("voice") == true) {
                             _voiceProfiles.update { profiles ->
@@ -1458,6 +1525,7 @@ class DiscordRepository(
                         if (msg.author.id == currentUserId) typingDone(msg.channelId)
                         unread.onMessage(msg.channelId, msg.id, _readState.value, msg.guildId)
                         userDisplayNames[msg.author.id] = msg.author.displayName
+                        event.guildId?.let { noteNicks(it, event.nicks) }
                         val myId = currentUserId
                         if (myId != null && msg.author.id == myId &&
                             event.guildId != null && event.memberRoleIds.isNotEmpty()

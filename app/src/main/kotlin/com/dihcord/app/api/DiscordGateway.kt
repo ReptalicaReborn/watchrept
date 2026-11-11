@@ -472,7 +472,17 @@ class DiscordGateway(private val token: String) {
                     (0 until rolesArr.length()).map { rolesArr.getString(it) }
                 else emptyList()
                 val guildId = d.optString("guild_id").takeIf { it.isNotEmpty() && it != "null" }
-                GatewayEvent.MessageCreate(msg, roleIds, guildId)
+                // Server messages carry the author's member, and one for each mentioned user: their nicknames.
+                val nicks = HashMap<String, String?>()
+                if (memberObj != null) nicks[msg.author.id] = memberNick(memberObj)
+                d.optJSONArray("mentions")?.let { arr ->
+                    for (i in 0 until arr.length()) {
+                        val u = arr.optJSONObject(i) ?: continue
+                        val m = u.optJSONObject("member") ?: continue
+                        nicks[u.optString("id")] = memberNick(m)
+                    }
+                }
+                GatewayEvent.MessageCreate(msg, roleIds, guildId, nicks)
             }.getOrNull()
 
             "MESSAGE_UPDATE" -> runCatching {
@@ -563,11 +573,13 @@ class DiscordGateway(private val token: String) {
 
             "GUILD_MEMBERS_CHUNK" -> runCatching {
                 val arr = d.optJSONArray("members") ?: JSONArray()
+                val nicks = HashMap<String, String?>()
                 val members = (0 until arr.length()).mapNotNull { i ->
                     val m = arr.optJSONObject(i) ?: return@mapNotNull null
                     val u = m.optJSONObject("user") ?: return@mapNotNull null
                     val user = DiscordUser.fromJson(u)
-                    val nick = if (m.isNull("nick")) null else m.optString("nick").takeIf { it.isNotEmpty() }
+                    val nick = memberNick(m)
+                    nicks[user.id] = nick
                     // A server-specific avatar wins over the account one.
                     val guildAvatar = if (m.isNull("avatar")) null else m.optString("avatar").takeIf { it.isNotEmpty() }
                     val chunkGuild = d.optString("guild_id")
@@ -576,7 +588,18 @@ class DiscordGateway(private val token: String) {
                     else user.avatarUrl(128)
                     MentionCandidate(user.id, nick ?: user.displayName, user.username, imageUrl = avatar)
                 }
-                GatewayEvent.MembersChunk(d.optString("nonce").takeIf { it.isNotEmpty() }, members)
+                GatewayEvent.MembersChunk(
+                    d.optString("nonce").takeIf { it.isNotEmpty() }, members,
+                    guildId = d.optString("guild_id").takeIf { it.isNotEmpty() }, nicks = nicks
+                )
+            }.getOrNull()
+
+            "GUILD_MEMBER_UPDATE" -> runCatching {
+                GatewayEvent.MemberUpdate(
+                    guildId = d.getString("guild_id"),
+                    userId = d.getJSONObject("user").getString("id"),
+                    nick = memberNick(d)
+                )
             }.getOrNull()
 
             "VOICE_STATE_UPDATE" -> VoiceState.fromJson(d, null)?.let { GatewayEvent.VoiceStateUpdate(it) }
@@ -642,6 +665,10 @@ class DiscordGateway(private val token: String) {
     }
 }
 
+/** A member object's server nickname, or null when there is none. */
+internal fun memberNick(member: JSONObject): String? =
+    if (member.isNull("nick")) null else member.optString("nick").takeIf { it.isNotEmpty() && it != "null" }
+
 sealed class GatewayEvent {
     data class Ready(
         val user: DiscordUser,
@@ -692,7 +719,9 @@ sealed class GatewayEvent {
     data class MessageCreate(
         val message: DiscordMessage,
         val memberRoleIds: List<String> = emptyList(),
-        val guildId: String? = null
+        val guildId: String? = null,
+        /** Server nicknames this message came with, by user id; null means that member has none. */
+        val nicks: Map<String, String?> = emptyMap()
     ) : GatewayEvent()
 
     /** [message] is null when the update is partial; [raw] says which fields it carries. */
@@ -740,7 +769,15 @@ sealed class GatewayEvent {
     data class ChannelUpdate(val channel: Channel) : GatewayEvent()
     data class ChannelDelete(val channel: Channel) : GatewayEvent()
     /** Reply to a member search ([DiscordGateway.requestGuildMembers]). */
-    data class MembersChunk(val nonce: String?, val members: List<MentionCandidate>) : GatewayEvent()
+    data class MembersChunk(
+        val nonce: String?,
+        val members: List<MentionCandidate>,
+        val guildId: String? = null,
+        /** Each returned member's server nickname, by user id; null means none. */
+        val nicks: Map<String, String?> = emptyMap()
+    ) : GatewayEvent()
+    /** A member's server profile changed; [nick] null means they have no nickname (any more). */
+    data class MemberUpdate(val guildId: String, val userId: String, val nick: String?) : GatewayEvent()
     object InvalidToken : GatewayEvent()
     data class Unknown(val name: String) : GatewayEvent()
 }
