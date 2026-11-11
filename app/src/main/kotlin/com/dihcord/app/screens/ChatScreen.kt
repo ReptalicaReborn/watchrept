@@ -42,6 +42,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.Color
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.Animatable
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.foundation.Canvas
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -1244,22 +1251,10 @@ fun ChatScreen(
                 val currentTypingUsers = typingUsers.filter { it != myId }
                 if (currentTypingUsers.isNotEmpty()) {
                     item(key = "typing_indicator") {
-                        val names = currentTypingUsers.mapNotNull { uid ->
-                            repo.getDisplayName(uid) ?: "Someone"
+                        val names = currentTypingUsers.map { uid ->
+                            repo.nickIn(guildId, uid) ?: repo.getDisplayName(uid) ?: "Someone"
                         }
-                        val label = when {
-                            names.size == 1 -> "${names[0]} is typing…"
-                            names.size == 2 -> "${names[0]} and ${names[1]} are typing…"
-                            else -> "Several people are typing…"
-                        }
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 4.dp, vertical = 2.dp)
-                        )
+                        TypingIndicator(names)
                     }
                 }
 
@@ -2071,7 +2066,19 @@ internal fun MessageBubble(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
+                        val nameGradient = topRole?.gradient
+                        if (nameGradient != null) {
+                            // A gradient (or holographic) role: the colours run across the name, as in Discord.
+                            androidx.compose.foundation.text.BasicText(
+                                text = authorName,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    brush = Brush.horizontalGradient(nameGradient.map { Color(0xFF000000.toInt() or it) })
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                        } else Text(
                             text = authorName,
                             style = MaterialTheme.typography.labelSmall,
                             color = authorNameColor,
@@ -3474,6 +3481,65 @@ private fun SystemMessageLine(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 4,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * Discord's typing indicator: three dots that bounce in turn, then who is typing with the names in bold.
+ * In lite mode the dots stay still.
+ */
+@Composable
+internal fun TypingIndicator(names: List<String>) {
+    val phase = if (Perf.lite) null else {
+        val transition = rememberInfiniteTransition(label = "typing")
+        transition.animateFloat(
+            initialValue = 0f, targetValue = 1f, label = "typingPhase",
+            animationSpec = infiniteRepeatable(tween(1200, easing = LinearEasing))
+        )
+    }
+    val dotColor = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Canvas(Modifier.size(width = 18.dp, height = 8.dp)) {
+            val r = 2.dp.toPx()
+            for (i in 0..2) {
+                // Each dot takes its turn in the first part of the cycle: it rises, brightens and comes back.
+                val t = phase?.let { ((it.value - i * 0.16f + 1f) % 1f) } ?: 1f
+                val lift = if (t < 0.4f) kotlin.math.sin(t / 0.4f * Math.PI).toFloat() else 0f
+                drawCircle(
+                    color = dotColor.copy(alpha = 0.45f + 0.55f * lift),
+                    radius = r * (1f + 0.2f * lift),
+                    center = androidx.compose.ui.geometry.Offset(r * 1.3f + i * 6.dp.toPx(), size.height / 2 - lift * 1.5.dp.toPx())
+                )
+            }
+        }
+        val bold = SpanStyle(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+        Text(
+            text = buildAnnotatedString {
+                when (names.size) {
+                    1 -> { withStyle(bold) { append(names[0]) }; append(" is typing…") }
+                    2 -> {
+                        withStyle(bold) { append(names[0]) }; append(" and ")
+                        withStyle(bold) { append(names[1]) }; append(" are typing…")
+                    }
+                    3 -> {
+                        withStyle(bold) { append(names[0]) }; append(", ")
+                        withStyle(bold) { append(names[1]) }; append(" and ")
+                        withStyle(bold) { append(names[2]) }; append(" are typing…")
+                    }
+                    else -> append("Several people are typing…")
+                }
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
     }

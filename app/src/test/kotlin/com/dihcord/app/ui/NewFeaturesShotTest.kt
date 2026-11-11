@@ -181,6 +181,29 @@ class NewFeaturesShotTest {
             }
         }
     }
+    @Test fun chatGradientRole() = shot("chat_gradient_role") {
+        val il = LocalContext.current.imageLoader
+        val now = java.time.Instant.now().toString()
+        val roles = androidx.compose.runtime.remember {
+            androidx.compose.runtime.mutableStateMapOf<String, GuildRole?>(
+                SampleData.ines.id to GuildRole("1", "Builder", 0xF47FFF, 5, 0, secondaryColor = 0x5BCEFA),
+                SampleData.spam.id to GuildRole("2", "Holo", 11127295, 4, 0, secondaryColor = 16759788, tertiaryColor = 16761760),
+            )
+        }
+        androidx.wear.compose.material3.ScreenScaffold(timeText = { TitledTimeText("#general") }) {
+            androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.padding(start = 20.dp, end = 18.dp, top = 38.dp)) {
+                MessageBubble(
+                    msg = DiscordMessage(SampleData.id(11), "603", SampleData.ines, "gradient role name", now, null),
+                    isContinuation = false, imageLoader = il, guildId = "700", roleColorCache = roles, onReact = {}, onLongPress = {}
+                )
+                MessageBubble(
+                    msg = DiscordMessage(SampleData.id(12), "603", SampleData.spam, "holographic role name", now, null),
+                    isContinuation = false, imageLoader = il, guildId = "700", roleColorCache = roles, onReact = {}, onLongPress = {}
+                )
+                TypingIndicator(listOf("Inês", "Zaffox"))
+            }
+        }
+    }
     @Test fun chatNewLine() = shot("chat_new_line") {
         ChatScreen(SampleData.general.id, SampleData.general.name, SampleData.blockhaven.id, currentUserId = SampleData.me.id,
             onOpenPins = {}, onOpenSearch = {}, onOpenMembers = {}, onOpenThreads = {})

@@ -325,4 +325,16 @@ class FeatureModelsTest {
         // A button press has a user but no command to name.
         assertEquals(null, msg(19, """"interaction_metadata":{"id":"7","type":3,$user}""").commandLabel)
     }
+
+    @Test
+    fun `gradient and holographic roles carry their extra colours`() {
+        fun role(colors: String) = GuildRole.fromJson(JSONObject("""{"id":"1","name":"r","color":255,"position":1,"permissions":"0"$colors}"""))
+        assertNull(role("").gradient)
+        assertNull(role(""","colors":{"primary_color":255,"secondary_color":null,"tertiary_color":null}""").gradient)
+        assertEquals(listOf(255, 65280), role(""","colors":{"primary_color":255,"secondary_color":65280,"tertiary_color":null}""").gradient)
+        assertEquals(
+            listOf(255, 16759788, 16761760),
+            role(""","colors":{"primary_color":255,"secondary_color":16759788,"tertiary_color":16761760}""").gradient
+        )
+    }
 }

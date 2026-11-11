@@ -366,8 +366,19 @@ data class GuildRole(
     val position: Int,
     val permissions: Long,
     val unicodeEmoji: String? = null,
-    val iconHash: String? = null
+    val iconHash: String? = null,
+    /** Discord's "enhanced role styles": a second colour makes the name a gradient, a third makes it holographic. */
+    val secondaryColor: Int? = null,
+    val tertiaryColor: Int? = null,
 ) {
+    /** The colours to blend across the name, left to right, or null for a plain single-colour role. */
+    val gradient: List<Int>?
+        get() = when {
+            secondaryColor == null -> null
+            tertiaryColor != null -> listOf(color, secondaryColor, tertiaryColor)
+            else -> listOf(color, secondaryColor)
+        }
+
     fun iconUrl(size: Int = 16): String? =
         iconHash?.let { "https://cdn.discordapp.com/role-icons/$id/$it.png?size=$size" }
 
@@ -379,7 +390,9 @@ data class GuildRole(
             position = o.optInt("position", 0),
             permissions = o.getString("permissions").toLongOrNull() ?: 0L,
             unicodeEmoji = o.optString("unicode_emoji").takeIf { it.isNotEmpty() && it != "null" },
-            iconHash = o.optString("icon").takeIf { it.isNotEmpty() && it != "null" }
+            iconHash = o.optString("icon").takeIf { it.isNotEmpty() && it != "null" },
+            secondaryColor = o.optJSONObject("colors")?.nullableInt("secondary_color"),
+            tertiaryColor = o.optJSONObject("colors")?.nullableInt("tertiary_color"),
         )
 
         fun listFromJson(arr: JSONArray): List<GuildRole> =
