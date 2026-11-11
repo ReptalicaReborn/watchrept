@@ -34,7 +34,6 @@ import coil.ImageLoader
 import coil.imageLoader
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import androidx.compose.material3.Icon
 import androidx.compose.ui.res.painterResource
 import com.dihcord.app.R
 import com.dihcord.app.SetupPreferences
