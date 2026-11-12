@@ -358,4 +358,44 @@ class FeatureModelsTest {
         assertNull(TypingStyle.fromJson(TypingStyle.find(JSONObject("""{"user_id":"9"}"""))))
         assertNull(TypingStyle.fromJson(JSONObject("""{"emojis":[],"animation":2,"typing_suggestion":0}""")))
     }
+
+    private val leanReady = """
+        {"user":{"id":"1","username":"me","discriminator":"0"},
+         "users":[{"id":"7","username":"anna","discriminator":"0","global_name":"Anna"},
+                  {"id":"8","username":"ben","discriminator":"0"}],
+         "relationships":[{"id":"7","user_id":"7","type":1},{"id":"8","type":2}],
+         "presences":[],
+         "merged_presences":{"friends":[{"user_id":"7","status":"idle","client_status":{"mobile":"idle"},"activities":[]}],"guilds":[[]]},
+         "merged_members":[[{"user_id":"1","roles":["r1"]}]],
+         "guilds":[{"id":"g","channels":[],"roles":[]}]}"""
+
+    @Test
+    fun `a slim READY reads like an ordinary one`() {
+        val d = JSONObject(leanReady)
+        ReadyParsing.rehydrate(d)
+        assertEquals(0, ReadyParsing.unresolvedRelationships(d))
+        val friends = Relationship.listFromJson(d.optJSONArray("relationships"))
+        assertEquals(listOf("Anna" to Relationship.FRIEND, "ben" to Relationship.BLOCKED), friends.map { it.user.displayName to it.type })
+        val presence = UserPresence.fromJson(d.getJSONArray("presences").getJSONObject(0))
+        assertEquals("7", presence.userId)
+        assertEquals(OnlineStatus.IDLE, presence.status)
+        assertEquals(listOf("r1"), ReadyParsing.guilds(d, "1").single().myRoleIds)
+    }
+
+    @Test
+    fun `an ordinary READY is left alone, and a slim one with someone missing is noticed`() {
+        val ordinary = JSONObject(
+            """{"relationships":[{"id":"7","type":1,"user":{"id":"7","username":"anna","discriminator":"0"}}],
+                "presences":[{"user":{"id":"7"},"status":"online"}]}"""
+        )
+        val before = ordinary.toString()
+        ReadyParsing.rehydrate(ordinary)
+        assertEquals(before, ordinary.toString())
+        assertEquals(0, ReadyParsing.unresolvedRelationships(ordinary))
+
+        val broken = JSONObject("""{"users":[],"relationships":[{"id":"7","user_id":"7","type":1}]}""")
+        ReadyParsing.rehydrate(broken)
+        assertEquals(1, ReadyParsing.unresolvedRelationships(broken))
+        assertEquals(17, LEAN_CAPABILITIES)
+    }
 }
