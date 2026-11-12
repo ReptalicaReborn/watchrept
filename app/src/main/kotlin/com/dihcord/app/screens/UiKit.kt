@@ -98,7 +98,7 @@ fun LoadingIndicator(modifier: Modifier = Modifier) {
     }
 }
 
-/** A round preview of a theme: the flag's stripes for pride themes, the accent colour otherwise. */
+/** A round preview of a theme: the flag's stripes for pride themes (two halves for a two-colour one), the accent colour otherwise. */
 @Composable
 fun ThemeSwatch(
     preset: AppTheme.Preset,
@@ -112,8 +112,10 @@ fun ThemeSwatch(
     if (selected) m = m.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
     if (onClick != null) m = m.clickable(onClick = onClick)
     if (preset.isPride) {
+        // A theme of just two colours shows them as two equal halves, however its stripes repeat them.
+        val shown = preset.stripes.distinct().takeIf { it.size == 2 } ?: preset.stripes
         Column(m) {
-            preset.stripes.forEach { c ->
+            shown.forEach { c ->
                 Box(Modifier.fillMaxWidth().weight(1f).background(Color(c)))
             }
         }
