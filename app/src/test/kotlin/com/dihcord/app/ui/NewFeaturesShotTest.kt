@@ -211,6 +211,31 @@ class NewFeaturesShotTest {
             }
         }
     }
+    @Test fun chatTwoColourTheme() {
+        val context = RuntimeEnvironment.getApplication()
+        com.dihcord.app.AppTheme.setPreset(context, com.dihcord.app.AppTheme.Preset.TRANS)
+        try {
+            shot("chat_two_colour") {
+                val il = LocalContext.current.imageLoader
+                val now = java.time.Instant.now().toString()
+                val first = DiscordMessage(SampleData.id(20), "603", SampleData.me, "who is bringing snacks", now, null)
+                androidx.wear.compose.material3.ScreenScaffold(timeText = { TitledTimeText("#general") }) {
+                    androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.padding(start = 20.dp, end = 18.dp, top = 36.dp)) {
+                        MessageBubble(
+                            msg = DiscordMessage(
+                                SampleData.id(21), "603", SampleData.ines, "<@${SampleData.me.id}> me! list: https://example.com/snacks", now, null,
+                                type = 19, referencedMessage = first, mentionedUsers = listOf(SampleData.me),
+                                reactions = listOf(Reaction(ReactionEmoji(null, "🍪", false), 3, me = true), Reaction(ReactionEmoji(null, "👍", false), 1, me = false))
+                            ),
+                            isContinuation = false, imageLoader = il, onReact = {}, onLongPress = {}
+                        )
+                    }
+                }
+            }
+        } finally {
+            com.dihcord.app.AppTheme.setPreset(context, com.dihcord.app.AppTheme.Preset.DEFAULT)
+        }
+    }
     @Test fun chatNewLine() = shot("chat_new_line") {
         ChatScreen(SampleData.general.id, SampleData.general.name, SampleData.blockhaven.id, currentUserId = SampleData.me.id,
             onOpenPins = {}, onOpenSearch = {}, onOpenMembers = {}, onOpenThreads = {})

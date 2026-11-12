@@ -2176,7 +2176,7 @@ internal fun MessageBubble(
                     Text(
                         buildAnnotatedString {
                             append(nameOf(commandUser) + " used ")
-                            withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) { append(command) }
+                            withStyle(SpanStyle(color = secondAccent())) { append(command) }
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -2205,7 +2205,7 @@ internal fun MessageBubble(
                         Text(
                             " ${nameOf(ref.author)}: ",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
+                            color = secondAccent()
                         )
                         Text(
                             ref.content.take(40).ifBlank { "Attachment" },//icon?
@@ -2351,7 +2351,7 @@ internal fun MessageBubble(
                             .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
                             .padding(horizontal = 6.dp, vertical = 4.dp)
                     ) {
-                        Text(head, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        Text(head, style = MaterialTheme.typography.labelSmall, color = secondAccent())
                         if (body != null) Text(body, style = MaterialTheme.typography.bodySmall)
                     }
                 }
@@ -2430,6 +2430,7 @@ private fun InlineMessageLine(
 ) {
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
+    val linkColor = secondAccent()
     val baseStyle = when {
         headingLevel == 1 -> MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
         headingLevel == 2 -> MaterialTheme.typography.titleSmall.copy(fontSize = 15.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
@@ -2497,7 +2498,7 @@ private fun InlineMessageLine(
                     androidx.compose.ui.text.LinkAnnotation.Url(
                         part.url,
                         androidx.compose.ui.text.TextLinkStyles(
-                            style = SpanStyle(color = colors.primary, textDecoration = TextDecoration.Underline)
+                            style = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)
                         )
                     )
                 ) { append(part.url) }
@@ -2697,7 +2698,7 @@ private fun MessageContent(
                                 val annotated = buildAnnotatedString {
                                     withStyle(
                                         SpanStyle(
-                                            color = MaterialTheme.colorScheme.primary,
+                                            color = secondAccent(),
                                             textDecoration = TextDecoration.Underline,
                                             fontSize = if (isSubtext) 10.sp else androidx.compose.ui.unit.TextUnit.Unspecified
                                         )
@@ -2734,7 +2735,7 @@ private fun ReactionChip(
     onLongClick: (() -> Unit)? = null
 ) {
     val bgColor = when {
-        reaction.me || reaction.meBurst -> MaterialTheme.colorScheme.primaryContainer
+        reaction.me || reaction.meBurst -> secondAccentContainer()
         else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
     }
 
@@ -2875,14 +2876,14 @@ private fun EmbedCard(embed: Embed, imageLoader: ImageLoader) {
                 val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
                 Text(
                     inlineMarkdown(titleText),
-                    style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.primary),
+                    style = MaterialTheme.typography.labelSmall.copy(color = secondAccent()),
                     modifier = Modifier.clickable { runCatching { uriHandler.openUri(embed.url) } }
                 )
             } else {
                 Text(
                     inlineMarkdown(titleText),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
+                    color = secondAccent()
                 )
             }
         }
@@ -3005,7 +3006,7 @@ private fun FileAttachment(att: Attachment) {
     ) {
         Icon(
             painterResource(R.drawable.file), contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp)
+            tint = secondAccent(), modifier = Modifier.size(16.dp)
         )
         Column(Modifier.weight(1f)) {
             Text(
