@@ -401,7 +401,13 @@ data class GuildRole(
 }
 
 /** What the current user may post in a channel. */
-data class ChannelAbilities(val canSend: Boolean, val canAttach: Boolean, val canSendVoice: Boolean) {
+data class ChannelAbilities(
+    val canSend: Boolean,
+    val canAttach: Boolean,
+    val canSendVoice: Boolean,
+    /** In a voice channel: whether the server lets us play soundboard sounds there. */
+    val canUseSoundboard: Boolean = true,
+) {
     companion object {
         val ALL = ChannelAbilities(canSend = true, canAttach = true, canSendVoice = true)
     }
@@ -413,6 +419,7 @@ object Permissions {
     const val SEND_MESSAGES = 1L shl 11
     const val ATTACH_FILES = 1L shl 15
     const val SEND_VOICE_MESSAGES = 1L shl 46
+    const val USE_SOUNDBOARD = 1L shl 42
 
     fun effectiveForMember(
         member: GuildMember,
@@ -471,6 +478,7 @@ object Permissions {
             canSend = canSend,
             canAttach = canSend && has(perms, ATTACH_FILES),
             canSendVoice = canSend && has(perms, SEND_VOICE_MESSAGES),
+            canUseSoundboard = has(perms, USE_SOUNDBOARD),
         )
     }
 }

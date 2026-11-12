@@ -463,7 +463,8 @@ class MainActivity : ComponentActivity() {
                                 channelId = chId,
                                 channelName = chName,
                                 answer = back.arguments?.getBoolean("answer") == true,
-                                onOpenSoundboard = { navController.navigate("soundboard/${gId ?: "dm"}/$chId") }
+                                onOpenSoundboard = { navController.navigate("soundboard/${gId ?: "dm"}/$chId") },
+                                onOpenChat = { navController.navigate("chatscreen/$chId/${Uri.encode(chName)}/${gId ?: "dm"}") }
                             )
                         }
 

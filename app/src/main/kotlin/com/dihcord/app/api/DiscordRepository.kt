@@ -381,7 +381,10 @@ class DiscordRepository(
      */
     suspend fun channelAbilities(channelId: String): ChannelAbilities {
         val channel = channelCache[channelId] ?: return ChannelAbilities.ALL
-        if (channel.type != ChannelType.GUILD_TEXT && channel.type != ChannelType.GUILD_NEWS) return ChannelAbilities.ALL
+        // Voice and stage channels have a text chat too, and their own permissions (soundboard).
+        if (channel.type !in setOf(ChannelType.GUILD_TEXT, ChannelType.GUILD_NEWS, ChannelType.GUILD_VOICE, ChannelType.GUILD_STAGE_VOICE)) {
+            return ChannelAbilities.ALL
+        }
         val guildId = channel.guildId ?: return ChannelAbilities.ALL
         val myId = currentUserId ?: return ChannelAbilities.ALL
 

@@ -128,9 +128,14 @@ fun VoiceChannelScreen(
     /** Answer the incoming call straight away (from the notification's Accept button). */
     answer: Boolean = false,
     onOpenSoundboard: (() -> Unit)? = null,
+    /** Opens the channel's text chat (every voice channel has one), or the DM for a call. */
+    onOpenChat: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val repo = context.discordApp.repository ?: return
+    // Servers can switch the soundboard off (the "Use Soundboard" permission): then there is no button for it.
+    var soundboardAllowed by remember(channelId) { mutableStateOf(true) }
+    LaunchedEffect(channelId) { soundboardAllowed = repo.channelAbilities(channelId).canUseSoundboard }
     val call by VoiceManager.call.collectAsState()
     val voiceStates by repo.voiceStates.collectAsState()
     val me = repo.currentUser.collectAsState().value?.id
@@ -239,7 +244,8 @@ fun VoiceChannelScreen(
             scope.launch { repo.declineCall(channelId) }
         },
         onJoin = { tryJoin() },
-        onOpenSoundboard = onOpenSoundboard.takeIf { active },
+        onOpenSoundboard = onOpenSoundboard.takeIf { active && soundboardAllowed },
+        onOpenChat = onOpenChat,
         stage = if (isStage && active) StageState(
             listeners = listenerCount,
             listening = myState?.suppress == true,
@@ -299,6 +305,7 @@ internal fun VoiceChannelContent(
     onOpenSoundboard: (() -> Unit)? = null,
     stage: StageState? = null,
     onRequestSpeak: (Boolean) -> Unit = {},
+    onOpenChat: (() -> Unit)? = null,
 ) {
     val state = rememberTransformingLazyColumnState()
     val elapsed = connectedAt?.let { callTimer(it) }
@@ -388,6 +395,16 @@ internal fun VoiceChannelContent(
                             color = if (stage.requested) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+            }
+            if (onOpenChat != null) item {
+                Box(Modifier.fillMaxWidth().padding(top = 2.dp), contentAlignment = Alignment.Center) {
+                    CompactButton(
+                        onClick = onOpenChat,
+                        icon = { Icon(painterResource(R.drawable.chat), null, Modifier.size(16.dp)) },
+                        label = { Text("Chat") },
+                        colors = ButtonDefaults.childButtonColors()
+                    )
                 }
             }
             if (onOpenSoundboard != null && stage?.listening != true) item {

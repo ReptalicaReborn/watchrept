@@ -144,7 +144,19 @@ class PermissionsTest {
                 Permissions.SEND_VOICE_MESSAGES
         )
         val ch = channel(PermissionOverwrite(guildId, 0, allow = 0, deny = Permissions.SEND_MESSAGES))
-        assertTrue(abilities(ch, roles = listOf(everyoneAll, memberRole)) == ChannelAbilities(false, false, false))
+        assertTrue(abilities(ch, roles = listOf(everyoneAll, memberRole)) == ChannelAbilities(false, false, false, canUseSoundboard = false))
+    }
+
+    @Test
+    fun `the soundboard follows its own permission`() {
+        val withSoundboard = role(guildId, Permissions.VIEW_CHANNEL or Permissions.SEND_MESSAGES or Permissions.USE_SOUNDBOARD)
+        assertTrue(abilities(channel(), roles = listOf(withSoundboard, memberRole)).canUseSoundboard)
+        // The server took it away from everyone, or just in this channel.
+        assertFalse(abilities(channel()).canUseSoundboard)
+        val denied = channel(PermissionOverwrite(guildId, 0, allow = 0, deny = Permissions.USE_SOUNDBOARD))
+        assertFalse(abilities(denied, roles = listOf(withSoundboard, memberRole)).canUseSoundboard)
+        // Sending text is a separate matter.
+        assertTrue(abilities(denied, roles = listOf(withSoundboard, memberRole)).canSend)
     }
 
     @Test

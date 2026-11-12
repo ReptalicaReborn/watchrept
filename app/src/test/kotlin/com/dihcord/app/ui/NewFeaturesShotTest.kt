@@ -298,7 +298,7 @@ class NewFeaturesShotTest {
             "Lobby", null, VoiceTone.QUIET,
             listOf(VoiceTile("1", "Mira", null, true, false, false), VoiceTile("2", "Kai", null, false, true, false)),
             VoiceMode.Active(muted = false, deafened = false), System.currentTimeMillis() - 252_000, null,
-            {}, {}, {}, {}, {}, onOpenSoundboard = {}
+            {}, {}, {}, {}, {}, onOpenSoundboard = {}, onOpenChat = {}
         )
     }
 
