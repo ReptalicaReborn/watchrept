@@ -1530,3 +1530,11 @@ data class TypingStyle(val emojis: List<ReactionEmoji>, val animation: Animation
         }
     }
 }
+
+/**
+ * Where a channel's read marker stands after Discord reports [acked]. An ordinary acknowledgement only ever moves
+ * the marker forward (they can arrive out of order); a [manual] one - "Mark unread", here or on another device -
+ * is taken as it is, even when it moves the marker back.
+ */
+fun readStateAfterAck(old: ChannelUnreadState?, acked: ChannelUnreadState, manual: Boolean): ChannelUnreadState =
+    if (!manual && old != null && compareSnowflakes(acked.lastMessageId, old.lastMessageId) < 0) old else acked

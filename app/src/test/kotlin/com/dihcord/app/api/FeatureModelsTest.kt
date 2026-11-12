@@ -359,6 +359,17 @@ class FeatureModelsTest {
         assertNull(TypingStyle.fromJson(JSONObject("""{"emojis":[],"animation":2,"typing_suggestion":0}""")))
     }
 
+    @Test
+    fun `only a manual acknowledgement moves the read marker back`() {
+        val at200 = ChannelUnreadState("200", 0)
+        // Ordinary acks arrive out of order: an older one is ignored, a newer one taken.
+        assertEquals(at200, readStateAfterAck(at200, ChannelUnreadState("150", 0), manual = false))
+        assertEquals(ChannelUnreadState("250", 0), readStateAfterAck(at200, ChannelUnreadState("250", 0), manual = false))
+        // "Mark unread" on another device: back to 150, with its mentions.
+        assertEquals(ChannelUnreadState("150", 2), readStateAfterAck(at200, ChannelUnreadState("150", 2), manual = true))
+        assertEquals(ChannelUnreadState("150", 0), readStateAfterAck(null, ChannelUnreadState("150", 0), manual = false))
+    }
+
     private val leanReady = """
         {"user":{"id":"1","username":"me","discriminator":"0"},
          "users":[{"id":"7","username":"anna","discriminator":"0","global_name":"Anna"},

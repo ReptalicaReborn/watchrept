@@ -1559,13 +1559,14 @@ class DiscordRepository(
 
                     is GatewayEvent.MessageAck -> {
                         val acked = ChannelUnreadState(event.messageId, event.mentionCount)
-                        ackWatches.forEach { w ->
+                        // A "Mark unread" isn't a read from another device: it must not count as one for a
+                        // mark-read that is waiting, and changing the state below already stops that one's undo.
+                        if (!event.manual) ackWatches.forEach { w ->
                             if (event.channelId in w.channels) w.furthest.compute(event.channelId) { _, old -> furtherAck(old, acked) }
                         }
                         _readState.update { current ->
-                            val old = current[event.channelId]
-                            if (old != null && compareSnowflakes(event.messageId, old.lastMessageId) < 0) current
-                            else current + (event.channelId to ChannelUnreadState(event.messageId, event.mentionCount))
+                            val next = readStateAfterAck(current[event.channelId], acked, event.manual)
+                            if (next === current[event.channelId]) current else current + (event.channelId to next)
                         }
                         if (event.mentionCount == 0) _pings.update { list ->
                             list.filterNot { it.message.channelId == event.channelId && compareSnowflakes(it.message.id, event.messageId) <= 0 }

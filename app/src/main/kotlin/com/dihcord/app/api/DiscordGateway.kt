@@ -489,6 +489,7 @@ class DiscordGateway(private val token: String) {
                     channelId = d.getString("channel_id"),
                     messageId = d.getString("message_id"),
                     mentionCount = d.optInt("mention_count", 0),
+                    manual = d.optBoolean("manual", false),
                 )
             }.getOrNull()
 
@@ -755,7 +756,8 @@ sealed class GatewayEvent {
     ) : GatewayEvent()
 
     /** Another device (or this one) marked [channelId] read up to [messageId]. */
-    data class MessageAck(val channelId: String, val messageId: String, val mentionCount: Int) : GatewayEvent()
+    /** [manual]: someone chose this spot ("Mark unread"), so it stands even when it is further back than before. */
+    data class MessageAck(val channelId: String, val messageId: String, val mentionCount: Int, val manual: Boolean = false) : GatewayEvent()
     data class MemberListUpdate(
         val guildId: String,
         val listId: String,
