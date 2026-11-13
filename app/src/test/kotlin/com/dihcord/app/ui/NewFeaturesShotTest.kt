@@ -181,6 +181,61 @@ class NewFeaturesShotTest {
             }
         }
     }
+    @Test fun chatGradientRole() = shot("chat_gradient_role") {
+        val il = LocalContext.current.imageLoader
+        val now = java.time.Instant.now().toString()
+        val roles = androidx.compose.runtime.remember {
+            androidx.compose.runtime.mutableStateMapOf<String, GuildRole?>(
+                SampleData.ines.id to GuildRole("1", "Builder", 0xF47FFF, 5, 0, secondaryColor = 0x5BCEFA),
+                SampleData.spam.id to GuildRole("2", "Holo", 11127295, 4, 0, secondaryColor = 16759788, tertiaryColor = 16761760),
+            )
+        }
+        androidx.wear.compose.material3.ScreenScaffold(timeText = { TitledTimeText("#general") }) {
+            androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.padding(start = 20.dp, end = 18.dp, top = 38.dp)) {
+                MessageBubble(
+                    msg = DiscordMessage(SampleData.id(11), "603", SampleData.ines, "gradient role name", now, null),
+                    isContinuation = false, imageLoader = il, guildId = "700", roleColorCache = roles, onReact = {}, onLongPress = {}
+                )
+                MessageBubble(
+                    msg = DiscordMessage(SampleData.id(12), "603", SampleData.spam, "holographic role name", now, null),
+                    isContinuation = false, imageLoader = il, guildId = "700", roleColorCache = roles, onReact = {}, onLongPress = {}
+                )
+                TypingIndicator(listOf("Inês", "Zaffox"))
+                TypingIndicator(
+                    listOf("rept"),
+                    TypingStyle(
+                        listOf(ReactionEmoji(null, "🐱", false), ReactionEmoji(null, "🐾", false), ReactionEmoji(null, "✨", false)),
+                        TypingStyle.Animation.PULSE, "meowing"
+                    )
+                )
+            }
+        }
+    }
+    @Test fun chatTwoColourTheme() {
+        val context = RuntimeEnvironment.getApplication()
+        com.dihcord.app.AppTheme.setPreset(context, com.dihcord.app.AppTheme.Preset.TRANS)
+        try {
+            shot("chat_two_colour") {
+                val il = LocalContext.current.imageLoader
+                val now = java.time.Instant.now().toString()
+                val first = DiscordMessage(SampleData.id(20), "603", SampleData.me, "who is bringing snacks", now, null)
+                androidx.wear.compose.material3.ScreenScaffold(timeText = { TitledTimeText("#general") }) {
+                    androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.padding(start = 20.dp, end = 18.dp, top = 36.dp)) {
+                        MessageBubble(
+                            msg = DiscordMessage(
+                                SampleData.id(21), "603", SampleData.ines, "<@${SampleData.me.id}> me! list: https://example.com/snacks", now, null,
+                                type = 19, referencedMessage = first, mentionedUsers = listOf(SampleData.me),
+                                reactions = listOf(Reaction(ReactionEmoji(null, "🍪", false), 3, me = true), Reaction(ReactionEmoji(null, "👍", false), 1, me = false))
+                            ),
+                            isContinuation = false, imageLoader = il, onReact = {}, onLongPress = {}
+                        )
+                    }
+                }
+            }
+        } finally {
+            com.dihcord.app.AppTheme.setPreset(context, com.dihcord.app.AppTheme.Preset.DEFAULT)
+        }
+    }
     @Test fun chatNewLine() = shot("chat_new_line") {
         ChatScreen(SampleData.general.id, SampleData.general.name, SampleData.blockhaven.id, currentUserId = SampleData.me.id,
             onOpenPins = {}, onOpenSearch = {}, onOpenMembers = {}, onOpenThreads = {})
@@ -207,9 +262,9 @@ class NewFeaturesShotTest {
             listOf(
                 PeopleSection("Admins — 1", listOf(PersonRow(SampleData.teodor, "Teodor", OnlineStatus.ONLINE, null))),
                 PeopleSection("Online — 11", listOf(
-                    PersonRow(SampleData.zaffox, "Zaffox", OnlineStatus.ONLINE, "Playing Minecraft"),
+                    PersonRow(SampleData.zaffox, "Zaffox", OnlineStatus.ONLINE, "Playing Minecraft", nameColors = listOf(0xF47FFF, 0x5BCEFA)),
                     PersonRow(SampleData.mira, "Mira Okafor", OnlineStatus.IDLE, "Listening to Spotify"),
-                    PersonRow(SampleData.kai, "Kai Tanaka", OnlineStatus.DND, null),
+                    PersonRow(SampleData.kai, "Kai Tanaka", OnlineStatus.DND, null, nameColors = listOf(0x3BA55D)),
                 )),
             ), {}
         )
@@ -268,7 +323,7 @@ class NewFeaturesShotTest {
             "Lobby", null, VoiceTone.QUIET,
             listOf(VoiceTile("1", "Mira", null, true, false, false), VoiceTile("2", "Kai", null, false, true, false)),
             VoiceMode.Active(muted = false, deafened = false), System.currentTimeMillis() - 252_000, null,
-            {}, {}, {}, {}, {}, onOpenSoundboard = {}
+            {}, {}, {}, {}, {}, onOpenSoundboard = {}, onOpenChat = {}
         )
     }
 

@@ -366,8 +366,19 @@ data class GuildRole(
     val position: Int,
     val permissions: Long,
     val unicodeEmoji: String? = null,
-    val iconHash: String? = null
+    val iconHash: String? = null,
+    /** Discord's "enhanced role styles": a second colour makes the name a gradient, a third makes it holographic. */
+    val secondaryColor: Int? = null,
+    val tertiaryColor: Int? = null,
 ) {
+    /** The colours to blend across the name, left to right, or null for a plain single-colour role. */
+    val gradient: List<Int>?
+        get() = when {
+            secondaryColor == null -> null
+            tertiaryColor != null -> listOf(color, secondaryColor, tertiaryColor)
+            else -> listOf(color, secondaryColor)
+        }
+
     fun iconUrl(size: Int = 16): String? =
         iconHash?.let { "https://cdn.discordapp.com/role-icons/$id/$it.png?size=$size" }
 
@@ -379,7 +390,9 @@ data class GuildRole(
             position = o.optInt("position", 0),
             permissions = o.getString("permissions").toLongOrNull() ?: 0L,
             unicodeEmoji = o.optString("unicode_emoji").takeIf { it.isNotEmpty() && it != "null" },
-            iconHash = o.optString("icon").takeIf { it.isNotEmpty() && it != "null" }
+            iconHash = o.optString("icon").takeIf { it.isNotEmpty() && it != "null" },
+            secondaryColor = o.optJSONObject("colors")?.nullableInt("secondary_color"),
+            tertiaryColor = o.optJSONObject("colors")?.nullableInt("tertiary_color"),
         )
 
         fun listFromJson(arr: JSONArray): List<GuildRole> =
@@ -388,7 +401,13 @@ data class GuildRole(
 }
 
 /** What the current user may post in a channel. */
-data class ChannelAbilities(val canSend: Boolean, val canAttach: Boolean, val canSendVoice: Boolean) {
+data class ChannelAbilities(
+    val canSend: Boolean,
+    val canAttach: Boolean,
+    val canSendVoice: Boolean,
+    /** In a voice channel: whether the server lets us play soundboard sounds there. */
+    val canUseSoundboard: Boolean = true,
+) {
     companion object {
         val ALL = ChannelAbilities(canSend = true, canAttach = true, canSendVoice = true)
     }
@@ -400,6 +419,7 @@ object Permissions {
     const val SEND_MESSAGES = 1L shl 11
     const val ATTACH_FILES = 1L shl 15
     const val SEND_VOICE_MESSAGES = 1L shl 46
+    const val USE_SOUNDBOARD = 1L shl 42
 
     fun effectiveForMember(
         member: GuildMember,
@@ -458,6 +478,7 @@ object Permissions {
             canSend = canSend,
             canAttach = canSend && has(perms, ATTACH_FILES),
             canSendVoice = canSend && has(perms, SEND_VOICE_MESSAGES),
+            canUseSoundboard = has(perms, USE_SOUNDBOARD),
         )
     }
 }
@@ -1483,3 +1504,45 @@ private val UrlInText = Regex("https?://[^\\s<>|]+")
 fun spoileredLinks(content: String): Set<String> =
     if (!content.contains("||")) emptySet()
     else SpoilerSpan.findAll(content).flatMapTo(HashSet()) { m -> UrlInText.findAll(m.groupValues[1]).map { it.value.trimEnd('/') } }
+
+/**
+ * Someone's custom typing indicator (a Nitro feature): up to three emoji shown in place of the dots, how they
+ * move, and the word used instead of "typing". Discord shows it only while that person is the only one typing.
+ */
+data class TypingStyle(val emojis: List<ReactionEmoji>, val animation: Animation, val verb: String) {
+    enum class Animation { NONE, PULSE, RING, WAVE }
+
+    companion object {
+        /** Discord sends the word as a number from a fixed list. */
+        private val Verbs = listOf("typing", "yapping", "venting", "oversharing", "barking", "babbling", "daydreaming", "meowing")
+
+        /** Null when [o] holds nothing to show: no emoji and the ordinary word. */
+        fun fromJson(o: JSONObject?): TypingStyle? {
+            if (o == null) return null
+            val arr = o.optJSONArray("emojis")
+            val emojis = if (arr == null) emptyList() else (0 until arr.length()).mapNotNull { i ->
+                val e = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = e.optString("id").takeIf { it.isNotEmpty() && it != "null" }
+                val name = e.optString("name").takeIf { it != "null" }.orEmpty()
+                if (id == null && name.isEmpty()) null else ReactionEmoji(id, name, e.optBoolean("animated", false))
+            }.take(3)
+            val verb = Verbs.getOrNull(o.optInt("typing_suggestion", o.optInt("typingSuggestion", 0))) ?: Verbs[0]
+            if (emojis.isEmpty() && verb == Verbs[0]) return null
+            return TypingStyle(emojis, Animation.values().getOrNull(o.optInt("animation", 0)) ?: Animation.NONE, verb)
+        }
+
+        /** Looks in the places a typing event or a user object may carry the style. */
+        fun find(vararg holders: JSONObject?): JSONObject? = holders.firstNotNullOfOrNull { h ->
+            h?.optJSONObject("custom_typing_indicator_config") ?: h?.optJSONObject("typing_indicator_style")
+                ?: h?.optJSONObject("customTypingIndicatorConfig") ?: h?.optJSONObject("typingIndicatorStyle")
+        }
+    }
+}
+
+/**
+ * Where a channel's read marker stands after Discord reports [acked]. An ordinary acknowledgement only ever moves
+ * the marker forward (they can arrive out of order); a [manual] one - "Mark unread", here or on another device -
+ * is taken as it is, even when it moves the marker back.
+ */
+fun readStateAfterAck(old: ChannelUnreadState?, acked: ChannelUnreadState, manual: Boolean): ChannelUnreadState =
+    if (!manual && old != null && compareSnowflakes(acked.lastMessageId, old.lastMessageId) < 0) old else acked

@@ -13,7 +13,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,6 +42,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.Color
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.Animatable
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.foundation.Canvas
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -188,7 +194,8 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(messages, guildId, loading) {
+    // Runs again when the connection comes back: whoever couldn't be looked up while offline is then asked for.
+    LaunchedEffect(messages, guildId, loading, online) {
         if (!loading && guildId != null) {
             // Everyone in view (authors, people mentioned or replied to) in one gateway request; the lookups
             // below then find them already there, and only fetch one by one whoever is still missing.
@@ -200,15 +207,20 @@ fun ChatScreen(
                 .distinct()
                 .filterNot { roleColorCache.containsKey(it) }
                 .forEach { userId ->
-                    roleColorCache[userId] = repo?.getTopRoleForUser(guildId, userId)
-                    roleIconCache[userId] = repo?.getRoleWithIconForUser(guildId, userId)
+                    val member = repo.getGuildMember(guildId, userId)
+                    // No answer yet (offline, or Discord asked us to slow down): leave them for the next run
+                    // instead of recording "no colour" and never asking again.
+                    if (member == null && !repo.memberSettled(guildId, userId)) return@forEach
+                    roleColorCache[userId] = repo.getTopRoleForUser(guildId, userId)
+                    roleIconCache[userId] = repo.getRoleWithIconForUser(guildId, userId)
                 }
             messages
                 .map { it.author.id }
                 .distinct()
                 .filterNot { guildMemberCache.containsKey("$guildId:$it") }
+                .filter { repo.memberSettled(guildId, it) }
                 .forEach { userId ->
-                    guildMemberCache["$guildId:$userId"] = repo?.getGuildMember(guildId, userId)
+                    guildMemberCache["$guildId:$userId"] = repo.getGuildMember(guildId, userId)
                 }
         }
     }
@@ -246,6 +258,8 @@ fun ChatScreen(
         }
     }
 
+    // Set by "Mark unread": from then on this visit no longer counts as having read the chat.
+    var keepUnread by remember(channelId) { mutableStateOf(false) }
     val initialLastRead = remember(channelId) { repo.readState.value[channelId]?.lastMessageId }
     // Where "New" goes: the first message from someone else after where the user stopped reading.
     val firstUnreadId = remember(initialLastRead, messages, myId) {
@@ -325,13 +339,13 @@ fun ChatScreen(
     LaunchedEffect(scrolledToUnread.value) {
         if (scrolledToUnread.value && !loading) {
             delay(1_500)
-            messages.lastOrNull()?.id?.let { repo?.markChannelRead(channelId, it) }
+            if (!keepUnread) messages.lastOrNull()?.id?.let { repo?.markChannelRead(channelId, it) }
         }
     }
 
     // Leaving the chat counts as having read what was there (like opening it does).
     val latestMessageId by rememberUpdatedState(messages.lastOrNull()?.id)
-    val ackOnLeave by rememberUpdatedState(!loading && scrolledToUnread.value)
+    val ackOnLeave by rememberUpdatedState(!loading && scrolledToUnread.value && !keepUnread)
     DisposableEffect(channelId) {
         onDispose {
             if (ackOnLeave) latestMessageId?.let { repo.markChannelRead(channelId, it) }
@@ -765,6 +779,15 @@ fun ChatScreen(
             }) else null,
             pinned = msgForOptions.pinned,
             saved = savedNow,
+            onMarkUnread = {
+                selectedMsg = null
+                keepUnread = true
+                scope.launch {
+                    repo.markUnreadFrom(channelId, msgForOptions)
+                        .onSuccess { android.widget.Toast.makeText(context, "Marked unread", android.widget.Toast.LENGTH_SHORT).show() }
+                        .onFailure { keepUnread = false; sendError = "Couldn't mark unread. " + friendlyError(it) }
+                }
+            },
             onPin = {
                 selectedMsg = null
                 scope.launch {
@@ -908,9 +931,9 @@ fun ChatScreen(
     // Ack messages read live while the chat is open (debounced), not only what was there when it opened.
     LaunchedEffect(lastMsgId, isAtBottom) {
         val id = lastMsgId ?: return@LaunchedEffect
-        if (!isAtBottom || loading || !scrolledToUnread.value) return@LaunchedEffect
+        if (!isAtBottom || loading || !scrolledToUnread.value || keepUnread) return@LaunchedEffect
         delay(1_000)
-        repo.markChannelRead(channelId, id)
+        if (!keepUnread) repo.markChannelRead(channelId, id)
     }
     val unseenCount = remember(messages, seenUpToId) {
         val seen = seenUpToId?.toLongOrNull() ?: return@remember 0
@@ -1245,22 +1268,11 @@ fun ChatScreen(
                 val currentTypingUsers = typingUsers.filter { it != myId }
                 if (currentTypingUsers.isNotEmpty()) {
                     item(key = "typing_indicator") {
-                        val names = currentTypingUsers.mapNotNull { uid ->
-                            repo.getDisplayName(uid) ?: "Someone"
+                        val names = currentTypingUsers.map { uid ->
+                            repo.nickIn(guildId, uid) ?: repo.getDisplayName(uid) ?: "Someone"
                         }
-                        val label = when {
-                            names.size == 1 -> "${names[0]} is typing…"
-                            names.size == 2 -> "${names[0]} and ${names[1]} are typing…"
-                            else -> "Several people are typing…"
-                        }
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 4.dp, vertical = 2.dp)
-                        )
+                        // A custom indicator shows only while its owner is the only one typing, as in Discord.
+                        TypingIndicator(names, currentTypingUsers.singleOrNull()?.let { repo.typingStyleOf(it) }, imageLoader)
                     }
                 }
 
@@ -1700,6 +1712,8 @@ internal fun MessageOptionsDialog(
     authorName: String = msg.author.displayName,
     /** Set for our own poll while it is still open. */
     onEndPoll: (() -> Unit)? = null,
+    /** Marks the chat unread from this message on. */
+    onMarkUnread: (() -> Unit)? = null,
     pinned: Boolean = false,
     saved: Boolean = false,
     onPin: (() -> Unit)? = null,
@@ -1782,6 +1796,7 @@ internal fun MessageOptionsDialog(
             onForward?.let { MenuAction(R.drawable.forward, "Forward", onClick = it) },
             onPin?.let { MenuAction(if (pinned) R.drawable.unpin else R.drawable.pin, if (pinned) "Unpin" else "Pin", onClick = it) },
             onSave?.let { MenuAction(if (saved) R.drawable.bookmark else R.drawable.bookmark_border, if (saved) "Saved" else "Save", onClick = it) },
+            onMarkUnread?.let { MenuAction(R.drawable.mail, "Unread", onClick = it) },
             onReadAloud?.let { MenuAction(R.drawable.volume, "Read", onClick = it) },
             onTranslate?.let { MenuAction(R.drawable.translate, "Translate", onClick = it) },
             MenuAction(R.drawable.delete, "Delete", destructive = true) { confirmDelete = true }.takeIf { isOwn },
@@ -2072,7 +2087,19 @@ internal fun MessageBubble(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
+                        val nameGradient = topRole?.gradient
+                        if (nameGradient != null) {
+                            // A gradient (or holographic) role: the colours run across the name, as in Discord.
+                            androidx.compose.foundation.text.BasicText(
+                                text = authorName,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    brush = Brush.horizontalGradient(nameGradient.map { Color(0xFF000000.toInt() or it) })
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                        } else Text(
                             text = authorName,
                             style = MaterialTheme.typography.labelSmall,
                             color = authorNameColor,
@@ -2155,7 +2182,7 @@ internal fun MessageBubble(
                     Text(
                         buildAnnotatedString {
                             append(nameOf(commandUser) + " used ")
-                            withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) { append(command) }
+                            withStyle(SpanStyle(color = secondAccent())) { append(command) }
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -2184,7 +2211,7 @@ internal fun MessageBubble(
                         Text(
                             " ${nameOf(ref.author)}: ",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
+                            color = secondAccent()
                         )
                         Text(
                             ref.content.take(40).ifBlank { "Attachment" },//icon?
@@ -2330,7 +2357,7 @@ internal fun MessageBubble(
                             .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
                             .padding(horizontal = 6.dp, vertical = 4.dp)
                     ) {
-                        Text(head, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        Text(head, style = MaterialTheme.typography.labelSmall, color = secondAccent())
                         if (body != null) Text(body, style = MaterialTheme.typography.bodySmall)
                     }
                 }
@@ -2409,6 +2436,7 @@ private fun InlineMessageLine(
 ) {
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
+    val linkColor = secondAccent()
     val baseStyle = when {
         headingLevel == 1 -> MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
         headingLevel == 2 -> MaterialTheme.typography.titleSmall.copy(fontSize = 15.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
@@ -2476,7 +2504,7 @@ private fun InlineMessageLine(
                     androidx.compose.ui.text.LinkAnnotation.Url(
                         part.url,
                         androidx.compose.ui.text.TextLinkStyles(
-                            style = SpanStyle(color = colors.primary, textDecoration = TextDecoration.Underline)
+                            style = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)
                         )
                     )
                 ) { append(part.url) }
@@ -2676,7 +2704,7 @@ private fun MessageContent(
                                 val annotated = buildAnnotatedString {
                                     withStyle(
                                         SpanStyle(
-                                            color = MaterialTheme.colorScheme.primary,
+                                            color = secondAccent(),
                                             textDecoration = TextDecoration.Underline,
                                             fontSize = if (isSubtext) 10.sp else androidx.compose.ui.unit.TextUnit.Unspecified
                                         )
@@ -2713,7 +2741,7 @@ private fun ReactionChip(
     onLongClick: (() -> Unit)? = null
 ) {
     val bgColor = when {
-        reaction.me || reaction.meBurst -> MaterialTheme.colorScheme.primaryContainer
+        reaction.me || reaction.meBurst -> secondAccentContainer()
         else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
     }
 
@@ -2854,14 +2882,14 @@ private fun EmbedCard(embed: Embed, imageLoader: ImageLoader) {
                 val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
                 Text(
                     inlineMarkdown(titleText),
-                    style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.primary),
+                    style = MaterialTheme.typography.labelSmall.copy(color = secondAccent()),
                     modifier = Modifier.clickable { runCatching { uriHandler.openUri(embed.url) } }
                 )
             } else {
                 Text(
                     inlineMarkdown(titleText),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
+                    color = secondAccent()
                 )
             }
         }
@@ -2984,7 +3012,7 @@ private fun FileAttachment(att: Attachment) {
     ) {
         Icon(
             painterResource(R.drawable.file), contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp)
+            tint = secondAccent(), modifier = Modifier.size(16.dp)
         )
         Column(Modifier.weight(1f)) {
             Text(
@@ -3475,6 +3503,105 @@ private fun SystemMessageLine(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 4,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * Discord's typing indicator: three dots that bounce in turn, then who is typing with the names in bold. A lone
+ * typist's custom indicator ([style]) replaces the dots with their emoji and "typing" with their word.
+ * In lite mode nothing moves.
+ */
+@Composable
+internal fun TypingIndicator(names: List<String>, style: TypingStyle? = null, imageLoader: ImageLoader? = null) {
+    val custom = style?.takeIf { names.size == 1 }
+    val emojis = custom?.emojis.orEmpty()
+    val animation = custom?.animation ?: TypingStyle.Animation.NONE
+    val moving = !Perf.lite && (emojis.isEmpty() || animation != TypingStyle.Animation.NONE)
+    // One cycle, 0..1. The emoji animations run at Discord's pace: 1.31 s, the ring a little slower.
+    val phase = if (!moving) null else rememberInfiniteTransition(label = "typing").animateFloat(
+        initialValue = 0f, targetValue = 1f, label = "typingPhase",
+        animationSpec = infiniteRepeatable(
+            tween(if (emojis.isEmpty()) 1200 else if (animation == TypingStyle.Animation.RING) 1610 else 1310, easing = LinearEasing)
+        )
+    )
+    val dotColor = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        if (emojis.isEmpty()) {
+            Canvas(Modifier.size(width = 18.dp, height = 8.dp)) {
+                val r = 2.dp.toPx()
+                for (i in 0..2) {
+                    // Each dot takes its turn in the first part of the cycle: it rises, brightens and comes back.
+                    val t = phase?.let { ((it.value - i * 0.16f + 1f) % 1f) } ?: 1f
+                    val lift = if (t < 0.4f) kotlin.math.sin(t / 0.4f * Math.PI).toFloat() else 0f
+                    drawCircle(
+                        color = dotColor.copy(alpha = 0.45f + 0.55f * lift),
+                        radius = r * (1f + 0.2f * lift),
+                        center = androidx.compose.ui.geometry.Offset(r * 1.3f + i * 6.dp.toPx(), size.height / 2 - lift * 1.5.dp.toPx())
+                    )
+                }
+            }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                emojis.forEachIndexed { i, emoji ->
+                    val motion = Modifier.graphicsLayer {
+                        // Each emoji starts a quarter of a cycle after the one before it.
+                        val t = phase?.let { ((it.value - i * 0.245f + 1f) % 1f) } ?: return@graphicsLayer
+                        // Up in the first 40% of the cycle, then at rest.
+                        val bump = if (t < 0.4f) kotlin.math.sin(t / 0.4f * Math.PI).toFloat() else 0f
+                        when (animation) {
+                            TypingStyle.Animation.PULSE -> { scaleX = 1f + 0.16f * bump; scaleY = scaleX }
+                            TypingStyle.Animation.WAVE -> translationY = -2.dp.toPx() * bump
+                            TypingStyle.Animation.RING -> {
+                                val angle = t * 2 * Math.PI
+                                translationX = (kotlin.math.cos(angle) * 1.dp.toPx()).toFloat()
+                                translationY = (-kotlin.math.sin(angle) * 1.dp.toPx()).toFloat() - 1.dp.toPx()
+                            }
+                            TypingStyle.Animation.NONE -> {}
+                        }
+                    }
+                    val url = emoji.imageUrl
+                    if (url != null) {
+                        AsyncImage(
+                            model = url.replace("size=16", "size=48"),
+                            imageLoader = imageLoader ?: LocalContext.current.imageLoader,
+                            contentDescription = emoji.name,
+                            modifier = Modifier.size(14.dp).then(motion)
+                        )
+                    } else {
+                        Text(emoji.name, fontSize = 11.sp, modifier = motion)
+                    }
+                }
+            }
+        }
+        val verb = custom?.verb ?: "typing"
+        val bold = SpanStyle(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+        Text(
+            text = buildAnnotatedString {
+                when (names.size) {
+                    1 -> { withStyle(bold) { append(names[0]) }; append(" is $verb…") }
+                    2 -> {
+                        withStyle(bold) { append(names[0]) }; append(" and ")
+                        withStyle(bold) { append(names[1]) }; append(" are typing…")
+                    }
+                    3 -> {
+                        withStyle(bold) { append(names[0]) }; append(", ")
+                        withStyle(bold) { append(names[1]) }; append(" and ")
+                        withStyle(bold) { append(names[2]) }; append(" are typing…")
+                    }
+                    else -> append("Several people are typing…")
+                }
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
     }

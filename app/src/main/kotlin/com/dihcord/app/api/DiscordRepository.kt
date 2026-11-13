@@ -213,15 +213,43 @@ class DiscordRepository(
         val cacheKey = "$guildId:$userId"
         guildMemberCache[cacheKey]?.let { return it }
         if (cacheKey in nonMembers) return null
+        val now = System.currentTimeMillis()
+        // Discord said to slow down, or this lookup just failed: don't ask again yet. A screen asks for each
+        // person several times over (colour, icon, avatar), and asking again is what turns one refusal into many.
+        if (now < memberLookupsPausedUntil) return null
+        if ((failedMemberLookups[cacheKey] ?: 0L) > now) return null
         return rest.getGuildMember(guildId, userId)
             .onSuccess { member ->
                 // The answer names the user itself; the key we asked with is the one to file it under.
                 noteMember(guildId, member.copy(userId = userId))
                 noteNicks(guildId, mapOf(userId to member.nick))
+                failedMemberLookups.remove(cacheKey)
             }
-            .onFailure { if (it is DiscordApiException && it.httpCode == 404) nonMembers.add(cacheKey) }
+            .onFailure {
+                when {
+                    it is DiscordApiException && it.httpCode == 404 -> nonMembers.add(cacheKey)
+                    it is DiscordApiException && it.httpCode == 429 ->
+                        memberLookupsPausedUntil = System.currentTimeMillis() + MEMBER_LOOKUP_PAUSE_MS
+                    else -> {
+                        if (failedMemberLookups.size > 500) failedMemberLookups.clear()
+                        failedMemberLookups[cacheKey] = System.currentTimeMillis() + MEMBER_LOOKUP_RETRY_MS
+                    }
+                }
+            }
             .getOrNull()
     }
+
+    /**
+     * Whether we have an answer for this person: their member data, or that they aren't a member. False while a
+     * lookup failed or is on hold, so a screen can leave them blank for now and ask again later.
+     */
+    fun memberSettled(guildId: String, userId: String): Boolean =
+        "$guildId:$userId".let { it in guildMemberCache || it in nonMembers }
+
+    /** No member lookups over HTTP before this time: Discord rate limited the last one. */
+    @Volatile private var memberLookupsPausedUntil = 0L
+    /** "guildId:userId" -> when a lookup that failed (no network, server error) may be tried again. */
+    private val failedMemberLookups = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /**
      * Makes sure the members behind [userIds] are known, asking the gateway for all the missing ones in one
@@ -229,7 +257,13 @@ class DiscordRepository(
      * in or after a few seconds; whoever is still unknown then is fetched one by one by [getGuildMember].
      */
     suspend fun loadMembers(guildId: String, userIds: Collection<String>) {
-        if (!gateway.online.value) return
+        // Just back from idle the gateway is still reconnecting. Giving up at once would send every one of
+        // these people to HTTP, one request each, right when the app has the most catching up to do.
+        if (!gateway.online.value && kotlinx.coroutines.withTimeoutOrNull(GATEWAY_WAIT_MS) { gateway.online.first { it } } == null) {
+            // Still no gateway: leave the lookups alone for a moment rather than flood HTTP with them.
+            memberLookupsPausedUntil = maxOf(memberLookupsPausedUntil, System.currentTimeMillis() + MEMBER_LOOKUP_RETRY_MS)
+            return
+        }
         val missing = userIds.toSet().filter { "$guildId:$it".let { key -> key !in guildMemberCache && key !in nonMembers } }
         if (missing.isEmpty()) return
         missing.filter { !memberLoads.containsKey("$guildId:$it") }.chunked(100).forEach { ids ->
@@ -241,6 +275,15 @@ class DiscordRepository(
             load.start()
         }
         missing.mapNotNullTo(HashSet()) { memberLoads["$guildId:$it"] }.forEach { runCatching { it.await() }.onFailure { e -> if (e is kotlinx.coroutines.CancellationException) throw e } }
+    }
+
+    private companion object {
+        /** How long a chat waits for the gateway to come back before looking members up another way. */
+        const val GATEWAY_WAIT_MS = 8_000L
+        /** After a rate limit, how long member lookups over HTTP stay off. */
+        const val MEMBER_LOOKUP_PAUSE_MS = 60_000L
+        /** After any other failure, how long before the same person is looked up again. */
+        const val MEMBER_LOOKUP_RETRY_MS = 30_000L
     }
 
     private suspend fun requestMembers(guildId: String, ids: List<String>) {
@@ -381,7 +424,10 @@ class DiscordRepository(
      */
     suspend fun channelAbilities(channelId: String): ChannelAbilities {
         val channel = channelCache[channelId] ?: return ChannelAbilities.ALL
-        if (channel.type != ChannelType.GUILD_TEXT && channel.type != ChannelType.GUILD_NEWS) return ChannelAbilities.ALL
+        // Voice and stage channels have a text chat too, and their own permissions (soundboard).
+        if (channel.type !in setOf(ChannelType.GUILD_TEXT, ChannelType.GUILD_NEWS, ChannelType.GUILD_VOICE, ChannelType.GUILD_STAGE_VOICE)) {
+            return ChannelAbilities.ALL
+        }
         val guildId = channel.guildId ?: return ChannelAbilities.ALL
         val myId = currentUserId ?: return ChannelAbilities.ALL
 
@@ -712,7 +758,9 @@ class DiscordRepository(
         val roleMap = roles.associateBy { it.id }
         return roleIds
             .mapNotNull { roleMap[it] }
-            .filter { it.color != 0 || it.unicodeEmoji != null || it.iconHash != null }
+            // The name takes the colour of the highest role that has one. A higher role with only an icon doesn't
+            // count: its icon is found separately (getRoleWithIconForUser).
+            .filter { it.color != 0 }
             .maxByOrNull { it.position }
     }
 
@@ -857,6 +905,33 @@ class DiscordRepository(
         scope.launch { rest.ackChannel(channelId, messageId) }
     }
 
+    /**
+     * Marks [channelId] unread from [message] on, here and on Discord, as Discord's "Mark Unread" does: the read
+     * marker goes back to just before it and the mentions after it count again. Put back if Discord refuses.
+     */
+    suspend fun markUnreadFrom(channelId: String, message: DiscordMessage): Result<Unit> {
+        val held = _messages.value[channelId].orEmpty()
+        // The last message that stays read: the one before it, or the id just below it at the top of what's loaded.
+        val marker = held.lastOrNull { compareSnowflakes(it.id, message.id) < 0 }?.id
+            ?: message.id.toLongOrNull()?.let { (it - 1).toString() }
+            ?: return Result.failure(IllegalArgumentException("Not a message id"))
+        val myId = currentUserId
+        val roles = message.guildId?.let { myRolesByGuild[it] }.orEmpty()
+        val mentions = if (myId == null) 0 else held.count {
+            compareSnowflakes(it.id, marker) > 0 && it.author.id != myId && it.pingFor(myId, roles)
+        }
+        val before = _readState.value[channelId]
+        val unreadState = ChannelUnreadState(marker, mentions)
+        _readState.update { it + (channelId to unreadState) }
+        return rest.markUnread(channelId, marker, mentions).onFailure {
+            // Only if nothing else moved the marker meanwhile.
+            _readState.update { current ->
+                if (current[channelId] != unreadState) current
+                else if (before != null) current + (channelId to before) else current - channelId
+            }
+        }
+    }
+
     suspend fun loadMessages(channelId: String) {
         // Fetch channel metadata if not cached
         if (!channelCache.containsKey(channelId)) {
@@ -942,6 +1017,11 @@ class DiscordRepository(
     }
 
     fun getDisplayName(userId: String): String? = userDisplayNames[userId]
+
+    private val typingStyles = java.util.concurrent.ConcurrentHashMap<String, TypingStyle>()
+
+    /** [userId]'s custom typing indicator, as their latest typing event described it. */
+    fun typingStyleOf(userId: String): TypingStyle? = typingStyles[userId]
 
     // ---- Typing ----
 
@@ -1525,13 +1605,14 @@ class DiscordRepository(
 
                     is GatewayEvent.MessageAck -> {
                         val acked = ChannelUnreadState(event.messageId, event.mentionCount)
-                        ackWatches.forEach { w ->
+                        // A "Mark unread" isn't a read from another device: it must not count as one for a
+                        // mark-read that is waiting, and changing the state below already stops that one's undo.
+                        if (!event.manual) ackWatches.forEach { w ->
                             if (event.channelId in w.channels) w.furthest.compute(event.channelId) { _, old -> furtherAck(old, acked) }
                         }
                         _readState.update { current ->
-                            val old = current[event.channelId]
-                            if (old != null && compareSnowflakes(event.messageId, old.lastMessageId) < 0) current
-                            else current + (event.channelId to ChannelUnreadState(event.messageId, event.mentionCount))
+                            val next = readStateAfterAck(current[event.channelId], acked, event.manual)
+                            if (next === current[event.channelId]) current else current + (event.channelId to next)
                         }
                         if (event.mentionCount == 0) _pings.update { list ->
                             list.filterNot { it.message.channelId == event.channelId && compareSnowflakes(it.message.id, event.messageId) <= 0 }
@@ -1711,6 +1792,8 @@ class DiscordRepository(
 
                     is GatewayEvent.TypingStart -> {
                         event.displayName?.let { userDisplayNames[event.userId] = it }
+                        // Each typing event says how its author's indicator looks right now.
+                        if (event.style != null) typingStyles[event.userId] = event.style else typingStyles.remove(event.userId)
                         val updated = _typing.value.toMutableMap()
                         val users = (updated[event.channelId] ?: emptySet()) + event.userId
                         updated[event.channelId] = users

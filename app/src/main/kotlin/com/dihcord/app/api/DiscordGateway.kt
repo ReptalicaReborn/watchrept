@@ -78,6 +78,23 @@ class DiscordGateway(private val token: String) {
      */
     @Volatile private var compress = true
 
+    /**
+     * Whether to ask for the slimmer first message: people (friends, DM partners, members) are described once in
+     * a shared list instead of in full wherever they appear, and private notes are left out. Turned off for good,
+     * falling back to the ordinary message, if Discord refuses the request or answers in a shape we can't read.
+     */
+    @Volatile private var lean = true
+    /** A slim identify was sent and READY hasn't answered it yet. */
+    @Volatile private var leanUnconfirmed = false
+
+    /** Back to the ordinary first message: forget the session and identify again without the extras. */
+    private fun giveUpLean() {
+        lean = false
+        leanUnconfirmed = false
+        sessionId = null
+        resumeUrl = null
+    }
+
     /** False after [pause]: scheduled reconnects (after errors, RECONNECT, INVALID_SESSION) then stay quiet. */
     @Volatile private var wanted = true
 
@@ -249,6 +266,8 @@ class DiscordGateway(private val token: String) {
         val d = JSONObject()
             .put("token", token)
             .put("properties", ClientIdentity.properties())
+        if (lean) d.put("capabilities", LEAN_CAPABILITIES)
+        leanUnconfirmed = lean
         send(Op.IDENTIFY, d)
     }
 
@@ -310,6 +329,8 @@ class DiscordGateway(private val token: String) {
 
                 Op.INVALID_SESSION -> {
                     val resumable = (d as? Boolean) == true
+                    // Refused straight after a slim identify: don't keep asking the same way.
+                    if (leanUnconfirmed) giveUpLean()
                     if (!resumable) {
                         sessionId = null; resumeUrl = null
                     }
@@ -347,8 +368,12 @@ class DiscordGateway(private val token: String) {
                     lost(webSocket, reconnectInMs = null)
                     outbox.trySend(GatewayEvent.InvalidToken)
                 }
-                // Bad shard/version/intents: reconnecting would fail the same way.
-                in 4010..4014 -> lost(webSocket, reconnectInMs = null)
+                // Bad shard/version/intents: reconnecting would fail the same way - unless it was the slim
+                // identify Discord objected to, in which case the ordinary one gets a try.
+                4002, in 4010..4014 -> if (leanUnconfirmed) {
+                    giveUpLean()
+                    lost(webSocket, reconnectInMs = 5_500)
+                } else if (code == 4002) lost(webSocket, reconnectInMs = 2_000) else lost(webSocket, reconnectInMs = null)
                 else -> {
                     // 4007 (bad seq) and 4009 (session timed out) need a fresh IDENTIFY instead of RESUME.
                     if (code == 4007 || code == 4009) { sessionId = null; resumeUrl = null }
@@ -384,6 +409,17 @@ class DiscordGateway(private val token: String) {
 
         val event: GatewayEvent? = when (eventName) {
             "READY" -> {
+                val wasLean = leanUnconfirmed
+                leanUnconfirmed = false
+                ReadyParsing.rehydrate(d)
+                if (wasLean && ReadyParsing.unresolvedRelationships(d) > 0) {
+                    // The slim message didn't come in the shape we read: ask again for the ordinary one
+                    // rather than show a friends list with holes in it.
+                    giveUpLean()
+                    close(1000)
+                    reconnectLater(5_500)
+                    return
+                }
                 sessionId = d.optString("session_id")
                 resumeUrl = d.optString("resume_gateway_url")
                 val user = runCatching { DiscordUser.fromJson(d.getJSONObject("user")) }.getOrNull()
@@ -453,6 +489,7 @@ class DiscordGateway(private val token: String) {
                     channelId = d.getString("channel_id"),
                     messageId = d.getString("message_id"),
                     mentionCount = d.optInt("mention_count", 0),
+                    manual = d.optBoolean("manual", false),
                 )
             }.getOrNull()
 
@@ -594,7 +631,8 @@ class DiscordGateway(private val token: String) {
                 GatewayEvent.TypingStart(
                     channelId = d.getString("channel_id"),
                     userId = d.getString("user_id"),
-                    displayName = displayName
+                    displayName = displayName,
+                    style = TypingStyle.fromJson(TypingStyle.find(d, userObj, memberObj))
                 )
             }.getOrNull()
 
@@ -718,7 +756,8 @@ sealed class GatewayEvent {
     ) : GatewayEvent()
 
     /** Another device (or this one) marked [channelId] read up to [messageId]. */
-    data class MessageAck(val channelId: String, val messageId: String, val mentionCount: Int) : GatewayEvent()
+    /** [manual]: someone chose this spot ("Mark unread"), so it stands even when it is further back than before. */
+    data class MessageAck(val channelId: String, val messageId: String, val mentionCount: Int, val manual: Boolean = false) : GatewayEvent()
     data class MemberListUpdate(
         val guildId: String,
         val listId: String,
@@ -796,7 +835,9 @@ sealed class GatewayEvent {
     data class TypingStart(
         val channelId: String,
         val userId: String,
-        val displayName: String? = null
+        val displayName: String? = null,
+        /** Their custom typing indicator, when they have one. */
+        val style: TypingStyle? = null
     ) : GatewayEvent()
 
     data class PresenceUpdate(val presence: UserPresence) : GatewayEvent()
@@ -895,8 +936,47 @@ data class ChannelNotify(val muted: Boolean, val muteUntil: Long, val level: Int
     fun mutedNow(now: Long = System.currentTimeMillis()) = muted && (muteUntil == 0L || muteUntil > now)
 }
 
+/** Gateway capabilities sent when identifying: LAZY_USER_NOTES (no notes in READY) and DEDUPE_USER_OBJECTS. */
+internal const val LEAN_CAPABILITIES = (1 shl 0) or (1 shl 4)
+
 internal object ReadyParsing {
     private fun ids(arr: JSONArray?): List<String> = (0 until (arr?.length() ?: 0)).mapNotNull { arr?.optString(it) }
+
+    /**
+     * Undoes DEDUPE_USER_OBJECTS on the parts the app reads, so everything after this sees one format: friends
+     * and presences get their user back from the shared `users` list, and the friends' presences (moved to
+     * `merged_presences`) return to `presences`. A READY in the ordinary format is left as it is.
+     */
+    fun rehydrate(d: JSONObject) {
+        val byId = HashMap<String, JSONObject>()
+        d.optJSONArray("users")?.let { users ->
+            for (i in 0 until users.length()) users.optJSONObject(i)?.let { u -> byId[u.optString("id")] = u }
+        }
+        d.optJSONArray("relationships")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val r = arr.optJSONObject(i) ?: continue
+                if (r.optJSONObject("user") != null) continue
+                val id = r.optString("user_id").ifEmpty { r.optString("id") }
+                byId[id]?.let { r.put("user", it) }
+            }
+        }
+        val friends = d.optJSONObject("merged_presences")?.optJSONArray("friends")
+        if (friends != null && (d.optJSONArray("presences")?.length() ?: 0) == 0) d.put("presences", friends)
+        d.optJSONArray("presences")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val p = arr.optJSONObject(i) ?: continue
+                if (p.optJSONObject("user") != null) continue
+                val id = p.optString("user_id").takeIf { it.isNotEmpty() } ?: continue
+                p.put("user", byId[id] ?: JSONObject().put("id", id))
+            }
+        }
+    }
+
+    /** Friends, requests and blocks that still have no user after [rehydrate]: should be none. */
+    fun unresolvedRelationships(d: JSONObject): Int {
+        val arr = d.optJSONArray("relationships") ?: return 0
+        return (0 until arr.length()).count { arr.optJSONObject(it)?.optJSONObject("user") == null }
+    }
 
     fun guilds(d: JSONObject, myId: String): List<ReadyGuild> {
         val arr = d.optJSONArray("guilds") ?: return emptyList()

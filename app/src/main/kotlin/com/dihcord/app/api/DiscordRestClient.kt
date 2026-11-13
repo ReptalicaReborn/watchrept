@@ -781,6 +781,15 @@ class DiscordRestClient(private val token: String, private val baseUrl: String =
         }
     }
 
+    /**
+     * "Mark unread": moves the read marker back to [messageId] (the last message that stays read) and sets how
+     * many mentions come after it.
+     */
+    suspend fun markUnread(channelId: String, messageId: String, mentionCount: Int): Result<Unit> = runCatching {
+        post("/channels/$channelId/messages/$messageId/ack", JSONObject().put("manual", true).put("mention_count", mentionCount))
+        Unit
+    }
+
     suspend fun logout(): Result<Unit> = runCatching {
         post("/auth/logout", JSONObject())
         Unit

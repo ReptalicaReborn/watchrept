@@ -143,6 +143,18 @@ fun accentBrush(): Brush =
     Brush.horizontalGradient(listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary))
 
 /**
+ * The theme's second colour on two-colour (pride) themes, the usual accent otherwise. About half of a chat's
+ * accents use it - links, reply names, your reactions - so both colours show equally instead of mostly the first.
+ */
+@Composable
+fun secondAccent(): Color = if (AppTheme.preset.isPride) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
+
+/** The soft background that goes with [secondAccent]. */
+@Composable
+fun secondAccentContainer(): Color =
+    if (AppTheme.preset.isPride) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer
+
+/**
  * Colours for every other filled icon button: the second accent colour on pride themes, so both flag colours show
  * (e.g. purple and yellow for nonbinary), and the normal colours otherwise.
  */

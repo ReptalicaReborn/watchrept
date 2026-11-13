@@ -383,7 +383,18 @@ fun UserProfileScreen(
                                         )
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
-                                    Text(
+                                    val gradient = role.gradient
+                                    if (gradient != null) {
+                                        // A gradient or holographic role: its colours run across the name.
+                                        androidx.compose.foundation.text.BasicText(
+                                            text = role.name,
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                brush = androidx.compose.ui.graphics.Brush.horizontalGradient(
+                                                    gradient.map { Color(0xFF000000.toInt() or it) }
+                                                )
+                                            )
+                                        )
+                                    } else Text(
                                         text = role.name,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = roleColor

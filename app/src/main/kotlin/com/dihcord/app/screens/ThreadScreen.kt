@@ -9,7 +9,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -149,6 +148,10 @@ fun ThreadScreen(
     var showPhotoPicker by remember { mutableStateOf(false) }
     var reactorsFor by remember { mutableStateOf<Pair<String, Reaction>?>(null) }
     var pollVotersFor by remember { mutableStateOf<Pair<String, PollAnswer>?>(null) }
+    // Only this thread: the shared map changes on every typing event account-wide.
+    val typingUsers by remember(threadId) {
+        repo.typing.map { it[threadId].orEmpty() }.distinctUntilChanged()
+    }.collectAsState(initial = repo.typing.value[threadId].orEmpty())
     val imagePermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -281,6 +284,8 @@ fun ThreadScreen(
             threadMessages.map { it.author.id }.distinct()
                 .filterNot { roleColorCache.containsKey(it) }
                 .forEach { userId ->
+                    val member = repo.getGuildMember(guildId, userId)
+                    if (member == null && !repo.memberSettled(guildId, userId)) return@forEach
                     roleColorCache[userId] = repo.getTopRoleForUser(guildId, userId)
                 }
         }
@@ -573,6 +578,16 @@ fun ThreadScreen(
             }
 
             // Reply banner
+            val typingNow = typingUsers.filter { it != myId }
+            if (typingNow.isNotEmpty()) {
+                item(key = "typing_indicator") {
+                    TypingIndicator(
+                        typingNow.map { repo.nickIn(guildId, it) ?: repo.getDisplayName(it) ?: "Someone" },
+                        typingNow.singleOrNull()?.let { repo.typingStyleOf(it) }, imageLoader
+                    )
+                }
+            }
+
             item(key = "reply_banner") {
                 if (replyingTo != null) {
                     Row(
@@ -637,7 +652,11 @@ fun ThreadScreen(
                 }
                 CompactTextField(
                     value = inputText,
-                    onValueChange = { inputText = it; pendingText = it },
+                    onValueChange = {
+                        // Others in the thread see "typing…", as in a channel.
+                        if (it.length > inputText.length && it.isNotBlank()) repo.typingInChannel(threadId)
+                        inputText = it; pendingText = it
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = "Reply in thread",
                     maxLines = 4,

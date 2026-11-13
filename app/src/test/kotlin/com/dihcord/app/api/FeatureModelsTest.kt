@@ -325,4 +325,88 @@ class FeatureModelsTest {
         // A button press has a user but no command to name.
         assertEquals(null, msg(19, """"interaction_metadata":{"id":"7","type":3,$user}""").commandLabel)
     }
+
+    @Test
+    fun `gradient and holographic roles carry their extra colours`() {
+        fun role(colors: String) = GuildRole.fromJson(JSONObject("""{"id":"1","name":"r","color":255,"position":1,"permissions":"0"$colors}"""))
+        assertNull(role("").gradient)
+        assertNull(role(""","colors":{"primary_color":255,"secondary_color":null,"tertiary_color":null}""").gradient)
+        assertEquals(listOf(255, 65280), role(""","colors":{"primary_color":255,"secondary_color":65280,"tertiary_color":null}""").gradient)
+        assertEquals(
+            listOf(255, 16759788, 16761760),
+            role(""","colors":{"primary_color":255,"secondary_color":16759788,"tertiary_color":16761760}""").gradient
+        )
+    }
+
+    @Test
+    fun `a custom typing indicator is read from a typing event`() {
+        val event = JSONObject(
+            """{"channel_id":"1","user_id":"9","custom_typing_indicator_config":{"animation":1,"typing_suggestion":7,
+                "emojis":[{"id":"123","name":"cat","animated":true},{"id":null,"name":"🐾"},{"id":null,"name":"✨"},{"id":null,"name":"x"}]}}"""
+        )
+        val style = TypingStyle.fromJson(TypingStyle.find(event))!!
+        assertEquals(TypingStyle.Animation.PULSE, style.animation)
+        assertEquals("meowing", style.verb)
+        assertEquals(listOf("cat", "🐾", "✨"), style.emojis.map { it.name })   // never more than three
+        assertEquals("123", style.emojis[0].id)
+        // On the user object instead, and values we don't know fall back to the ordinary ones.
+        val onUser = JSONObject("""{"id":"9","typing_indicator_style":{"animation":42,"typing_suggestion":99,"emojis":[{"name":"🐱"}]}}""")
+        val unknown = TypingStyle.fromJson(TypingStyle.find(JSONObject("{}"), onUser))!!
+        assertEquals(TypingStyle.Animation.NONE, unknown.animation)
+        assertEquals("typing", unknown.verb)
+        // Nothing custom: no style at all.
+        assertNull(TypingStyle.fromJson(TypingStyle.find(JSONObject("""{"user_id":"9"}"""))))
+        assertNull(TypingStyle.fromJson(JSONObject("""{"emojis":[],"animation":2,"typing_suggestion":0}""")))
+    }
+
+    @Test
+    fun `only a manual acknowledgement moves the read marker back`() {
+        val at200 = ChannelUnreadState("200", 0)
+        // Ordinary acks arrive out of order: an older one is ignored, a newer one taken.
+        assertEquals(at200, readStateAfterAck(at200, ChannelUnreadState("150", 0), manual = false))
+        assertEquals(ChannelUnreadState("250", 0), readStateAfterAck(at200, ChannelUnreadState("250", 0), manual = false))
+        // "Mark unread" on another device: back to 150, with its mentions.
+        assertEquals(ChannelUnreadState("150", 2), readStateAfterAck(at200, ChannelUnreadState("150", 2), manual = true))
+        assertEquals(ChannelUnreadState("150", 0), readStateAfterAck(null, ChannelUnreadState("150", 0), manual = false))
+    }
+
+    private val leanReady = """
+        {"user":{"id":"1","username":"me","discriminator":"0"},
+         "users":[{"id":"7","username":"anna","discriminator":"0","global_name":"Anna"},
+                  {"id":"8","username":"ben","discriminator":"0"}],
+         "relationships":[{"id":"7","user_id":"7","type":1},{"id":"8","type":2}],
+         "presences":[],
+         "merged_presences":{"friends":[{"user_id":"7","status":"idle","client_status":{"mobile":"idle"},"activities":[]}],"guilds":[[]]},
+         "merged_members":[[{"user_id":"1","roles":["r1"]}]],
+         "guilds":[{"id":"g","channels":[],"roles":[]}]}"""
+
+    @Test
+    fun `a slim READY reads like an ordinary one`() {
+        val d = JSONObject(leanReady)
+        ReadyParsing.rehydrate(d)
+        assertEquals(0, ReadyParsing.unresolvedRelationships(d))
+        val friends = Relationship.listFromJson(d.optJSONArray("relationships"))
+        assertEquals(listOf("Anna" to Relationship.FRIEND, "ben" to Relationship.BLOCKED), friends.map { it.user.displayName to it.type })
+        val presence = UserPresence.fromJson(d.getJSONArray("presences").getJSONObject(0))
+        assertEquals("7", presence.userId)
+        assertEquals(OnlineStatus.IDLE, presence.status)
+        assertEquals(listOf("r1"), ReadyParsing.guilds(d, "1").single().myRoleIds)
+    }
+
+    @Test
+    fun `an ordinary READY is left alone, and a slim one with someone missing is noticed`() {
+        val ordinary = JSONObject(
+            """{"relationships":[{"id":"7","type":1,"user":{"id":"7","username":"anna","discriminator":"0"}}],
+                "presences":[{"user":{"id":"7"},"status":"online"}]}"""
+        )
+        val before = ordinary.toString()
+        ReadyParsing.rehydrate(ordinary)
+        assertEquals(before, ordinary.toString())
+        assertEquals(0, ReadyParsing.unresolvedRelationships(ordinary))
+
+        val broken = JSONObject("""{"users":[],"relationships":[{"id":"7","user_id":"7","type":1}]}""")
+        ReadyParsing.rehydrate(broken)
+        assertEquals(1, ReadyParsing.unresolvedRelationships(broken))
+        assertEquals(17, LEAN_CAPABILITIES)
+    }
 }
