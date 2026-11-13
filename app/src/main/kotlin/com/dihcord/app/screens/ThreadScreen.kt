@@ -284,6 +284,8 @@ fun ThreadScreen(
             threadMessages.map { it.author.id }.distinct()
                 .filterNot { roleColorCache.containsKey(it) }
                 .forEach { userId ->
+                    val member = repo.getGuildMember(guildId, userId)
+                    if (member == null && !repo.memberSettled(guildId, userId)) return@forEach
                     roleColorCache[userId] = repo.getTopRoleForUser(guildId, userId)
                 }
         }

@@ -194,7 +194,8 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(messages, guildId, loading) {
+    // Runs again when the connection comes back: whoever couldn't be looked up while offline is then asked for.
+    LaunchedEffect(messages, guildId, loading, online) {
         if (!loading && guildId != null) {
             // Everyone in view (authors, people mentioned or replied to) in one gateway request; the lookups
             // below then find them already there, and only fetch one by one whoever is still missing.
@@ -206,15 +207,20 @@ fun ChatScreen(
                 .distinct()
                 .filterNot { roleColorCache.containsKey(it) }
                 .forEach { userId ->
-                    roleColorCache[userId] = repo?.getTopRoleForUser(guildId, userId)
-                    roleIconCache[userId] = repo?.getRoleWithIconForUser(guildId, userId)
+                    val member = repo.getGuildMember(guildId, userId)
+                    // No answer yet (offline, or Discord asked us to slow down): leave them for the next run
+                    // instead of recording "no colour" and never asking again.
+                    if (member == null && !repo.memberSettled(guildId, userId)) return@forEach
+                    roleColorCache[userId] = repo.getTopRoleForUser(guildId, userId)
+                    roleIconCache[userId] = repo.getRoleWithIconForUser(guildId, userId)
                 }
             messages
                 .map { it.author.id }
                 .distinct()
                 .filterNot { guildMemberCache.containsKey("$guildId:$it") }
+                .filter { repo.memberSettled(guildId, it) }
                 .forEach { userId ->
-                    guildMemberCache["$guildId:$userId"] = repo?.getGuildMember(guildId, userId)
+                    guildMemberCache["$guildId:$userId"] = repo.getGuildMember(guildId, userId)
                 }
         }
     }

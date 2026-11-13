@@ -213,15 +213,43 @@ class DiscordRepository(
         val cacheKey = "$guildId:$userId"
         guildMemberCache[cacheKey]?.let { return it }
         if (cacheKey in nonMembers) return null
+        val now = System.currentTimeMillis()
+        // Discord said to slow down, or this lookup just failed: don't ask again yet. A screen asks for each
+        // person several times over (colour, icon, avatar), and asking again is what turns one refusal into many.
+        if (now < memberLookupsPausedUntil) return null
+        if ((failedMemberLookups[cacheKey] ?: 0L) > now) return null
         return rest.getGuildMember(guildId, userId)
             .onSuccess { member ->
                 // The answer names the user itself; the key we asked with is the one to file it under.
                 noteMember(guildId, member.copy(userId = userId))
                 noteNicks(guildId, mapOf(userId to member.nick))
+                failedMemberLookups.remove(cacheKey)
             }
-            .onFailure { if (it is DiscordApiException && it.httpCode == 404) nonMembers.add(cacheKey) }
+            .onFailure {
+                when {
+                    it is DiscordApiException && it.httpCode == 404 -> nonMembers.add(cacheKey)
+                    it is DiscordApiException && it.httpCode == 429 ->
+                        memberLookupsPausedUntil = System.currentTimeMillis() + MEMBER_LOOKUP_PAUSE_MS
+                    else -> {
+                        if (failedMemberLookups.size > 500) failedMemberLookups.clear()
+                        failedMemberLookups[cacheKey] = System.currentTimeMillis() + MEMBER_LOOKUP_RETRY_MS
+                    }
+                }
+            }
             .getOrNull()
     }
+
+    /**
+     * Whether we have an answer for this person: their member data, or that they aren't a member. False while a
+     * lookup failed or is on hold, so a screen can leave them blank for now and ask again later.
+     */
+    fun memberSettled(guildId: String, userId: String): Boolean =
+        "$guildId:$userId".let { it in guildMemberCache || it in nonMembers }
+
+    /** No member lookups over HTTP before this time: Discord rate limited the last one. */
+    @Volatile private var memberLookupsPausedUntil = 0L
+    /** "guildId:userId" -> when a lookup that failed (no network, server error) may be tried again. */
+    private val failedMemberLookups = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /**
      * Makes sure the members behind [userIds] are known, asking the gateway for all the missing ones in one
@@ -229,7 +257,13 @@ class DiscordRepository(
      * in or after a few seconds; whoever is still unknown then is fetched one by one by [getGuildMember].
      */
     suspend fun loadMembers(guildId: String, userIds: Collection<String>) {
-        if (!gateway.online.value) return
+        // Just back from idle the gateway is still reconnecting. Giving up at once would send every one of
+        // these people to HTTP, one request each, right when the app has the most catching up to do.
+        if (!gateway.online.value && kotlinx.coroutines.withTimeoutOrNull(GATEWAY_WAIT_MS) { gateway.online.first { it } } == null) {
+            // Still no gateway: leave the lookups alone for a moment rather than flood HTTP with them.
+            memberLookupsPausedUntil = maxOf(memberLookupsPausedUntil, System.currentTimeMillis() + MEMBER_LOOKUP_RETRY_MS)
+            return
+        }
         val missing = userIds.toSet().filter { "$guildId:$it".let { key -> key !in guildMemberCache && key !in nonMembers } }
         if (missing.isEmpty()) return
         missing.filter { !memberLoads.containsKey("$guildId:$it") }.chunked(100).forEach { ids ->
@@ -241,6 +275,15 @@ class DiscordRepository(
             load.start()
         }
         missing.mapNotNullTo(HashSet()) { memberLoads["$guildId:$it"] }.forEach { runCatching { it.await() }.onFailure { e -> if (e is kotlinx.coroutines.CancellationException) throw e } }
+    }
+
+    private companion object {
+        /** How long a chat waits for the gateway to come back before looking members up another way. */
+        const val GATEWAY_WAIT_MS = 8_000L
+        /** After a rate limit, how long member lookups over HTTP stay off. */
+        const val MEMBER_LOOKUP_PAUSE_MS = 60_000L
+        /** After any other failure, how long before the same person is looked up again. */
+        const val MEMBER_LOOKUP_RETRY_MS = 30_000L
     }
 
     private suspend fun requestMembers(guildId: String, ids: List<String>) {
